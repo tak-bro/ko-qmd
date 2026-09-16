@@ -15,7 +15,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createStore, type QMDStore } from "../src/index.js";
 import { normalizeCjkForFTS } from "../src/store.js";
-import { hangulBigramTail, hangulStems, hangulTermQuery, stripHangulParticle } from "../src/hangul.js";
+import {
+  hangulBigramTail,
+  hangulMixedQuery,
+  hangulStems,
+  hangulTermQuery,
+  stripHangulParticle,
+} from "../src/hangul.js";
 
 describe("hangulBigramTail", () => {
   test("emits syllable bigrams per Hangul run, in order", () => {
@@ -83,6 +89,23 @@ describe("hangulTermQuery", () => {
   });
 });
 
+describe("hangulMixedQuery", () => {
+  test("splits a script-mixed term into ANDed runs", () => {
+    expect(hangulMixedQuery("qmd색인을")).toBe('("qmd"* AND ("색인" OR "색 인" OR "색인 인을" OR "색 인 을"))');
+    expect(hangulMixedQuery("SKILL.md계약")).toBe('("skill"* AND "md"* AND ("계약" OR "계 약"))');
+  });
+
+  test("keeps a single-syllable run as a character phrase", () => {
+    expect(hangulMixedQuery("hook다")).toBe('("hook"* AND "다")');
+  });
+
+  test("returns null for terms that are not script-mixed", () => {
+    expect(hangulMixedQuery("검색을")).toBeNull();
+    expect(hangulMixedQuery("qmd")).toBeNull();
+    expect(hangulMixedQuery("中文检索")).toBeNull();
+  });
+});
+
 describe("searchLex with Hangul particles", () => {
   let root: string;
   let store: QMDStore;
@@ -91,7 +114,7 @@ describe("searchLex with Hangul particles", () => {
     root = await mkdtemp(join(tmpdir(), "qmd-hangul-query-"));
     const docs = join(root, "docs");
     await mkdir(docs, { recursive: true });
-    await writeFile(join(docs, "ko.md"), "# 검색 품질\n\n역색인 구조를 설명한다.\n");
+    await writeFile(join(docs, "ko.md"), "# 검색 품질\n\n역색인 구조를 설명한다. qmd 색인은 FTS5 위에서 돈다.\n");
     await writeFile(join(docs, "zh.md"), "# 中文检索说明\n\n关键词检索。\n");
     await writeFile(join(docs, "ja.md"), "# 日本語検索メモ\n\n検索品質について。\n");
     store = await createStore({
@@ -115,6 +138,11 @@ describe("searchLex with Hangul particles", () => {
 
   test("spacing variants still match through the character phrase", async () => {
     expect(await files("검색품질을")).toEqual([expect.stringContaining("ko.md")]);
+  });
+
+  test("script-mixed terms match the Latin and Hangul runs separately", async () => {
+    expect(await files("qmd색인을")).toEqual([expect.stringContaining("ko.md")]);
+    expect(await files("FTS5위에서")).toEqual([expect.stringContaining("ko.md")]);
   });
 
   test("unsuffixed and single-syllable terms still match inside words", async () => {

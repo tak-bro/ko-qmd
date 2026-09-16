@@ -117,3 +117,30 @@ export function hangulTermQuery(term: string): string | null {
   const stems = hangulStems(term);
   return `(${[...stems.flatMap(phrases), ...phrases(term)].join(" OR ")})`;
 }
+
+/**
+ * FTS5 expression for a term that glues Hangul to Latin or digits
+ * (`SKILL.md계약의핵심`, `hook이유일한hardboundary다`, `auto-dream의발화조건`).
+ * The index already splits scripts — hangulBigramTail only sees Hangul runs and the
+ * porter tokenizer splits the rest — so the query has to split too, or the glued term
+ * is searched as one phrase that appears nowhere. Each Hangul run goes through
+ * hangulTermQuery, each Latin/digit run becomes a prefix term, and the runs are ANDed.
+ * Separators (`.`, `-`, `/`, `+`) are dropped with the rest of the non-alphanumerics.
+ * Returns null when the term is not mixed script, so callers keep their own handling.
+ */
+export function hangulMixedQuery(term: string): string | null {
+  // Set subtraction (v flag) keeps a non-Hangul run from swallowing the Hangul next to it —
+  // plain alternation matches `[\p{L}\p{N}]+` across the boundary once it starts on Latin.
+  const runs = term.match(/\p{Script=Hangul}+|[[\p{L}\p{N}]--[\p{Script=Hangul}]]+/gv) ?? [];
+  const hangulRuns = runs.filter((r) => HANGUL_WORD_PATTERN.test(r));
+  if (hangulRuns.length === 0 || hangulRuns.length === runs.length) return null;
+
+  const parts = runs.flatMap((run) => {
+    if (HANGUL_WORD_PATTERN.test(run)) {
+      return [hangulTermQuery(run) ?? `"${Array.from(run).join(" ")}"`];
+    }
+    const latin = run.replace(/[^\p{L}\p{N}'_]/gu, "").toLowerCase();
+    return latin ? [`"${latin}"*`] : [];
+  });
+  return parts.length > 0 ? `(${parts.join(" AND ")})` : null;
+}
