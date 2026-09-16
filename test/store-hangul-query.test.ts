@@ -156,6 +156,17 @@ describe("searchLex with Hangul particles", () => {
     expect(await files('"색인 구조"')).toEqual([expect.stringContaining("ko.md")]);
   });
 
+  test("a long question falls back to matching any of its words", async () => {
+    // ANDing every word of a Korean sentence matches nothing; the relaxed retry still finds it.
+    expect(await files("역색인 구조를 설명하는 문서를 찾고 싶다")).toEqual([
+      expect.stringContaining("ko.md"),
+    ]);
+  });
+
+  test("the relaxed retry needs three terms", async () => {
+    expect(await files("역색인 고래")).toEqual([]);
+  });
+
   test("negated Hangul terms exclude documents", async () => {
     expect(await files("구조를 -검색")).toEqual([]);
   });

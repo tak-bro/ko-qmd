@@ -195,3 +195,60 @@ weak in general: every query in this goldset is a verbatim phrase from its docum
 best case and vector's least useful one. The goldset has no paraphrase queries at all, so the case
 vector exists for is unmeasured here. Read this as "on exact-phrase Korean queries, hybrid costs
 about a point of recall against lex", not as a verdict on hybrid.
+
+## Long questions and what the vector list is worth (2026-09-16)
+
+Two goldsets on the same 232-document vault, both embedded with Qwen3-Embedding-0.6B:
+
+- **exact**, 240 queries — the vault's own headings and clauses, verbatim (`scripts/bench-vault-goldset.mjs`).
+- **paraphrase**, 30 hand-written queries — a person's wording for a document's topic, with the
+  document's own distinctive terms kept out. Split by whether any rare word of the query does
+  appear in the target: `sem` (16, no lexical anchor) and `mix` (14, one or more).
+
+Neither goldset is committed: the first is regenerable, the second quotes private vault topics.
+
+Measured before this round:
+
+```
+exact        bm25 0.9333  vector 0.5875  hybrid 0.9167
+paraphrase   bm25 0.0000  vector 0.8000  hybrid 0.8333
+```
+
+`bm25 0.0000` on paraphrase is not a vocabulary gap. `buildFTS5Query` joins every term with AND,
+so a natural Korean question — a sentence, particles and all — asks for a document containing all
+ten of its words and matches nothing at all. Korean makes this worse than English does, because
+each particle rides on the word it follows and becomes another required term.
+
+Three changes, each measured:
+
+1. **Relaxed retry.** `searchFTS` re-runs the same terms ORed when the strict AND returns no rows
+   at all (three terms minimum — with fewer, OR drops the query rather than loosening it). It can
+   only fire where there was nothing to dilute.
+2. **Vector lists count half in RRF.** At k=60 a rank-1 vector hit is worth nearly what a rank-1
+   lex hit is worth, so on a query whose words are literally in the document the vector list pulled
+   weaker candidates past the right answer. Swept 1.0 / 0.5 / 0.25 / 0: exact hybrid 0.9167 →
+   0.9542 at 0.5 and below, paraphrase hybrid flat at 0.8333 down to 0.25 and losing at 0 (0.7667).
+   0.5 is the point that buys the exact case without spending the semantic one.
+3. **Relaxed lists count half again, and never count as a strong signal.** A relaxed list only says
+   some of the words appear. Without this, the fallback took over paraphrase queries and hybrid
+   `sem` fell 0.750 → 0.625.
+
+Expansion-derived lists moved 1.0 → 0.75 at the same time. Halving the vector lists would otherwise
+leave the original query's vector list tied with a lex expansion, and upstream's rule — original
+evidence outranks anything the expander invented — would be decided by insertion order instead of
+by weight. Measured identical on both goldsets, so it costs nothing.
+
+After:
+
+```
+exact        bm25 0.9500  vector 0.5875  hybrid 0.9583
+paraphrase   bm25 0.5667  vector 0.8000  hybrid 0.8667
+```
+
+Per bucket, paraphrase hybrid: `mix` 0.929 → 1.000, `sem` 0.750 → 0.750. The synthetic fixture
+moves with it: `bm25_r5` 0.7404 → 0.9519, because its `sem-*`/`cro-*` paraphrase queries were
+failing on the same AND. `full_r5` stays 1.0000; `hybrid_r5` 1.0000 → 0.9904, one query inside a
+52-query fixture.
+
+`sem` at 0.750 is where the remaining work is: 4 of 16 paraphrases find nothing in the top 5 by
+any backend, and lex is at 0.250 there by construction.
