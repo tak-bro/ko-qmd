@@ -4,7 +4,7 @@
 
 - 패키지 이름: `ko-qmd` (npm 발행 없음 — git 태그로 소비)
 - 버전 규칙: `<업스트림 버전>-ko.N` (예: `2.8.3-ko.0`)
-- 브랜치: `main` = 업스트림 추적 전용, `ko` = 기본 브랜치(패치 스택)
+- 브랜치: `main` = 배포 브랜치(업스트림 릴리스 + 한국어 패치 스택). 업스트림은 `upstream` 원격으로만 따라간다 — 포크가 아니다.
 - 설계·계획: [docs/vault-search/design.md](docs/vault-search/design.md), [implementation-plan.md](docs/vault-search/implementation-plan.md)
 
 ## 업스트림과 다른 점
