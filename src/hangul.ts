@@ -15,6 +15,14 @@ const SUFFIXES = [
   "은", "는", "이", "가", "을", "를", "에", "로", "의", "도", "와", "과", "기",
 ];
 
+// Verbal and nominalizing endings on 하다/되다 stems (`토큰화하는` → `토큰화`).
+// Longest first, and always tried before SUFFIXES so `하기` wins over bare `기`.
+const ENDINGS = [
+  "하려는", "되려는", "하면서", "되면서",
+  "하는", "하기", "한다", "했다", "하며", "하고", "하여", "해서", "하지",
+  "되는", "되기", "된다", "됐다", "되며", "되고", "되어", "돼서",
+];
+
 const MIN_STEM_SYLLABLES = 2;
 
 function syllableBigrams(word: string): string[] {
@@ -40,10 +48,23 @@ export function hangulBigramTail(text: string): string {
  * when nothing is stripped.
  */
 export function stripHangulParticle(word: string): string | null {
+  return stripOnce(word, SUFFIXES);
+}
+
+/**
+ * Strip one trailing verbal/nominalizing ending (`토큰화하는` → `토큰화`,
+ * `검색하기` → `검색`). Returns null when nothing is stripped. Endings are tried
+ * before particles so `하기` wins over the bare `기` that would leave `검색하`.
+ */
+export function stripHangulEnding(word: string): string | null {
+  return stripOnce(word, ENDINGS);
+}
+
+function stripOnce(word: string, suffixes: readonly string[]): string | null {
   if (!HANGUL_WORD_PATTERN.test(word)) return null;
   const syllables = Array.from(word);
-  for (const suffix of SUFFIXES) {
-    const stemLength = syllables.length - suffix.length;
+  for (const suffix of suffixes) {
+    const stemLength = syllables.length - Array.from(suffix).length;
     if (stemLength < MIN_STEM_SYLLABLES) continue;
     if (word.endsWith(suffix)) return syllables.slice(0, stemLength).join("");
   }
@@ -51,17 +72,35 @@ export function stripHangulParticle(word: string): string | null {
 }
 
 /**
+ * Stems worth querying for one Hangul word, longest first and without the word
+ * itself: an ending (`토큰화하는` → `토큰화`), then particles, twice, so a chain
+ * like `청킹에서의` reaches `청킹`. Two rounds cover the chains Korean actually
+ * stacks in queries (`에서 + 의`, `으로 + 는`) without unwinding real syllables.
+ */
+export function hangulStems(word: string): string[] {
+  const stems: string[] = [];
+  let current = word;
+  for (let round = 0; round < 2; round++) {
+    const next = stripHangulEnding(current) ?? stripHangulParticle(current);
+    if (next === null || next === current) break;
+    stems.push(next);
+    current = next;
+  }
+  return stems;
+}
+
+/**
  * FTS5 expression for a plain (unquoted) Hangul query term: for the word and
- * its particle-stripped stem, a bigram phrase (from hangulBigramTail) OR the
- * character phrase (`검색` → `("검색" OR "검 색")`). The character phrase keeps
- * spacing variants matching (`간격반복` over `간격 반복`), which bigrams cannot
- * span; the bigram phrase adds its BM25 weight. Returns null for single
- * syllables and non-Hangul or mixed-script terms, so the caller keeps its
- * default character phrase.
+ * each of its stems, a bigram phrase (from hangulBigramTail) OR the character
+ * phrase (`검색` → `("검색" OR "검 색")`). The character phrase keeps spacing
+ * variants matching (`간격반복` over `간격 반복`), which bigrams cannot span; the
+ * bigram phrase adds its BM25 weight. Returns null for single syllables and
+ * non-Hangul or mixed-script terms, so the caller keeps its default character
+ * phrase.
  */
 export function hangulTermQuery(term: string): string | null {
   if (!HANGUL_WORD_PATTERN.test(term) || Array.from(term).length < 2) return null;
   const phrases = (s: string) => [`"${syllableBigrams(s).join(" ")}"`, `"${Array.from(s).join(" ")}"`];
-  const stem = stripHangulParticle(term);
-  return `(${[...(stem ? phrases(stem) : []), ...phrases(term)].join(" OR ")})`;
+  const stems = hangulStems(term);
+  return `(${[...stems.flatMap(phrases), ...phrases(term)].join(" OR ")})`;
 }

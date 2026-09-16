@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createStore, type QMDStore } from "../src/index.js";
 import { normalizeCjkForFTS } from "../src/store.js";
-import { hangulBigramTail, hangulTermQuery, stripHangulParticle } from "../src/hangul.js";
+import { hangulBigramTail, hangulStems, hangulTermQuery, stripHangulParticle } from "../src/hangul.js";
 
 describe("hangulBigramTail", () => {
   test("emits syllable bigrams per Hangul run, in order", () => {
@@ -34,11 +34,28 @@ describe("hangulBigramTail", () => {
   });
 });
 
+describe("hangulStems", () => {
+  test("strips an ending before particles", () => {
+    expect(hangulStems("토큰화하는")).toEqual(["토큰화"]);
+    expect(hangulStems("검색하기")).toEqual(["검색"]);
+  });
+
+  test("unwinds a two-particle chain", () => {
+    expect(hangulStems("청킹에서의")).toEqual(["청킹에서", "청킹"]);
+  });
+
+  test("stops when the stem would fall below two syllables", () => {
+    expect(hangulStems("책을")).toEqual([]);
+    expect(hangulStems("검색")).toEqual([]);
+  });
+});
+
 describe("hangulTermQuery", () => {
   test("ORs bigram and character phrases of the stem and the word", () => {
     expect(hangulTermQuery("검색을")).toBe('("검색" OR "검 색" OR "검색 색을" OR "검 색 을")');
     expect(hangulTermQuery("문서에서")).toBe('("문서" OR "문 서" OR "문서 서에 에서" OR "문 서 에 서")');
     expect(hangulTermQuery("나누기")).toBe('("나누" OR "나 누" OR "나누 누기" OR "나 누 기")');
+    expect(hangulTermQuery("검색하기")).toBe('("검색" OR "검 색" OR "검색 색하 하기" OR "검 색 하 기")');
   });
 
   test("unstrippable words keep bigram OR character phrase", () => {

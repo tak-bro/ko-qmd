@@ -170,7 +170,10 @@ async function runQuery(
   query: BenchmarkQuery,
   collection?: string,
 ): Promise<BackendResult> {
-  const limit = Math.max(query.expected_in_top_k, 10);
+  // A fixture entry missing expected_in_top_k used to make limit NaN, and every backend
+  // returned zero results with no error — the fixture looked like a retrieval failure.
+  const expectedInTopK = query.expected_in_top_k ?? query.expected_files.length;
+  const limit = Math.max(Number.isFinite(expectedInTopK) ? expectedInTopK : 0, 10);
   const start = Date.now();
 
   let resultFiles: string[];
@@ -196,7 +199,7 @@ async function runQuery(
   }
 
   const latency_ms = Date.now() - start;
-  const scores = scoreResults(resultFiles, query.expected_files, query.expected_in_top_k);
+  const scores = scoreResults(resultFiles, query.expected_files, expectedInTopK);
 
   return {
     ...scores,

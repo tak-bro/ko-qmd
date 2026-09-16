@@ -10,6 +10,15 @@
   unchanged at 0.6528. Numbers and caveats in
   `test/fixtures/ko-vault/BASELINE.md`.
 - README.md states what this distribution is and links README.ko.md.
+- Hangul lex queries also strip a verbal or nominalizing ending (`토큰화하는` →
+  `토큰화`, `검색하기` → `검색`) and unwind a two-particle chain (`청킹에서의` →
+  `청킹`). ko-vault bench `bm25_r5` 0.6635 → 0.7212 on a 52-query goldset, with
+  the original 36 queries unchanged at 0.6528.
+- ko-vault goldset grew 36 → 52 with particle chains, verb endings and joined
+  compounds.
+- `qmd bench` no longer needs `expected_in_top_k` on every fixture entry. It was
+  required in practice: omitting it made the result limit NaN and every backend
+  returned zero results with no error.
 
 ## [2.8.3-ko.0] - 2026-09-16
 

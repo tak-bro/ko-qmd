@@ -18,7 +18,7 @@ export interface BenchmarkQuery {
   /** File paths (relative to collection) that should appear in results */
   expected_files: string[];
   /** How many of expected_files should appear in top-k results */
-  expected_in_top_k: number;
+  expected_in_top_k?: number;
 }
 
 export interface BenchmarkFixture {

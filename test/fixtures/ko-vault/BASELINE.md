@@ -90,3 +90,28 @@ Qwen3 takes vector recall@5 to 1.0000 on this fixture (embeddinggemma misses one
 follows it up by the same query. `full_mrr` moves down 0.0046 — inside the run-to-run spread this
 fixture shows for hybrid, so it is not evidence either way. BM25 is untouched, as expected: the
 model has no part in the lex path.
+
+## Goldset 36 → 52, endings and particle chains (2026-09-16)
+
+16 harder Korean queries (`ko-01`…`ko-16`): particle chains (`청킹에서의`), verb endings
+(`토큰화하는`, `검색하기`), joined compounds (`출처추적`, `하이브리드검색`), compound + particle
+(`간격반복으로`). Same run, Qwen3 embeddings, 52 queries:
+
+```
+RESULT bm25_r5=0.6635 vector_r5=1.0000 hybrid_r5=0.9904 full_r5=0.9808 full_mrr=0.9551   # before
+RESULT bm25_r5=0.7212 vector_r5=1.0000 hybrid_r5=0.9904 full_r5=0.9808 full_mrr=0.9359   # after
+```
+
+The change: `hangulStems` strips a verbal/nominalizing ending (하는·하기·된다 …) before particles,
+then repeats once, so `청킹에서의` reaches `청킹` and `검색하기` reaches `검색` instead of `검색하`.
+`ko-05`, `ko-10`, `ko-11` flip from 0 to 1. Split by subset: the original 36 stay at
+`bm25_r5=0.6528` (no regression, same per-query values), the 16 new ones reach `0.8750`.
+
+Still lex-missing by design: every `sem-*`/`cro-*` query (paraphrases with no shared term — vector's
+job) plus `ko-13`·`ko-14`, where the shared words are inflected verbs (`더하는` vs `더해`) that stem
+stripping does not bridge.
+
+Bench bug found while writing the fixture: a query entry without `expected_in_top_k` made
+`limit` NaN in `src/bench/bench.ts`, and every backend returned zero results with no error — the
+fixture looked like a total retrieval failure. The field is optional now and falls back to
+`expected_files.length`.

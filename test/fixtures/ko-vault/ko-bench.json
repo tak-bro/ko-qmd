@@ -367,6 +367,166 @@
         "wiki/provenance-tracking.md"
       ],
       "expected_in_top_k": 1
+    },
+    {
+      "id": "ko-01",
+      "type": "exact",
+      "query": "조사를",
+      "expected_files": [
+        "wiki/korean-morphology.md"
+      ],
+      "description": "ko:particle — 목적격 조사",
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ko-02",
+      "type": "exact",
+      "query": "형태소로",
+      "expected_files": [
+        "wiki/korean-morphology.md"
+      ],
+      "description": "ko:particle — 부사격 조사",
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ko-03",
+      "type": "exact",
+      "query": "역색인에서",
+      "expected_files": [
+        "wiki/inverted-index.md"
+      ],
+      "description": "ko:particle — 처소격 조사",
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ko-04",
+      "type": "exact",
+      "query": "골드셋으로",
+      "expected_files": [
+        "wiki/golden-dataset.md"
+      ],
+      "description": "ko:particle — 도구격 조사",
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ko-05",
+      "type": "exact",
+      "query": "청킹에서의",
+      "expected_files": [
+        "wiki/chunking-strategy.md"
+      ],
+      "description": "ko:particle-chain — 조사 둘",
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ko-06",
+      "type": "exact",
+      "query": "출처추적",
+      "expected_files": [
+        "wiki/provenance-tracking.md"
+      ],
+      "description": "ko:spacing — 붙여 쓴 복합어",
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ko-07",
+      "type": "exact",
+      "query": "린트자동화",
+      "expected_files": [
+        "wiki/lint-automation.md"
+      ],
+      "description": "ko:spacing — 붙여 쓴 복합어",
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ko-08",
+      "type": "exact",
+      "query": "쿼리확장은",
+      "expected_files": [
+        "wiki/query-expansion.md"
+      ],
+      "description": "ko:spacing+particle",
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ko-09",
+      "type": "exact",
+      "query": "회의록을",
+      "expected_files": [
+        "wiki/meeting-notes-workflow.md"
+      ],
+      "description": "ko:particle — 목적격",
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ko-10",
+      "type": "exact",
+      "query": "토큰화하는",
+      "expected_files": [
+        "wiki/ngram-tokenization.md"
+      ],
+      "description": "ko:verb-ending — 하는",
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ko-11",
+      "type": "exact",
+      "query": "검색하기",
+      "expected_files": [
+        "wiki/hybrid-search.md"
+      ],
+      "description": "ko:verb-ending — 하기",
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ko-12",
+      "type": "exact",
+      "query": "재현율은",
+      "expected_files": [
+        "wiki/recall-at-k.md"
+      ],
+      "description": "ko:particle — 주제 보조사",
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ko-13",
+      "type": "topical",
+      "query": "순위 역수를 더하는 융합",
+      "expected_files": [
+        "wiki/reciprocal-rank-fusion.md"
+      ],
+      "description": "ko:phrase — 조사 포함 서술",
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ko-14",
+      "type": "topical",
+      "query": "조사를 떼는 처리가 필요한 언어",
+      "expected_files": [
+        "wiki/korean-morphology.md"
+      ],
+      "description": "ko:phrase — 조사 연쇄",
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ko-15",
+      "type": "alias",
+      "query": "하이브리드검색",
+      "expected_files": [
+        "wiki/hybrid-search.md"
+      ],
+      "description": "ko:spacing — alias 붙여 쓰기",
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ko-16",
+      "type": "alias",
+      "query": "간격반복으로",
+      "expected_files": [
+        "wiki/spaced-repetition.md"
+      ],
+      "description": "ko:spacing+particle",
+      "expected_in_top_k": 1
     }
   ]
 }
