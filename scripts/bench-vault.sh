@@ -9,7 +9,7 @@
 # tmp/real-bench/<vault name>/. Lex-only by default — pass --embed to also measure the vector
 # and hybrid backends (slow: it embeds every document).
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 vault="$1"; bench="$2"; shift 2
 name="$(basename "$vault")"
