@@ -250,5 +250,23 @@ moves with it: `bm25_r5` 0.7404 → 0.9519, because its `sem-*`/`cro-*` paraphra
 failing on the same AND. `full_r5` stays 1.0000; `hybrid_r5` 1.0000 → 0.9904, one query inside a
 52-query fixture.
 
-`sem` at 0.750 is where the remaining work is: 4 of 16 paraphrases find nothing in the top 5 by
-any backend, and lex is at 0.250 there by construction.
+`sem` at 0.750 is a hybrid-only number, and re-measuring it per query says most of that gap is
+already closed downstream. Per backend on the same 16 queries:
+
+```
+sem r@5      bm25 0.250  vector 0.688  hybrid 0.750  full 0.938
+```
+
+Four queries miss the hybrid top 5, but three of them — `sem-009`, `sem-010`, `sem-014` — come
+back inside the top 5 under `full`, at ranks 3, 2 and 4. For those, hybrid has the right document
+in the candidate pool and orders it badly; expansion and reranking fix the order. `qmd query` is
+the product path, so they are not failures a retrieval weight should be tuned against.
+
+One query fails everywhere. `sem-004` ("설정 파일에 다 적어놓으면 에이전트가 오히려 산만해진다는 게
+무슨 원리인가요") should land on `claude-md-minimalism.md`, and neither `설정 파일` nor `산만`
+appears in that document — it says `CLAUDE.md` and talks in context-budget terms from the title
+down. The gap is vocabulary, between how a question is asked and how the note is written, and no
+RRF weight reaches it. Closing it means giving documents plain-language surface to match against
+(a summary field, aliases), which is indexing work, not ranking work.
+
+lex is at 0.250 on this bucket by construction.
