@@ -2780,7 +2780,9 @@ describe("Reciprocal Rank Fusion", () => {
     const semanticWeights = getHybridRrfWeights(rankedListMeta);
     const fixedOrder = reciprocalRankFusion(rankedLists, semanticWeights);
 
-    expect(semanticWeights).toEqual([2.0, 1.0, 2.0]);
+    // ko-qmd weights: vector lists count half (VEC_LIST_WEIGHT) and expansion lists 0.75, so
+    // the original vector list still outranks a lex expansion the way upstream intended.
+    expect(semanticWeights).toEqual([2.0, 0.75, 1.0]);
     expect(fixedOrder.findIndex(r => r.file === "original-vector.md"))
       .toBeLessThan(fixedOrder.findIndex(r => r.file === "lex-expansion-only.md"));
   });

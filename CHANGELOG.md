@@ -17,6 +17,18 @@
 - Hangul stems also cover a bare `한`/`된` ending (`필요한` → `필요`) and the
   하↔해 contraction (`더하` ↔ `더해`), so a query stem meets the contracted spelling
   documents actually use. `bm25_r5` 0.7212 → 0.7404, hybrid and full 1.0000.
+- Long Korean queries no longer return nothing. `searchFTS` retries the same
+  terms ORed when the strict AND matches no document at all (three terms
+  minimum). A natural question is a sentence, and requiring every word of it
+  present matched nothing: on a 30-query Korean paraphrase goldset lex recall@5
+  was 0.0000 and is now 0.5667. The synthetic ko-vault fixture moves with it,
+  `bm25_r5` 0.7404 → 0.9519.
+- Hybrid RRF weights rebalanced for Korean: vector lists count half, relaxed
+  (ORed) lex lists count half again and never count as a strong signal, and
+  expansion-derived lists move 1.0 → 0.75 so the original query's vector list
+  still outranks a lex expansion. Hybrid recall@5 on 240 exact-phrase queries
+  0.9167 → 0.9583, on the paraphrase goldset 0.8333 → 0.8667. Sweep and caveats
+  in `test/fixtures/ko-vault/BASELINE.md`.
 - Hangul lex queries split script-mixed terms into runs and AND them
   (`SKILL.md계약의핵심` → `skill` AND `md` AND `계약의핵심`). Before this the glued
   token was one phrase that matches nothing, and the hyphen/dot branches kept the

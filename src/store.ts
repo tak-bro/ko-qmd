@@ -2426,6 +2426,7 @@ export function handelize(path: string): string {
 export type SearchResult = DocumentResult & {
   score: number;              // Relevance score (0-1)
   source: "fts" | "vec";      // Search source (full-text or vector)
+  matchMode?: "all" | "any";  // ko-qmd: "any" marks a relaxed FTS retry (weaker evidence)
   chunkPos?: number;          // Character position of matching chunk (for vector search)
 };
 
@@ -3893,7 +3894,16 @@ function sanitizeDottedTerm(term: string): string {
  *   DEC-0054               → "dec 0054"
  *   -multi-agent            → NOT "multi agent"
  */
-function buildFTS5Query(query: string): string | null {
+/**
+ * ko-qmd: how the positive terms are joined.
+ *
+ * "all" is the upstream behaviour (every term must appear). "any" is the relaxed retry that
+ * searchFTS falls back to when "all" finds nothing — a Korean question is a sentence, and
+ * requiring all of its words present means a natural long query returns zero documents.
+ */
+type TermJoin = "all" | "any";
+
+function buildFTS5Query(query: string, join: TermJoin = "all"): string | null {
   const positive: string[] = [];
   const negative: string[] = [];
 
@@ -4001,8 +4011,11 @@ function buildFTS5Query(query: string): string | null {
   // If only negative terms, we can't search (FTS5 NOT is binary)
   if (positive.length === 0) return null;
 
-  // Join positive terms with AND
-  let result = positive.join(' AND ');
+  // ko-qmd: the relaxed retry needs at least three terms — with one or two, OR is close to
+  // dropping the query's words rather than loosening them.
+  if (join === "any" && positive.length < 3) return null;
+
+  let result = join === "any" ? `(${positive.join(' OR ')})` : positive.join(' AND ');
 
   // Add NOT clause for negative terms
   for (const neg of negative) {
@@ -4071,72 +4084,83 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
 
   const ftsQuery = buildFTS5Query(query);
   if (!ftsQuery) return [];
+  const runMatch = (match: string, matchMode: TermJoin): SearchResult[] => {
 
-  // Use a CTE to force FTS5 to run first, then filter by collection.
-  // Without the CTE, SQLite's query planner combines FTS5 MATCH with the
-  // collection filter in a single WHERE clause, which can cause it to
-  // abandon the FTS5 index and fall back to a full scan — turning an 8ms
-  // query into a 17-second query on large collections.
-  const params: (string | number)[] = [ftsQuery];
+    // Use a CTE to force FTS5 to run first, then filter by collection.
+    // Without the CTE, SQLite's query planner combines FTS5 MATCH with the
+    // collection filter in a single WHERE clause, which can cause it to
+    // abandon the FTS5 index and fall back to a full scan — turning an 8ms
+    // query into a 17-second query on large collections.
+    const params: (string | number)[] = [match];
 
-  // When filtering by collection, fetch extra candidates from the FTS index
-  // since some will be filtered out. Without a collection filter we can
-  // fetch exactly the requested limit.
-  const ftsLimit = collectionFilter ? limit * 10 : limit;
+    // When filtering by collection, fetch extra candidates from the FTS index
+    // since some will be filtered out. Without a collection filter we can
+    // fetch exactly the requested limit.
+    const ftsLimit = collectionFilter ? limit * 10 : limit;
 
-  let sql = `
-    WITH fts_matches AS (
-      SELECT rowid, bm25(documents_fts, 1.5, 4.0, 1.0) as bm25_score
-      FROM documents_fts
-      WHERE documents_fts MATCH ?
-      ORDER BY bm25_score ASC
-      LIMIT ${ftsLimit}
-    )
-    SELECT
-      'qmd://' || d.collection || '/' || d.path as filepath,
-      d.collection || '/' || d.path as display_path,
-      d.title,
-      content.doc as body,
-      d.hash,
-      fm.bm25_score
-    FROM fts_matches fm
-    JOIN documents d ON d.id = fm.rowid
-    JOIN content ON content.hash = d.hash
-    WHERE d.active = 1
-  `;
+    let sql = `
+      WITH fts_matches AS (
+        SELECT rowid, bm25(documents_fts, 1.5, 4.0, 1.0) as bm25_score
+        FROM documents_fts
+        WHERE documents_fts MATCH ?
+        ORDER BY bm25_score ASC
+        LIMIT ${ftsLimit}
+      )
+      SELECT
+        'qmd://' || d.collection || '/' || d.path as filepath,
+        d.collection || '/' || d.path as display_path,
+        d.title,
+        content.doc as body,
+        d.hash,
+        fm.bm25_score
+      FROM fts_matches fm
+      JOIN documents d ON d.id = fm.rowid
+      JOIN content ON content.hash = d.hash
+      WHERE d.active = 1
+    `;
 
-  if (collectionFilter) {
-    sql += ` AND d.collection = ?`;
-    params.push(String(collectionFilter));
-  }
+    if (collectionFilter) {
+      sql += ` AND d.collection = ?`;
+      params.push(String(collectionFilter));
+    }
 
-  // bm25 lower is better; sort ascending.
-  sql += ` ORDER BY fm.bm25_score ASC LIMIT ?`;
-  params.push(limit);
+    // bm25 lower is better; sort ascending.
+    sql += ` ORDER BY fm.bm25_score ASC LIMIT ?`;
+    params.push(limit);
 
-  const rows = db.prepare(sql).all(...params) as { filepath: string; display_path: string; title: string; body: string; hash: string; bm25_score: number }[];
-  return rows.map(row => {
-    const collectionName = row.filepath.split('//')[1]?.split('/')[0] || "";
-    // Convert bm25 (negative, lower is better) into a stable [0..1) score where higher is better.
-    // FTS5 BM25 scores are negative (e.g., -10 is strong, -2 is weak).
-    // |x| / (1 + |x|) maps: strong(-10)→0.91, medium(-2)→0.67, weak(-0.5)→0.33, none(0)→0.
-    // Monotonic and query-independent — no per-query normalization needed.
-    const score = Math.abs(row.bm25_score) / (1 + Math.abs(row.bm25_score));
-    return {
-      filepath: row.filepath,
-      displayPath: row.display_path,
-      title: row.title,
-      hash: row.hash,
-      docid: getDocid(row.hash),
-      collectionName,
-      modifiedAt: "",  // Not available in FTS query
-      bodyLength: row.body.length,
-      body: row.body,
-      context: getContextForFile(db, row.filepath),
-      score,
-      source: "fts" as const,
-    };
-  });
+    const rows = db.prepare(sql).all(...params) as { filepath: string; display_path: string; title: string; body: string; hash: string; bm25_score: number }[];
+    return rows.map(row => {
+      const collectionName = row.filepath.split('//')[1]?.split('/')[0] || "";
+      // Convert bm25 (negative, lower is better) into a stable [0..1) score where higher is better.
+      // FTS5 BM25 scores are negative (e.g., -10 is strong, -2 is weak).
+      // |x| / (1 + |x|) maps: strong(-10)→0.91, medium(-2)→0.67, weak(-0.5)→0.33, none(0)→0.
+      // Monotonic and query-independent — no per-query normalization needed.
+      const score = Math.abs(row.bm25_score) / (1 + Math.abs(row.bm25_score));
+      return {
+        filepath: row.filepath,
+        displayPath: row.display_path,
+        title: row.title,
+        hash: row.hash,
+        docid: getDocid(row.hash),
+        collectionName,
+        modifiedAt: "",  // Not available in FTS query
+        bodyLength: row.body.length,
+        body: row.body,
+        context: getContextForFile(db, row.filepath),
+        score,
+        source: "fts" as const,
+        matchMode,
+      };
+    });
+  };
+
+  const strict = runMatch(ftsQuery, "all");
+  if (strict.length > 0) return strict;
+  // ko-qmd: a Korean question is a sentence, and ANDing its words means a natural long query
+  // matches nothing at all. Retry the same terms ORed. Only reached when the strict query
+  // already returned nothing, so this cannot dilute a result that existed.
+  const relaxed = buildFTS5Query(query, "any");
+  return relaxed ? runMatch(relaxed, "any") : [];
 }
 
 // =============================================================================
@@ -5427,7 +5451,37 @@ export type RankedListMeta = {
   source: "fts" | "vec";
   queryType: "original" | "lex" | "vec" | "hyde";
   query: string;
+  relaxed?: boolean;  // ko-qmd: list came from the relaxed (ORed) FTS retry
 };
+
+/**
+ * ko-qmd: vector lists count half against lex lists in RRF.
+ *
+ * RRF at k=60 makes a rank-1 vector hit worth almost exactly what a rank-1 lex hit is worth,
+ * so on a query whose words are literally in the document the vector list pulls weaker
+ * candidates past the right answer. Measured on 232 Korean wiki documents, 240 exact-phrase
+ * queries: hybrid recall@5 0.9167 at full weight, 0.9542 at half — above lex alone (0.9333).
+ * The 30-query paraphrase goldset, where lex scores 0.0000 and vector carries the whole
+ * result, is unchanged at 0.8333 for every weight down to 0.25, so this buys the exact-query
+ * case without spending the semantic one. Dropping vector to 0 does cost it (0.7667).
+ */
+const VEC_LIST_WEIGHT = 0.5;
+
+/**
+ * ko-qmd: weight of an FTS list that came from the relaxed retry (searchFTS `matchMode: "any"`).
+ * Halving it keeps the fallback from taking over a paraphrase query, where partial word overlap
+ * is the only thing it has and the vector list is the better evidence.
+ */
+const RELAXED_LIST_WEIGHT = 0.5;
+
+/**
+ * ko-qmd: weight of an expansion-derived list, lowered from upstream's 1.0.
+ *
+ * Halving the vector lists (VEC_LIST_WEIGHT) would otherwise put the original query's vector
+ * list level with a lex expansion, and upstream's rule — original-query evidence outranks
+ * anything the expander invented — would decide by insertion order instead of by weight.
+ */
+const EXPANSION_LIST_WEIGHT = 0.75;
 
 /**
  * RRF list weights for hybridQuery.
@@ -5441,7 +5495,13 @@ export type RankedListMeta = {
  * original vector boost.
  */
 export function getHybridRrfWeights(rankedListMeta: RankedListMeta[]): number[] {
-  return rankedListMeta.map(meta => meta.queryType === "original" ? 2.0 : 1.0);
+  return rankedListMeta.map(meta => {
+    const base = meta.queryType === "original" ? 2.0 : EXPANSION_LIST_WEIGHT;
+    const weight = meta.source === "vec" ? base * VEC_LIST_WEIGHT : base;
+    // A relaxed list only says "some of the words appear", so it must not outrank a vector
+    // list that matched the whole question.
+    return meta.relaxed ? weight * RELAXED_LIST_WEIGHT : weight;
+  });
 }
 
 /**
@@ -5486,7 +5546,8 @@ export async function hybridQuery(
   const initialFts = store.searchFTS(query, 20, collection);
   const topScore = initialFts[0]?.score ?? 0;
   const secondScore = initialFts[1]?.score ?? 0;
-  const hasStrongSignal = !intent && initialFts.length > 0
+  // ko-qmd: a relaxed match is never a strong signal — it did not match all the words.
+  const hasStrongSignal = !intent && initialFts.length > 0 && initialFts[0]?.matchMode !== "any"
     && topScore >= STRONG_SIGNAL_MIN_SCORE
     && (topScore - secondScore) >= STRONG_SIGNAL_MIN_GAP;
 
@@ -5508,7 +5569,10 @@ export async function hybridQuery(
       file: r.filepath, displayPath: r.displayPath,
       title: r.title, body: r.body || "", score: r.score,
     })));
-    rankedListMeta.push({ source: "fts", queryType: "original", query });
+    rankedListMeta.push({
+      source: "fts", queryType: "original", query,
+      relaxed: initialFts[0]?.matchMode === "any",
+    });
   }
 
   // Step 3: Route searches by query type
@@ -5527,7 +5591,10 @@ export async function hybridQuery(
           file: r.filepath, displayPath: r.displayPath,
           title: r.title, body: r.body || "", score: r.score,
         })));
-        rankedListMeta.push({ source: "fts", queryType: "lex", query: q.query });
+        rankedListMeta.push({
+          source: "fts", queryType: "lex", query: q.query,
+          relaxed: ftsResults[0]?.matchMode === "any",
+        });
       }
     }
   }
@@ -5930,6 +5997,7 @@ export async function structuredSearch(
             source: "fts",
             queryType: "lex",
             query: search.query,
+            relaxed: ftsResults[0]?.matchMode === "any",
           });
         }
       }
