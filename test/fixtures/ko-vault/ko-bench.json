@@ -1,0 +1,372 @@
+{
+  "description": "Synthetic Korean vault search benchmark (A2). Distribution exact 7 / alias 11 / semantic 11 / topical 4 / cross-domain 3. Korean-specific kinds tagged in query description as ko:particle, ko:spacing, ko:alias.",
+  "version": 1,
+  "collection": "ko-vault",
+  "queries": [
+    {
+      "id": "exa-01",
+      "query": "역색인",
+      "type": "exact",
+      "description": "어간 그대로 — 자료구조 이름",
+      "expected_files": [
+        "wiki/inverted-index.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "exa-02",
+      "query": "골드셋",
+      "type": "exact",
+      "description": "어간 그대로 — 평가 목록",
+      "expected_files": [
+        "wiki/golden-dataset.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "exa-03",
+      "query": "청킹",
+      "type": "exact",
+      "description": "어간 그대로 — 문서 분할",
+      "expected_files": [
+        "wiki/chunking-strategy.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "exa-04",
+      "query": "간격 반복",
+      "type": "exact",
+      "description": "어간 그대로 — 학습 방법",
+      "expected_files": [
+        "wiki/spaced-repetition.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "exa-05",
+      "query": "의사결정 기록",
+      "type": "exact",
+      "description": "어간 그대로 — 결정 문서 형식",
+      "expected_files": [
+        "wiki/decision-record.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "exa-06",
+      "query": "프론트매터",
+      "type": "exact",
+      "description": "어간 그대로 — YAML 메타데이터",
+      "expected_files": [
+        "wiki/frontmatter-metadata.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "exa-07",
+      "query": "제텔카스텐",
+      "type": "exact",
+      "description": "어간 그대로 — 카드 기반 지식 관리",
+      "expected_files": [
+        "wiki/zettelkasten.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ali-01",
+      "query": "inverted index",
+      "type": "alias",
+      "description": "ko:alias en→ko — 영문 용어로 한국어 본문 문서 찾기",
+      "expected_files": [
+        "wiki/inverted-index.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ali-02",
+      "query": "reranker",
+      "type": "alias",
+      "description": "ko:alias en→ko — 리랭커 영문 표기",
+      "expected_files": [
+        "wiki/cross-encoder-reranking.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ali-03",
+      "query": "embedding model",
+      "type": "alias",
+      "description": "ko:alias en→ko — 임베딩 영문 표기",
+      "expected_files": [
+        "wiki/vector-embedding.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ali-04",
+      "query": "ADR",
+      "type": "alias",
+      "description": "ko:alias 약어 — Architecture Decision Record",
+      "expected_files": [
+        "wiki/decision-record.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ali-05",
+      "query": "RAG",
+      "type": "alias",
+      "description": "ko:alias 약어 — 검색 증강 생성",
+      "expected_files": [
+        "wiki/retrieval-augmented-generation.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ali-06",
+      "query": "검색 증강 생성",
+      "type": "alias",
+      "description": "ko:alias ko 풀이 — RAG 한국어 번역어",
+      "expected_files": [
+        "wiki/retrieval-augmented-generation.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ali-07",
+      "query": "상호 순위 융합",
+      "type": "alias",
+      "description": "ko:alias ko 번역어 — RRF",
+      "expected_files": [
+        "wiki/reciprocal-rank-fusion.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ali-08",
+      "query": "provenance",
+      "type": "alias",
+      "description": "ko:alias en→ko — 출처 추적",
+      "expected_files": [
+        "wiki/provenance-tracking.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ali-09",
+      "query": "Zettelkasten",
+      "type": "alias",
+      "description": "ko:alias en→ko — 제텔카스텐 원어",
+      "expected_files": [
+        "wiki/zettelkasten.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ali-10",
+      "query": "형태소 분석",
+      "type": "alias",
+      "description": "ko:alias ko 용어 — Korean Morphology 슬러그",
+      "expected_files": [
+        "wiki/korean-morphology.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ali-11",
+      "query": "spaced repetition",
+      "type": "alias",
+      "description": "ko:alias en→ko — 간격 반복 원어",
+      "expected_files": [
+        "wiki/spaced-repetition.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "sem-01",
+      "query": "역색인을 만드는 방법",
+      "type": "semantic",
+      "description": "ko:particle 목적격 조사 '을' 결합",
+      "expected_files": [
+        "wiki/inverted-index.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "sem-02",
+      "query": "임베딩으로 의미가 비슷한 문장 찾기",
+      "type": "semantic",
+      "description": "ko:particle 조사 '으로' + 패러프레이즈",
+      "expected_files": [
+        "wiki/vector-embedding.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "sem-03",
+      "query": "조사를 떼어 내는 처리",
+      "type": "semantic",
+      "description": "ko:particle 조사·활용형 — 교착어 처리",
+      "expected_files": [
+        "wiki/korean-morphology.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "sem-04",
+      "query": "원본을 고치지 않고 새 파일만 더하는 규칙",
+      "type": "semantic",
+      "description": "ko:particle 패러프레이즈 — 추가 전용",
+      "expected_files": [
+        "wiki/append-only-archive.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "sem-05",
+      "query": "하이브리드검색",
+      "type": "semantic",
+      "description": "ko:spacing 띄어쓰기 누락",
+      "expected_files": [
+        "wiki/hybrid-search.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "sem-06",
+      "query": "간격반복 복습 주기",
+      "type": "semantic",
+      "description": "ko:spacing 띄어쓰기 누락 + 동의어",
+      "expected_files": [
+        "wiki/spaced-repetition.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "sem-07",
+      "query": "긴 문서를 조각으로 나누기",
+      "type": "semantic",
+      "description": "패러프레이즈 — 청킹 동의 표현",
+      "expected_files": [
+        "wiki/chunking-strategy.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "sem-08",
+      "query": "후보 문서의 순서를 다시 매기는 단계",
+      "type": "semantic",
+      "description": "ko:particle 패러프레이즈 — 리랭킹",
+      "expected_files": [
+        "wiki/cross-encoder-reranking.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "sem-09",
+      "query": "녹음 받아쓰기를 정리해 결정과 할 일을 남기기",
+      "type": "semantic",
+      "description": "ko:particle 패러프레이즈 — 회의록",
+      "expected_files": [
+        "wiki/meeting-notes-workflow.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "sem-10",
+      "query": "사전 없이 부분 일치 검색이 되는 색인",
+      "type": "semantic",
+      "description": "패러프레이즈 — n-gram",
+      "expected_files": [
+        "wiki/ngram-tokenization.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "sem-11",
+      "query": "정답 문서가 상위 몇 개 안에 들었는지 비율",
+      "type": "semantic",
+      "description": "ko:particle 패러프레이즈 — 평가 지표",
+      "expected_files": [
+        "wiki/recall-at-k.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "top-01",
+      "query": "검색 품질 평가",
+      "type": "topical",
+      "description": "토픽 질의 — 평가 축",
+      "expected_files": [
+        "wiki/recall-at-k.md",
+        "wiki/golden-dataset.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "top-02",
+      "query": "문서 규칙 위반 검사",
+      "type": "topical",
+      "description": "토픽 질의 — 운영 검사",
+      "expected_files": [
+        "wiki/lint-automation.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "top-03",
+      "query": "개인 지식 관리 방법",
+      "type": "topical",
+      "description": "토픽 질의 — PKM",
+      "expected_files": [
+        "wiki/zettelkasten.md",
+        "wiki/spaced-repetition.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "top-04",
+      "query": "주제별 상위 색인 페이지",
+      "type": "topical",
+      "description": "토픽 질의 — 토픽 맵",
+      "expected_files": [
+        "wiki/topic-map.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "cro-01",
+      "query": "키워드 검색과 벡터 검색 결과를 합치는 공식",
+      "type": "cross-domain",
+      "description": "여러 문서 — 하이브리드 + RRF",
+      "expected_files": [
+        "wiki/hybrid-search.md",
+        "wiki/reciprocal-rank-fusion.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "cro-02",
+      "query": "한국어 검색에서 조사 문제를 글자 조각 색인으로 해결",
+      "type": "cross-domain",
+      "description": "ko:particle 여러 문서 — 형태소 + n-gram",
+      "expected_files": [
+        "wiki/korean-morphology.md",
+        "wiki/ngram-tokenization.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "cro-03",
+      "query": "클리핑을 wiki로 정리할 때 원본 경로 남기기",
+      "type": "cross-domain",
+      "description": "여러 문서 — 수집 + 출처",
+      "expected_files": [
+        "wiki/ingest-pipeline.md",
+        "wiki/provenance-tracking.md"
+      ],
+      "expected_in_top_k": 1
+    }
+  ]
+}

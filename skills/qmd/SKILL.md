@@ -243,6 +243,27 @@ qmd query $'intent: Find the customer proximity concept, not generic customer de
 qmd search "six-week cadence WhatsApp merchant relationships Shawn Ryan" -c sources -n 10
 ```
 
+### Korean queries
+
+BM25 ANDs every `lex:` term. One inflected Korean word the document does not
+contain (`만드는`, `정리해`, `들었는지`) zeroes the whole lex sub-query. QMD strips
+one trailing particle or `기` from a plain Hangul word (`검색을` → `검색`) and
+indexes syllable bigrams, but it does not undo verb endings.
+
+- **`lex:` gets stems, aliases and English terms.** Write nouns and stems
+  (`회의록 정리`, not `회의록을 정리해`). Add the page's aliases or English/romanized
+  names as separate sub-queries (`lex: 벡터 검색`, `lex: vector search`).
+- **`vec:` gets a Korean paraphrase.** Full sentences are fine here — the default
+  embedding model (Qwen3-Embedding-0.6B) is multilingual.
+- **Do not paste the user's sentence into `lex:`.** Particles and endings stay in
+  the sentence; keep them out of lex terms.
+- **Quote only exact phrases.** `"검색 품질"` matches that character sequence and
+  skips stem handling.
+
+```bash
+qmd query $'intent: 팀 회의록을 정리하는 방법 문서\nlex: 회의록 정리\nlex: meeting notes\nvec: 회의 내용을 요약해서 기록하는 절차'
+```
+
 ## Setup and maintenance
 
 Only mutate indexes when the user asked for setup or maintenance. Searching and
