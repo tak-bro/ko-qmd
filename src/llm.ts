@@ -209,10 +209,14 @@ export type EmbedOptions = {
 };
 
 /**
- * Options for text generation
+ * Options for text generation.
+ *
+ * The model is not one of them: it belongs to the LlamaCpp instance, set once at construction from
+ * `generateModel`. This type used to carry a `model` field that `generate` never read, so a caller
+ * asking for a different model got the instance's model back with no error — construct a second
+ * LlamaCpp instead.
  */
 export type GenerateOptions = {
-  model?: string;
   maxTokens?: number;
   temperature?: number;
 };

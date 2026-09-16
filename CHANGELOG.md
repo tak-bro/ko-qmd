@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changes
+
+- `GenerateOptions` no longer has a `model` field. `LlamaCpp.generate` never read
+  it: the model is fixed per instance from `generateModel` at construction, so a
+  caller passing `model` got the instance's model back with no error and no
+  indication the request was dropped. Construct a second `LlamaCpp` to generate
+  with a different model. Nothing in the package passed the field.
+
 ### Fixes
 
 - The release pre-push hook reads CI from the remote being pushed to. It asked
