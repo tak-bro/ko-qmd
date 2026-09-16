@@ -4,6 +4,13 @@
 
 ### Changes
 
+- New bench tooling: `scripts/bench-vault-paraphrase.ts` builds a paraphrase
+  goldset from a vault by asking a local model, through ollama, for the question
+  someone would type when they do not know the vocabulary a document is written
+  in. The existing `bench-vault-goldset.mjs` harvests the document's own words,
+  which measures lexical matching; this measures the case that fails it. Every
+  candidate passes four mechanical gates and a separate verification call that
+  rejects fluent questions about things the document does not discuss.
 - `GenerateOptions` no longer has a `model` field. `LlamaCpp.generate` never read
   it: the model is fixed per instance from `generateModel` at construction, so a
   caller passing `model` got the instance's model back with no error and no
