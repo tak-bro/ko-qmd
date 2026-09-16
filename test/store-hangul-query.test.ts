@@ -40,6 +40,15 @@ describe("hangulStems", () => {
     expect(hangulStems("검색하기")).toEqual(["검색"]);
   });
 
+  test("offers the 하/해 contraction of a stem", () => {
+    expect(hangulStems("더하는")).toEqual(["더하", "더해"]);
+  });
+
+  test("strips a bare 한 when the stem survives", () => {
+    expect(hangulStems("필요한")).toEqual(["필요"]);
+    expect(hangulStems("무한")).toEqual([]);
+  });
+
   test("unwinds a two-particle chain", () => {
     expect(hangulStems("청킹에서의")).toEqual(["청킹에서", "청킹"]);
   });

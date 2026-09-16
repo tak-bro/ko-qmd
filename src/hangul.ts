@@ -19,8 +19,9 @@ const SUFFIXES = [
 // Longest first, and always tried before SUFFIXES so `하기` wins over bare `기`.
 const ENDINGS = [
   "하려는", "되려는", "하면서", "되면서",
-  "하는", "하기", "한다", "했다", "하며", "하고", "하여", "해서", "하지",
-  "되는", "되기", "된다", "됐다", "되며", "되고", "되어", "돼서",
+  "하는", "하기", "한다", "했다", "하며", "하고", "하여", "해서", "하지", "하다",
+  "되는", "되기", "된다", "됐다", "되며", "되고", "되어", "돼서", "되다",
+  "한", "된",
 ];
 
 const MIN_STEM_SYLLABLES = 2;
@@ -86,7 +87,19 @@ export function hangulStems(word: string): string[] {
     stems.push(next);
     current = next;
   }
-  return stems;
+  return [...stems, ...stems.flatMap(contractions)];
+}
+
+/**
+ * 하 ↔ 해 siblings of a stem (`더하` → `더해`). 하다 verbs contract in running
+ * text (`더하여` is written `더해`), so a stem stripped back to 하 would never
+ * meet the contracted spelling the document actually uses. One syllable swap,
+ * no new stripping.
+ */
+function contractions(stem: string): string[] {
+  if (stem.endsWith("하")) return [`${stem.slice(0, -1)}해`];
+  if (stem.endsWith("해")) return [`${stem.slice(0, -1)}하`];
+  return [];
 }
 
 /**

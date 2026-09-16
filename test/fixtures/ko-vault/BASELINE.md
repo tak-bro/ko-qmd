@@ -115,3 +115,20 @@ Bench bug found while writing the fixture: a query entry without `expected_in_to
 `limit` NaN in `src/bench/bench.ts`, and every backend returned zero results with no error — the
 fixture looked like a total retrieval failure. The field is optional now and falls back to
 `expected_files.length`.
+
+### Round 2 — bare 한/된 and the 하/해 contraction
+
+```
+RESULT bm25_r5=0.7212 vector_r5=1.0000 hybrid_r5=0.9904 full_r5=0.9808 full_mrr=0.9359   # before
+RESULT bm25_r5=0.7404 vector_r5=1.0000 hybrid_r5=1.0000 full_r5=1.0000 full_mrr=0.9173   # after
+```
+
+Two lex gaps found by reading the failing AND, not by guessing: `필요한` never met `필요하다` in the
+document (bare `한` was not an ending), and `더하는` stemmed to `더하` while the document writes the
+contraction `더해`. Stems now include the 하↔해 sibling. `ko-13` flips; hybrid and full reach 1.0000.
+The original 36 stay at `bm25_r5=0.6528`; the 16 new ones reach 0.9375.
+
+`ko-14` still misses on lex and always will: the query says `언어`, and the document says `교착어`
+without the word `언어` anywhere. That is a vocabulary gap, which is vector's job, not stemming's.
+`full_mrr` moved 0.9359 → 0.9173 — rank order inside the top 5, within this fixture's run-to-run
+spread.

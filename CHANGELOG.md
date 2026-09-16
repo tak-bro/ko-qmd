@@ -14,6 +14,9 @@
   `토큰화`, `검색하기` → `검색`) and unwind a two-particle chain (`청킹에서의` →
   `청킹`). ko-vault bench `bm25_r5` 0.6635 → 0.7212 on a 52-query goldset, with
   the original 36 queries unchanged at 0.6528.
+- Hangul stems also cover a bare `한`/`된` ending (`필요한` → `필요`) and the
+  하↔해 contraction (`더하` ↔ `더해`), so a query stem meets the contracted spelling
+  documents actually use. `bm25_r5` 0.7212 → 0.7404, hybrid and full 1.0000.
 - ko-vault goldset grew 36 → 52 with particle chains, verb endings and joined
   compounds.
 - `qmd bench` no longer needs `expected_in_top_k` on every fixture entry. It was
