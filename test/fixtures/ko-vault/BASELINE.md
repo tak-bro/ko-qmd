@@ -168,3 +168,30 @@ artifacts, where a URL split mid-token.
 
 Synthetic fixture after the same change, unchanged within run spread:
 `bm25_r5=0.7404 vector_r5=1.0000 hybrid_r5=1.0000 full_r5=1.0000 full_mrr=0.9494`.
+
+### Cross-vault check and what the vector backend actually does here
+
+Same change, same goldset generator, two more real vaults (lex only, after the fix):
+
+| vault | documents | queries | `bm25_r5` |
+| --- | --- | --- | --- |
+| 2nd-brain knowledge | 232 | 240 | 0.9333 |
+| muzly-wiki | 107 | 87 | 0.9770 |
+| ssocio-wiki | 28 | 65 | 1.0000 |
+
+Only the 232-document vault still separates good from bad. The two small ones sit at the ceiling,
+the same way the synthetic fixture did, so they confirm nothing broke but cannot rank anything.
+
+With embeddings on the 232-document vault (`--embed`, Qwen3-Embedding-0.6B, 1512 chunks):
+
+```
+RESULT bm25_r5=0.9333 bm25_r1=0.8625 bm25_mrr=0.8937
+       vector_r5=0.5875 hybrid_r5=0.9208 full_r5=0.9750 full_mrr=0.8877
+```
+
+Hybrid lands *below* bm25 alone — RRF mixes 0.5875-quality vector hits into a lex result that was
+already right. Only `full` (hybrid plus rerank) beats lex. This does not say the vector path is
+weak in general: every query in this goldset is a verbatim phrase from its document, which is lex's
+best case and vector's least useful one. The goldset has no paraphrase queries at all, so the case
+vector exists for is unmeasured here. Read this as "on exact-phrase Korean queries, hybrid costs
+about a point of recall against lex", not as a verdict on hybrid.
