@@ -6,9 +6,16 @@ set -euo pipefail
 # Checks:
 #   1. package.json version matches the tag
 #   2. CHANGELOG.md has a "## [{version}] - {date}" entry
-#   3. CI passed upstream on GitHub for the tagged commit
+#   3. CI passed on GitHub for the tagged commit
 #
 # All failures block the push and write to stderr.
+
+# The repository being pushed to. git passes the remote name as $1 and its URL as $2, and the
+# URL is what the checks must be read from: `gh api repos/{owner}/{repo}` resolves through gh's
+# own remote heuristic, which picked `upstream` (the repo this one was forked from) and answered
+# 422 for every commit that exists only here.
+REMOTE_URL="${2:-$(git remote get-url "${1:-origin}" 2>/dev/null || echo "")}"
+REPO=$(printf '%s' "$REMOTE_URL" | sed -E 's#^(git@[^:]+:|https?://[^/]+/)##; s#\.git$##')
 
 while read -r local_ref local_sha remote_ref remote_sha; do
   # Only validate v* tag pushes
@@ -57,11 +64,24 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     continue
   fi
 
-  CHECK_JSON=$(gh api "repos/{owner}/{repo}/commits/$COMMIT/check-runs" 2>/dev/null || echo "")
+  if [[ -z "$REPO" ]]; then
+    echo >&2 "  CI: skipped (no URL for remote ${1:-origin})"
+    continue
+  fi
+
+  CHECK_JSON=$(gh api "repos/$REPO/commits/$COMMIT/check-runs" 2>/dev/null || echo "")
 
   if [[ -z "$CHECK_JSON" ]]; then
     echo >&2 "  CI: skipped (GitHub API unreachable)"
     continue
+  fi
+
+  # An error body has no total_count. Reporting it as "no runs" is how a misdirected API call
+  # read as "CI has not started yet" and let an unverified tag through.
+  API_ERROR=$(echo "$CHECK_JSON" | jq -r '.message // empty' 2>/dev/null || echo "")
+  if [[ -n "$API_ERROR" ]]; then
+    echo >&2 "ABORT: cannot read CI for $REPO@$COMMIT — $API_ERROR"
+    exit 1
   fi
 
   TOTAL=$(echo "$CHECK_JSON" | jq -r '.total_count // 0' 2>/dev/null || echo "0")
@@ -74,7 +94,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 
     if [[ "$FAILED" -gt 0 ]] 2>/dev/null; then
       echo >&2 "ABORT: CI failed for $COMMIT"
-      echo >&2 "https://github.com/tobi/qmd/commit/$COMMIT"
+      echo >&2 "https://github.com/$REPO/commit/$COMMIT"
       exit 1
     fi
 
