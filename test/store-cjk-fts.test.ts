@@ -51,7 +51,7 @@ import type { CollectionConfig } from "../src/collections.js";
 // Fixtures / helpers
 // =============================================================================
 
-const FTS_CJK_NORMALIZED_VERSION = "1";
+const FTS_CJK_NORMALIZED_VERSION = "2";
 
 let testDir: string;
 
@@ -456,6 +456,67 @@ describe("rebuildFTSForCjkNormalization — CJK query after migration", () => {
       const ml = store.searchFTS("机器学习", 10, "zh");
       expect(ml.length).toBe(1);
       expect(ml[0]!.displayPath).toBe("zh/db.md");
+    } finally {
+      store.close();
+    }
+  });
+});
+
+// =============================================================================
+// Test 4b — ko-qmd: v1 (character-only) index is rebuilt with Hangul bigrams
+// =============================================================================
+
+describe("rebuildFTSForCjkNormalization — Hangul bigram migration (v1 → v2)", () => {
+  let dbPath: string;
+
+  beforeEach(async () => {
+    await setEmptyConfig();
+    dbPath = freshDbPath();
+  });
+
+  afterEach(async () => {
+    try {
+      await unlink(dbPath);
+    } catch {
+      // ignore
+    }
+  });
+
+  test("a v1-stamped index gains bigram tokens and bigram queries match", async () => {
+    const spaced = (s: string) => s.replace(/\p{Script=Hangul}+/gu, run => ` ${Array.from(run).join(" ")} `);
+    {
+      const seed = openDatabase(dbPath);
+      createBaseSchema(seed);
+      const docs = [
+        { id: 1, collection: "ko", path: "search.md", title: "검색 품질", body: "한국어 문서 검색을 개선한다." },
+        { id: 2, collection: "ko", path: "cook.md", title: "요리 노트", body: "색다른 요리법을 정리한다." },
+      ];
+      for (const doc of docs) {
+        seedDocument(seed, doc);
+        // v1 FTS content: Hangul runs spaced into characters, no bigrams.
+        seed.prepare(`INSERT INTO documents_fts(rowid, filepath, title, body) VALUES (?, ?, ?, ?)`)
+          .run(doc.id, spaced(`${doc.collection}/${doc.path}`), spaced(doc.title), spaced(doc.body));
+      }
+      seed.prepare(`INSERT INTO store_config(key, value) VALUES ('fts_cjk_normalized_version', '1')`).run();
+      const stale = seed.prepare(`SELECT count(*) as n FROM documents_fts WHERE documents_fts MATCH '"검색"'`).get() as { n: number };
+      expect(Number(stale.n)).toBe(0);
+      seed.close();
+    }
+
+    const store = createStore(dbPath);
+    try {
+      const ver = store.db.prepare(
+        `SELECT value FROM store_config WHERE key = 'fts_cjk_normalized_version'`
+      ).get() as { value: string } | undefined;
+      expect(ver?.value).toBe(FTS_CJK_NORMALIZED_VERSION);
+      expect(ftsRowCount(store.db)).toBe(activeDocCount(store.db));
+
+      const bigram = store.db.prepare(`SELECT rowid FROM documents_fts WHERE documents_fts MATCH '"검색 색을"'`).all() as { rowid: number }[];
+      expect(bigram.map(r => Number(r.rowid))).toEqual([1]);
+
+      expect(store.searchFTS("검색을", 10, "ko").map(r => r.displayPath)).toEqual(["ko/search.md"]);
+      // 색 appears in both docs; the bigram 색다 only in doc 2.
+      expect(store.searchFTS("색다른", 10, "ko").map(r => r.displayPath)).toEqual(["ko/cook.md"]);
     } finally {
       store.close();
     }

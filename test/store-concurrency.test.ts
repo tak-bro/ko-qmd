@@ -74,7 +74,7 @@ function expectSchemaIntact(dbPath: string): void {
     const cjkVersion = db
       .prepare(`SELECT value FROM store_config WHERE key = 'fts_cjk_normalized_version'`)
       .get() as { value?: string } | undefined;
-    expect(cjkVersion?.value).toBe("1");
+    expect(cjkVersion?.value).toBe("2"); // ko-qmd: Hangul bigram index
 
     const leakedShadow = db
       .prepare(`SELECT name FROM sqlite_master WHERE name LIKE 'documents_fts_rebuild%'`)
