@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Fixes
+
+- The release pre-push hook reads CI from the remote being pushed to. It asked
+  `gh api repos/{owner}/{repo}`, which resolves through gh's own remote
+  heuristic: with an `upstream` remote present that is the repo this one was
+  forked from, so every commit that exists only here answered 422. The hook
+  reported "no runs found" and let the tag through unverified. An API error now
+  aborts instead of reading as "CI has not started".
+
 ## [2.8.3-ko.1] - 2026-09-16
 
 ### Changes
