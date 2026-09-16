@@ -1,3 +1,9 @@
+> **ko-qmd** — a Korean-language distribution of [tobi/qmd](https://github.com/tobi/qmd) (MIT).
+> Hangul particle stripping and syllable-bigram FTS in the lex path, Qwen3-Embedding-0.6B as the
+> default embedding model. Everything below is upstream's README and still applies: the CLI, the MCP
+> server and the package binary are all called `qmd`.
+> Korean notes, install and release process: [README.ko.md](README.ko.md).
+
 # QMD - Query Markup Documents
 
 An on-device search engine for everything you need to remember. Index your markdown notes, meeting transcripts, documentation, and knowledge bases. Search with keywords or natural language. Ideal for your agentic flows.

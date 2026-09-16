@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changes
+
+- ko-vault bench fixture pins the package's default embedding model
+  (Qwen3-Embedding-0.6B-Q8_0) instead of embeddinggemma. Measured on the same
+  tree: `vector_r5` 0.9861 → 1.0000, `hybrid_r5` 0.9722 → 0.9861, `bm25_r5`
+  unchanged at 0.6528. Numbers and caveats in
+  `test/fixtures/ko-vault/BASELINE.md`.
+- README.md states what this distribution is and links README.ko.md.
+
 ## [2.8.3-ko.0] - 2026-09-16
 
 ### Fixes
