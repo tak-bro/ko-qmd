@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.8.3-ko.1] - 2026-09-16
+
 ### Changes
 
 - ko-vault bench fixture pins the package's default embedding model
