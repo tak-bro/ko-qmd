@@ -10,7 +10,10 @@
   in. The existing `bench-vault-goldset.mjs` harvests the document's own words,
   which measures lexical matching; this measures the case that fails it. Every
   candidate passes four mechanical gates and a separate verification call that
-  rejects fluent questions about things the document does not discuss.
+  rejects fluent questions about things the document does not discuss. Defaults
+  to `qwen3:4b`; takes `--minutes` to stop on a time budget, `--seed` to sample
+  the vault when it does, and `--max-df` to tune which heading words a question
+  may not reuse.
 - `GenerateOptions` no longer has a `model` field. `LlamaCpp.generate` never read
   it: the model is fixed per instance from `generateModel` at construction, so a
   caller passing `model` got the instance's model back with no error and no
