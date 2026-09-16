@@ -132,3 +132,39 @@ The original 36 stay at `bm25_r5=0.6528`; the 16 new ones reach 0.9375.
 without the word `언어` anywhere. That is a vocabulary gap, which is vector's job, not stemming's.
 `full_mrr` moved 0.9359 → 0.9173 — rank order inside the top 5, within this fixture's run-to-run
 spread.
+
+## Real vaults — script-mixed query terms (2026-09-16)
+
+The synthetic fixture had run out of headroom (hybrid and full both 1.0000), so this round measured
+against a real 2nd-brain vault instead: 232 Korean wiki documents in `lemoncloud/lemon/knowledge`,
+with a 240-query goldset built by `scripts/bench-vault-goldset.mjs` from the vault's own unique
+headings and body clauses. The vault is not committed here; regenerate the goldset to reproduce.
+
+```
+bash scripts/bench-vault.sh <vault> <goldset.json>
+RESULT bm25_r5=0.9042 bm25_r1=0.8375 bm25_mrr=0.8666   # before
+RESULT bm25_r5=0.9333 bm25_r1=0.8625 bm25_mrr=0.8937   # after
+```
+
+Per bucket, before → after: `head` 0.950 → 0.967, `headp` 0.900 → 0.933, `headjoin` 0.817 → 0.883,
+`clause` 0.950 unchanged. Misses 23 → 16.
+
+The failure the misses pointed at was script-mixed terms — `SKILL.md계약의핵심`,
+`hook이유일한hardboundary다`, `auto-dream의발화조건`. `hangulTermQuery` returned null for anything
+that was not pure Hangul, so the whole glued token was searched as one phrase that appears nowhere,
+and the hyphen and dot branches of `buildFTS5Query` kept the Hangul run glued as well. The index
+side had always split scripts (`hangulBigramTail` only sees Hangul runs; the porter tokenizer splits
+the rest), so only the query side was missing the split. `hangulMixedQuery` now splits a term into
+script runs and ANDs them.
+
+Two earlier drafts of this goldset were discarded rather than reported: sampling terms that occur in
+exactly one document scored `bm25_r5=1.0000` (any index finds them), and harvesting bare words
+produced particle-glued fragments like `진실원이다` that no one would type.
+
+What still misses is not stemming's to fix. Latin compounds written solid in the query but spaced in
+the document (`headlesssubagent`, `hardboundary`) need a dictionary to split, and generic two-word
+headings (`서비스 구성`, `두 가지 모드`) are ranking, not matching. Three `clause` misses are goldset
+artifacts, where a URL split mid-token.
+
+Synthetic fixture after the same change, unchanged within run spread:
+`bm25_r5=0.7404 vector_r5=1.0000 hybrid_r5=1.0000 full_r5=1.0000 full_mrr=0.9494`.

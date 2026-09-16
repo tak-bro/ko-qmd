@@ -19,7 +19,7 @@ import { readFileSync, realpathSync, statSync, mkdirSync } from "node:fs";
 // Note: node:path resolve is not imported — we export our own cross-platform resolve()
 import fastGlob from "fast-glob";
 import { qmdHomedir } from "./paths.js";
-import { hangulBigramTail, hangulTermQuery } from "./hangul.js";
+import { hangulBigramTail, hangulMixedQuery, hangulTermQuery } from "./hangul.js";
 import {
   LlamaCpp,
   getDefaultLlamaCpp,
@@ -3935,7 +3935,12 @@ function buildFTS5Query(query: string): string | null {
 
       // Handle hyphenated tokens: multi-agent, DEC-0054, gpt-4
       // These get split into phrase queries so FTS5 porter tokenizer matches them.
-      if (isHyphenatedToken(term)) {
+      // ko-qmd: script-mixed terms are split before the hyphen/dot handling below —
+      // those branches would keep the Hangul run glued into one unsearchable phrase.
+      const mixed = negated ? null : hangulMixedQuery(term);
+      if (mixed) {
+        positive.push(mixed);
+      } else if (isHyphenatedToken(term)) {
         const sanitized = sanitizeHyphenatedTerm(term);
         if (sanitized) {
           const ftsPhrase = `"${sanitized}"`;  // Phrase match (no prefix)

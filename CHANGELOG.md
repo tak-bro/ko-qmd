@@ -17,6 +17,14 @@
 - Hangul stems also cover a bare `한`/`된` ending (`필요한` → `필요`) and the
   하↔해 contraction (`더하` ↔ `더해`), so a query stem meets the contracted spelling
   documents actually use. `bm25_r5` 0.7212 → 0.7404, hybrid and full 1.0000.
+- Hangul lex queries split script-mixed terms into runs and AND them
+  (`SKILL.md계약의핵심` → `skill` AND `md` AND `계약의핵심`). Before this the glued
+  token was one phrase that matches nothing, and the hyphen/dot branches kept the
+  Hangul run glued too. Measured on a real 232-document Korean vault with a
+  240-query goldset: `bm25_r5` 0.9042 → 0.9333, `bm25_mrr` 0.8666 → 0.8937.
+- `scripts/bench-vault.sh` and `scripts/bench-vault-goldset.mjs` run the Korean
+  bench over any real vault, building the goldset from that vault's own headings
+  and body clauses. Nothing from the vault is copied into the repo.
 - ko-vault goldset grew 36 → 52 with particle chains, verb endings and joined
   compounds.
 - `qmd bench` no longer needs `expected_in_top_k` on every fixture entry. It was
