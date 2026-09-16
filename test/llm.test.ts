@@ -619,7 +619,7 @@ describe("LlamaCpp expand context size config", () => {
 });
 
 describe("LlamaCpp model resolution (config > env > default)", () => {
-  const HARDCODED_EMBED = "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf";
+  const HARDCODED_EMBED = "hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf";
   const HARDCODED_RERANK = "hf:ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF/qwen3-reranker-0.6b-q8_0.gguf";
   const HARDCODED_GENERATE = "hf:tobil/qmd-query-expansion-1.7B-gguf/qmd-query-expansion-1.7B-q4_k_m.gguf";
 
@@ -845,8 +845,8 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
       expect(result).not.toBeNull();
       expect(result!.embedding).toBeInstanceOf(Array);
       expect(result!.embedding.length).toBeGreaterThan(0);
-      // embeddinggemma outputs 768 dimensions
-      expect(result!.embedding.length).toBe(768);
+      // Qwen3-Embedding-0.6B (default) outputs 1024 dimensions
+      expect(result!.embedding.length).toBe(1024);
     });
 
     test("returns consistent embeddings for same input", async () => {
@@ -894,7 +894,7 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
       expect(results).toHaveLength(3);
       for (const result of results) {
         expect(result).not.toBeNull();
-        expect(result!.embedding.length).toBe(768);
+        expect(result!.embedding.length).toBe(1024);
       }
     });
 
@@ -1239,7 +1239,7 @@ describe.skipIf(!!process.env.CI)("LLM Session Management", () => {
         expect(session.isValid).toBe(true);
         const embedding = await session.embed("test text");
         expect(embedding).not.toBeNull();
-        expect(embedding!.embedding.length).toBe(768);
+        expect(embedding!.embedding.length).toBe(1024);
         return "success";
       });
       expect(result).toBe("success");
@@ -1301,7 +1301,7 @@ describe.skipIf(!!process.env.CI)("LLM Session Management", () => {
         expect(results).toHaveLength(3);
         for (const result of results) {
           expect(result).not.toBeNull();
-          expect(result!.embedding.length).toBe(768);
+          expect(result!.embedding.length).toBe(1024);
         }
       });
     });

@@ -1,20 +1,19 @@
 {
 	"name": "qmd",
 	"owner": {
-		"name": "tobi",
-		"email": "tobi@lutke.com"
+		"name": "tak-bro"
 	},
 	"plugins": [
 		{
 			"name": "qmd",
 			"source": "./skills",
 			"description": "Search and retrieve documents from local markdown files.",
-			"version": "2.8.3",
+			"version": "2.8.3-ko.0",
 			"author": {
 				"name": "tobi",
 				"email": "tobi@lutke.com"
 			},
-			"repository": "https://github.com/tobi/qmd",
+			"repository": "https://github.com/tak-bro/ko-qmd",
 			"license": "MIT",
 			"keywords": ["markdown", "search", "qmd"],
 			"skills": ["./qmd", "./release"],

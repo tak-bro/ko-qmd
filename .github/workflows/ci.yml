@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, ko, "feat/**"]
   pull_request:
-    branches: [main]
+    branches: [main, ko]
 
 jobs:
   test-node:
@@ -15,6 +15,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         node-version: ["22", "23"]
+        include:
+          # ko-qmd: Windows is a release target. Failures are recorded in
+          # docs/vault-search/WINDOWS.md rather than fixed in the patch stack.
+          - os: windows-latest
+            node-version: "22"
 
     steps:
       - uses: actions/checkout@v4
@@ -35,6 +40,7 @@ jobs:
 
       - name: Tests
         run: npx vitest run --reporter=verbose --testTimeout 60000 test/
+        continue-on-error: ${{ matrix.os == 'windows-latest' }}
         env:
           CI: true
 
@@ -70,3 +76,34 @@ jobs:
           CI: true
           DYLD_LIBRARY_PATH: /opt/homebrew/opt/sqlite/lib
           LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
+
+  # ko-qmd: stands in for the Electron app build (Electron 39 / ABI 140).
+  # electron is installed with --no-save so git-dependency consumers, which run
+  # `prepare` with devDependencies, never download the Electron binary.
+  electron-smoke:
+    name: Electron smoke (windows-latest)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - run: npm install
+
+      - run: npm install --no-save electron@39 @electron/rebuild
+
+      - name: Rebuild native modules for Electron ABI
+        shell: bash
+        run: |
+          start=$(date +%s)
+          npx electron-rebuild --force --only better-sqlite3
+          echo "electron-rebuild took $(( $(date +%s) - start ))s"
+
+      - name: Import SDK inside Electron
+        shell: bash
+        run: npx electron scripts/electron-smoke.mjs
+        env:
+          ELECTRON_RUN_AS_NODE: "1"

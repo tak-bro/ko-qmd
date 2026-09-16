@@ -557,19 +557,34 @@ describe("Document Helpers", () => {
 // =============================================================================
 
 describe("Embedding Formatting", () => {
+  const GEMMA = "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf";
+
   test("formatQueryForEmbedding adds search task prefix", () => {
-    const formatted = formatQueryForEmbedding("how to deploy");
+    const formatted = formatQueryForEmbedding("how to deploy", GEMMA);
     expect(formatted).toBe("task: search result | query: how to deploy");
   });
 
   test("formatDocForEmbedding adds title and text prefix", () => {
-    const formatted = formatDocForEmbedding("Some content", "My Title");
+    const formatted = formatDocForEmbedding("Some content", "My Title", GEMMA);
     expect(formatted).toBe("title: My Title | text: Some content");
   });
 
   test("formatDocForEmbedding handles missing title", () => {
-    const formatted = formatDocForEmbedding("Some content");
+    const formatted = formatDocForEmbedding("Some content", undefined, GEMMA);
     expect(formatted).toBe("title: none | text: Some content");
+  });
+
+  test("default embed model (Qwen3-Embedding) uses instruct query and raw doc format", () => {
+    const prev = process.env.QMD_EMBED_MODEL;
+    delete process.env.QMD_EMBED_MODEL;
+    try {
+      expect(formatQueryForEmbedding("how to deploy")).toBe(
+        "Instruct: Retrieve relevant documents for the given query\nQuery: how to deploy"
+      );
+      expect(formatDocForEmbedding("Some content", "My Title")).toBe("My Title\nSome content");
+    } finally {
+      if (prev !== undefined) process.env.QMD_EMBED_MODEL = prev;
+    }
   });
 });
 

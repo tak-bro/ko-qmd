@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+## [2.8.3-ko.0] - 2026-09-16
+
+### Fixes
+
+- pnpm consumers install this package from a git tag, where pnpm runs `prepare`
+  (tsc only). Two things broke that on Windows: a stale `pnpm-lock.yaml`
+  (`ERR_PNPM_OUTDATED_LOCKFILE`) and `pnpm.onlyBuiltDependencies`, which made
+  pnpm build better-sqlite3 from source in an environment with no Visual Studio.
+  The lockfile is regenerated and the built-dependency list is now empty — the
+  `dist` build needs no native module, and consumers build their own. Run
+  `pnpm approve-builds` when developing this repo with pnpm. npm installs were
+  unaffected.
+
+### Changes
+
+- ko-qmd distribution: package renamed to `ko-qmd`
+  (`2.8.3-ko.0`), consumed from git tags instead of npm (`publish.yml`
+  removed). CI adds a `windows-latest` Node 22 job and an Electron 39 smoke job
+  that imports the SDK with dynamic `import()` and runs `searchLex`. See
+  `README.ko.md`.
+- Hangul lex queries: an unquoted Korean word also matches its stem with one
+  trailing particle or `기` stripped (`검색을` → `("검 색" OR "검 색 을")`,
+  stem ≥2 syllables). Quoted phrases and Han/kana terms are unchanged. ko-vault
+  bench `bm25_r5` 0.6250 → 0.6528.
+- Hangul syllable bigrams in the FTS index: each indexed field carries the
+  bigrams of its Hangul runs after the character tokens, and a plain Korean word
+  queries bigram OR character phrases of the word and its stem. Character-phrase
+  and quoted-phrase matching is unchanged. `FTS_CJK_NORMALIZED_VERSION` is now
+  `"2"`, so existing indexes rebuild FTS once on open. ko-vault bench
+  `bm25_r5` 0.6528 → 0.6528 (no measured gain on the fixture).
+- Korean defaults: the default embedding model is now
+  `hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf`
+  (1024 dimensions; upstream default is embeddinggemma-300M). Reranker and
+  query-expansion defaults are unchanged. Existing indexes need `qmd embed -f`;
+  set `models: embed:` or `QMD_EMBED_MODEL` to keep embeddinggemma. The qmd skill
+  gains a "Korean queries" section. Hangul handling and ko-vault bench numbers
+  are in `README.ko.md`.
+
 ## [2.8.3] - 2026-08-16
 
 ### Security

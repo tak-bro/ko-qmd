@@ -42,7 +42,8 @@ describe("Node ESM entrypoints", () => {
     }).trim();
 
     // `qmd 2.6.3` or `qmd 2.6.3 (abc1234)` / `(abc1234-dirty)` — never anything else.
-    expect(output).toMatch(/^qmd \d+\.\d+\.\d+(?: \([0-9a-f]{7,}(?:-dirty)?\))?$/);
+    // A semver prerelease suffix is allowed for ko-qmd (`2.8.3-ko.0`).
+    expect(output).toMatch(/^qmd \d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?(?: \([0-9a-f]{7,}(?:-dirty)?\))?$/);
 
     // In a checkout, git is available and the stamp must be this repo's HEAD.
     const head = execFileSync("git", ["rev-parse", "--short", "HEAD"], {

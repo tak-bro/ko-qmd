@@ -103,7 +103,7 @@ function initTestDatabase(db: Database): void {
   `);
 
   // Create vector table
-  db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS vectors_vec USING vec0(hash_seq TEXT PRIMARY KEY, embedding float[768] distance_metric=cosine)`);
+  db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS vectors_vec USING vec0(hash_seq TEXT PRIMARY KEY, embedding float[1024] distance_metric=cosine)`);
 
   // Store collections — makes the DB self-contained
   db.exec(`
@@ -181,8 +181,8 @@ function seedTestData(db: Database): void {
   }
 
   // Add embeddings for vector search
-  const embedding = new Float32Array(768);
-  for (let i = 0; i < 768; i++) embedding[i] = Math.random();
+  const embedding = new Float32Array(1024);
+  for (let i = 0; i < 1024; i++) embedding[i] = Math.random();
 
   for (const doc of docs.slice(0, 4)) { // Skip large file for embeddings
     db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embed_fingerprint, embedded_at) VALUES (?, 0, 0, ?, ?, ?)`).run(doc.hash, DEFAULT_EMBED_MODEL, getEmbeddingFingerprint(DEFAULT_EMBED_MODEL), now);

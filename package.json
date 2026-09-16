@@ -1,6 +1,6 @@
 {
-  "name": "@tobilu/qmd",
-  "version": "2.8.3",
+  "name": "ko-qmd",
+  "version": "2.8.3-ko.0",
   "description": "Query Markup Documents - On-device hybrid search for markdown files with BM25, vector search, and LLM reranking",
   "type": "module",
   "main": "dist/index.js",
@@ -29,6 +29,7 @@
     "prepare": "node scripts/install-hooks.mjs && node scripts/build.mjs",
     "build": "node scripts/build.mjs",
     "test": "node scripts/test-all.mjs",
+    "lint": "node ./node_modules/typescript/bin/tsc -p tsconfig.build.json --noEmit",
     "test:types": "node ./node_modules/typescript/bin/tsc -p tsconfig.build.json --noEmit",
     "test:node": "node ./node_modules/vitest/vitest.mjs run --reporter=verbose --testTimeout 60000",
     "test:bun": "bun test --timeout 60000 --preload ./src/test-preload.ts",
@@ -49,11 +50,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tobi/qmd.git"
+    "url": "git+https://github.com/tak-bro/ko-qmd.git"
   },
-  "homepage": "https://github.com/tobi/qmd#readme",
+  "homepage": "https://github.com/tak-bro/ko-qmd#readme",
   "bugs": {
-    "url": "https://github.com/tobi/qmd/issues"
+    "url": "https://github.com/tak-bro/ko-qmd/issues"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",
@@ -83,15 +84,7 @@
     "vitest": "3.2.7"
   },
   "pnpm": {
-    "onlyBuiltDependencies": [
-      "better-sqlite3",
-      "esbuild",
-      "node-llama-cpp",
-      "tree-sitter-go",
-      "tree-sitter-python",
-      "tree-sitter-rust",
-      "tree-sitter-typescript"
-    ]
+    "onlyBuiltDependencies": []
   },
   "peerDependencies": {
     "typescript": "^5.9.3"
