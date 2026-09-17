@@ -946,7 +946,8 @@ describe("CLI Status Command", () => {
 
       writeFileSync(join(cacheHome, "qmd"), "not a directory");
       const broken = await runQmd(["status"], { env: { XDG_CACHE_HOME: cacheHome } });
-      expect(broken.stdout).toMatch(/Query log: .*unreadable — .*ENOTDIR/);
+      expect(broken.stdout).toMatch(/Query log: .*unreadable — ENOTDIR/);
+      expect(broken.stdout).not.toContain(cacheHome);
       rmSync(join(cacheHome, "qmd"));
 
       mkdirSync(join(cacheHome, "qmd"), { recursive: true });
@@ -954,7 +955,8 @@ describe("CLI Status Command", () => {
       writeFileSync(join(cacheHome, "qmd", "queries-2026-09.jsonl"), "");
       const present = await runQmd(["status"], { env: { XDG_CACHE_HOME: cacheHome } });
       expect(present.exitCode).toBe(0);
-      expect(present.stdout).toContain(`Query log: ${join(cacheHome, "qmd", "queries-2026-09.jsonl")} (last write`);
+      expect(present.stdout).toContain("Query log: queries-2026-09.jsonl (last write");
+      expect(present.stdout).not.toContain(cacheHome);
     } finally {
       rmSync(cacheHome, { recursive: true, force: true });
     }

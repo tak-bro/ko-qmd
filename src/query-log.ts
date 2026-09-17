@@ -238,7 +238,8 @@ const errorCode = (err: NodeJS.ErrnoException): string => err.code ?? err.messag
 /**
  * Newest log file on disk, for `qmd status` — which runs in a different
  * process than the daemon and so cannot see the daemon's env or state.
- * A missing cache dir is "none"; any other failure yields kind "error".
+ * A missing cache dir is "none"; any other failure yields kind "error" with
+ * the error code only (status output carries no filesystem paths).
  */
 export const latestQueryLogFile = (): QueryLogFileState => {
   const dir = queryLogDir();
@@ -252,7 +253,7 @@ export const latestQueryLogFile = (): QueryLogFileState => {
     return { kind: "file", path, modified: statSync(path).mtime };
   } catch (err) {
     const code = errorCode(err as NodeJS.ErrnoException); // fs errors are ErrnoException
-    return code === "ENOENT" ? { kind: "none" } : { kind: "error", message: `${dir}: ${code}` };
+    return code === "ENOENT" ? { kind: "none" } : { kind: "error", message: code };
   }
 };
 

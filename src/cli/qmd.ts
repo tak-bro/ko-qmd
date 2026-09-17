@@ -557,7 +557,8 @@ async function showStatus(): Promise<void> {
   // so report what is on disk; the daemon's own `status` tool shows its flag and errors.
   const queryLogFile = latestQueryLogFile();
   if (queryLogFile.kind === "file") {
-    console.log(`Query log: ${queryLogFile.path} (last write ${formatTimeAgo(queryLogFile.modified)})`);
+    // File name only: status keeps filesystem paths out of its output (the Index line aside).
+    console.log(`Query log: ${basename(queryLogFile.path)} (last write ${formatTimeAgo(queryLogFile.modified)})`);
   } else if (queryLogFile.kind === "error") {
     console.log(`Query log: ${c.yellow}unreadable — ${queryLogFile.message}${c.reset}`);
   } else {
