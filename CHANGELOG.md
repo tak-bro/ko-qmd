@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Changes
+
+- `develop` is the working branch; `main` only receives merges from it and is
+  where `/release` tags. `publish.yml` authenticates with the `NPM_TOKEN`
+  repository secret and skips a version that is already on the registry, so a
+  manually published version or a re-pushed tag still gets its GitHub release.
+  CI runs for `develop` pushes and pull requests too.
+
+### Fixes
+
+- The Windows git-install probe fetched `github:tak-bro/ko-qmd#main`, which npm
+  and pnpm resolve over SSH first; the runner has no key, so the job failed on
+  every push (`Permission denied (publickey)`). It now installs from the
+  `git+https://` URL.
+
 ## [2.8.3-ko.2] - 2026-09-17
 
 ### Changes
