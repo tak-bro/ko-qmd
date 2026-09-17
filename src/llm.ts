@@ -634,6 +634,22 @@ export type LlamaCppConfig = {
  */
 // Default inactivity timeout: 5 minutes (keep models warm during typical search sessions)
 const DEFAULT_INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000;
+
+/**
+ * ko-qmd: QMD_LLM_IDLE_TIMEOUT_MS overrides the idle unload timeout, including
+ * the 5 minutes createStore() passes. A long-lived daemon sets it to keep the
+ * first search after a quiet spell from reloading models (0 = never unload).
+ * Returns undefined when unset or invalid (with a warning).
+ */
+export function resolveIdleTimeoutOverride(envValue = process.env.QMD_LLM_IDLE_TIMEOUT_MS): number | undefined {
+  const normalized = envValue?.trim() ?? "";
+  if (!normalized) return undefined;
+  if (!/^\d+$/.test(normalized)) {
+    process.stderr.write(`QMD Warning: invalid QMD_LLM_IDLE_TIMEOUT_MS="${envValue}", using the default idle timeout.\n`);
+    return undefined;
+  }
+  return Number(normalized);
+}
 const DEFAULT_EXPAND_CONTEXT_SIZE = 2048;
 
 export type LlamaGpuMode = "auto" | "metal" | "vulkan" | "cuda" | false;
@@ -854,7 +870,8 @@ export class LlamaCpp implements LLM {
     this.rerankModelUri = resolveRerankModel({ rerank: config.rerankModel });
     this.modelCacheDir = config.modelCacheDir || MODEL_CACHE_DIR;
     this.expandContextSize = resolveExpandContextSize(config.expandContextSize);
-    this.inactivityTimeoutMs = config.inactivityTimeoutMs ?? DEFAULT_INACTIVITY_TIMEOUT_MS;
+    this.inactivityTimeoutMs = resolveIdleTimeoutOverride()
+      ?? config.inactivityTimeoutMs ?? DEFAULT_INACTIVITY_TIMEOUT_MS;
     this.disposeModelsOnInactivity = config.disposeModelsOnInactivity ?? false;
   }
 

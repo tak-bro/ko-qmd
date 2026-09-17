@@ -17,6 +17,7 @@
    - 스킬 `skills/qmd/SKILL.md`에 "Korean queries" 절(`lex:`에 어간·alias·영문 용어, `vec:`에 한국어 패러프레이즈).
 
 4. 데몬 질의 로그 (`src/query-log.ts`, `server.ts` 접점 = REST 핸들러·`status` 툴): `QMD_QUERY_LOG=1` 로 띄운 HTTP 데몬이 REST 검색마다 `queries-YYYY-MM.jsonl` 에 한 줄을 남긴다(결과 경로·점수, 스니펫 없음). 헤더 `X-QMD-Tag`·`X-QMD-Qid`·`X-QMD-Role`·`X-QMD-No-Log`. 계약은 [README.md § Query log](README.md#query-log-ko-qmd). 업스트림 PR 대상 아님.
+5. 모델 idle 타임아웃 env (`src/llm.ts` `LlamaCpp` 생성자): `QMD_LLM_IDLE_TIMEOUT_MS` 가 `createStore()` 의 5분 고정값보다 우선한다. `0` 이면 모델을 내리지 않는다 — 상주 데몬의 첫 검색이 모델을 다시 올리지 않게 하는 용도다.
 
 ### 기본 임베딩 변경 후 재임베딩
 
