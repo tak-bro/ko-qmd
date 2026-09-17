@@ -1180,6 +1180,7 @@ llm_cache       -- Cached LLM responses (query expansion, rerank scores)
 | `QMD_LLAMA_GPU` | `auto` | Force llama.cpp GPU backend (`metal`, `vulkan`, `cuda`) or disable GPU with `false` |
 | `QMD_FORCE_CPU` | unset | Set to `1`/`true` to force CPU mode before any CUDA/Vulkan/Metal probing. Equivalent CLI flag: `--no-gpu`. |
 | `QMD_QUERY_LOG` | unset | ko-qmd: set to `1`/`true`/`yes` on the HTTP daemon to append each search to `$XDG_CACHE_HOME/qmd/queries-YYYY-MM.jsonl` (see [Query log](#query-log-ko-qmd)) |
+| `QMD_LLM_IDLE_TIMEOUT_MS` | `300000` | ko-qmd: idle time in ms before loaded models and contexts are unloaded; `0` never unloads. Overrides the SDK's `createStore()` timeout, so a long-running HTTP daemon can skip the model reload on its first search after a quiet spell, at the cost of keeping that memory in use. |
 | `QMD_EMBED_PARALLELISM` | automatic | Override embedding/reranking context parallelism (1-8). Windows CUDA defaults to `1` because parallel CUDA contexts can crash with `ggml-cuda.cu:98`; use Vulkan or raise this only if your driver is stable. |
 
 ## How It Works

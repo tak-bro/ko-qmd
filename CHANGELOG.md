@@ -4,6 +4,10 @@
 
 ### Changes
 
+- `QMD_LLM_IDLE_TIMEOUT_MS` sets how long loaded models stay idle before they
+  are unloaded (`0` = never), overriding the 5 minutes `createStore()` passes.
+  On a long-running HTTP daemon the first search after a quiet spell no longer
+  pays for reloading the models.
 - `QMD_QUERY_LOG=1` makes the HTTP daemon append every `POST /query` /
   `/search` search to `queries-YYYY-MM.jsonl` in the qmd cache directory: the
   qmd version and commit, an index fingerprint, the searches, and each result's

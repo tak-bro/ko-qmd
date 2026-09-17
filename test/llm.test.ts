@@ -21,6 +21,7 @@ import {
   canWriteLlamaDir,
   withNativeStdoutRedirectedToStderr,
   resolveParallelismOverride,
+  resolveIdleTimeoutOverride,
   resolveSafeParallelism,
   computeGpuContextPoolSize,
   estimateEmbedContextMB,
@@ -508,6 +509,44 @@ describe("LLM context parallelism safety", () => {
       expect(String(stderrSpy.mock.calls[0]?.[0] || "")).toContain("QMD_EMBED_PARALLELISM");
     } finally {
       stderrSpy.mockRestore();
+    }
+  });
+});
+
+describe("QMD_LLM_IDLE_TIMEOUT_MS (ko-qmd)", () => {
+  test("parses a non-negative integer; 0 keeps models loaded", () => {
+    expect(resolveIdleTimeoutOverride("0")).toBe(0);
+    expect(resolveIdleTimeoutOverride(" 1800000 ")).toBe(1_800_000);
+  });
+
+  test("unset or blank leaves the caller's timeout alone", () => {
+    expect(resolveIdleTimeoutOverride(undefined)).toBeUndefined();
+    expect(resolveIdleTimeoutOverride("  ")).toBeUndefined();
+  });
+
+  test("invalid values are ignored with a warning", () => {
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    try {
+      expect(resolveIdleTimeoutOverride("-1")).toBeUndefined();
+      expect(resolveIdleTimeoutOverride("5m")).toBeUndefined();
+      expect(resolveIdleTimeoutOverride("1.5")).toBeUndefined();
+      expect(stderrSpy).toHaveBeenCalledTimes(3);
+      expect(String(stderrSpy.mock.calls[0]?.[0] || "")).toContain("QMD_LLM_IDLE_TIMEOUT_MS");
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
+  test("the env wins over the timeout a caller passes (createStore hard-codes 5 min)", () => {
+    const orig = process.env.QMD_LLM_IDLE_TIMEOUT_MS;
+    try {
+      process.env.QMD_LLM_IDLE_TIMEOUT_MS = "0";
+      expect(new LlamaCpp({ inactivityTimeoutMs: 5 * 60 * 1000 })["inactivityTimeoutMs"]).toBe(0);
+      delete process.env.QMD_LLM_IDLE_TIMEOUT_MS;
+      expect(new LlamaCpp({ inactivityTimeoutMs: 5 * 60 * 1000 })["inactivityTimeoutMs"]).toBe(300_000);
+    } finally {
+      if (orig === undefined) delete process.env.QMD_LLM_IDLE_TIMEOUT_MS;
+      else process.env.QMD_LLM_IDLE_TIMEOUT_MS = orig;
     }
   });
 });
