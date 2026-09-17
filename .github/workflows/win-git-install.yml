@@ -14,12 +14,17 @@ jobs:
           node-version: 22
       # npm and pnpm resolve any github.com URL through hosted-git-info and try SSH
       # first; the runner has no key, and an auth failure is not retried over https.
-      # Rewrite SSH to https at the git level so the probe uses the anonymous route.
-      - name: Route github.com over https
+      # The repository is private, so anonymous https fails too. Rewrite every
+      # github.com form to https with the job token at the git level.
+      - name: Route github.com over https with the job token
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
-          git config --global --add url."https://github.com/".insteadOf "git@github.com:"
+          AUTH="https://x-access-token:${GITHUB_TOKEN}@github.com/"
+          git config --global url."$AUTH".insteadOf "ssh://git@github.com/"
+          git config --global --add url."$AUTH".insteadOf "git@github.com:"
+          git config --global --add url."$AUTH".insteadOf "https://github.com/"
       - name: npm install from tag
         shell: bash
         run: |
