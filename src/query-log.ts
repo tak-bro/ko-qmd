@@ -206,9 +206,7 @@ const queueRow = (entry: QueryLogEntry, store: StatusSource): void => {
 
   writeChain = writeChain.then(async () => {
     try {
-      const index = await indexFingerprint(store);
-      const { v, ts, qmd, ...rest } = partial;
-      const line = JSON.stringify({ v, ts, qmd, index, ...rest }) + "\n";
+      const line = JSON.stringify({ ...partial, index: await indexFingerprint(store) }) + "\n";
       await mkdir(dirname(path), { recursive: true });
       await appendFile(path, line, { mode: 0o600 });
       lastWrite = new Date().toISOString();
