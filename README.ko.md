@@ -16,6 +16,8 @@
    - 기본 임베딩 모델: `hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf`(업스트림은 embeddinggemma-300M). 리랭커·질의 확장 모델은 업스트림 기본값 그대로. 업스트림 [README.md](README.md)의 모델 표·"Custom Embedding Model" 절은 업스트림 기본값 기준이다.
    - 스킬 `skills/qmd/SKILL.md`에 "Korean queries" 절(`lex:`에 어간·alias·영문 용어, `vec:`에 한국어 패러프레이즈).
 
+4. 데몬 질의 로그 (`src/query-log.ts`, `server.ts` 접점 = REST 핸들러·`status` 툴): `QMD_QUERY_LOG=1` 로 띄운 HTTP 데몬이 REST 검색마다 `queries-YYYY-MM.jsonl` 에 한 줄을 남긴다(결과 경로·점수, 스니펫 없음). 헤더 `X-QMD-Tag`·`X-QMD-Qid`·`X-QMD-Role`·`X-QMD-No-Log`. 계약은 [README.md § Query log](README.md#query-log-ko-qmd). 업스트림 PR 대상 아님.
+
 ### 기본 임베딩 변경 후 재임베딩
 
 벡터는 모델 사이에 호환되지 않는다. embeddinggemma로 만든 기존 인덱스는 다시 임베딩해야 한다.

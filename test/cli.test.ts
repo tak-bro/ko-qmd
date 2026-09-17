@@ -935,6 +935,30 @@ describe("CLI Status Command", () => {
     expect(stdout).not.toContain("QMD_STATUS_DEVICE_PROBE");
     expect(stdout).not.toContain("not probed");
   });
+
+  test("status shows the newest daemon query log file, or none", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+    const cacheHome = mkdtempSync(join(tmpdir(), "qmd-status-query-log-"));
+    try {
+      const empty = await runQmd(["status"], { env: { XDG_CACHE_HOME: cacheHome } });
+      expect(empty.exitCode).toBe(0);
+      expect(empty.stdout).toMatch(/Query log: .*none/);
+
+      writeFileSync(join(cacheHome, "qmd"), "not a directory");
+      const broken = await runQmd(["status"], { env: { XDG_CACHE_HOME: cacheHome } });
+      expect(broken.stdout).toMatch(/Query log: .*unreadable — .*ENOTDIR/);
+      rmSync(join(cacheHome, "qmd"));
+
+      mkdirSync(join(cacheHome, "qmd"), { recursive: true });
+      writeFileSync(join(cacheHome, "qmd", "queries-2026-08.jsonl"), "");
+      writeFileSync(join(cacheHome, "qmd", "queries-2026-09.jsonl"), "");
+      const present = await runQmd(["status"], { env: { XDG_CACHE_HOME: cacheHome } });
+      expect(present.exitCode).toBe(0);
+      expect(present.stdout).toContain(`Query log: ${join(cacheHome, "qmd", "queries-2026-09.jsonl")} (last write`);
+    } finally {
+      rmSync(cacheHome, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("CLI Search Command", () => {

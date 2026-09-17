@@ -4,6 +4,14 @@
 
 ### Changes
 
+- `QMD_QUERY_LOG=1` makes the HTTP daemon append every `POST /query` /
+  `/search` search to `queries-YYYY-MM.jsonl` in the qmd cache directory: the
+  qmd version and commit, an index fingerprint, the searches, and each result's
+  path, score and rank — never snippets. Clients tag rows with `X-QMD-Tag`,
+  `X-QMD-Qid` and `X-QMD-Role`, and skip them with `X-QMD-No-Log: 1`. Writes
+  never fail a search; `qmd status` shows the newest log file and the MCP
+  `status` tool shows the daemon's flag and last write error.
+
 - `develop` is the working branch; `main` only receives merges from it and is
   where `/release` tags. `publish.yml` authenticates with the `NPM_TOKEN`
   repository secret and skips a version that is already on the registry, so a

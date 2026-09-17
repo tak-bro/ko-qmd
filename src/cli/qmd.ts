@@ -95,6 +95,7 @@ import {
   type OutputFormat,
 } from "./formatter.js";
 import { resolveCommit } from "./version.js";
+import { latestQueryLogFile } from "../query-log.js";
 import {
   getCollection as getCollectionFromYaml,
   listCollections as yamlListCollections,
@@ -551,6 +552,16 @@ async function showStatus(): Promise<void> {
       try { unlinkSync(mcpPidPath); } catch { /* ignore */ }
       // Stale / recycled PID file cleaned up silently
     }
+  }
+  // ko-qmd: the daemon's query log. This process cannot see the daemon's env,
+  // so report what is on disk; the daemon's own `status` tool shows its flag and errors.
+  const queryLogFile = latestQueryLogFile();
+  if (queryLogFile.kind === "file") {
+    console.log(`Query log: ${queryLogFile.path} (last write ${formatTimeAgo(queryLogFile.modified)})`);
+  } else if (queryLogFile.kind === "error") {
+    console.log(`Query log: ${c.yellow}unreadable — ${queryLogFile.message}${c.reset}`);
+  } else {
+    console.log(`Query log: ${c.dim}none (daemon writes it when started with QMD_QUERY_LOG=1)${c.reset}`);
   }
   console.log("");
 
@@ -3795,7 +3806,8 @@ function collectEnvironmentOverrides(activeModels: { embed: string; generate: st
   add("INDEX_PATH", "overrides the SQLite index path; QMD reads/writes a different database");
   add("QMD_CONFIG_DIR", "overrides the QMD config directory and takes precedence over XDG_CONFIG_HOME");
   add("XDG_CONFIG_HOME", "moves QMD config to $XDG_CONFIG_HOME/qmd when QMD_CONFIG_DIR is not set");
-  add("XDG_CACHE_HOME", "moves the default index cache, model cache, and MCP daemon PID files");
+  add("XDG_CACHE_HOME", "moves the default index cache, model cache, MCP daemon PID files, and query logs");
+  add("QMD_QUERY_LOG", "1/true/yes makes the HTTP daemon append each search to queries-YYYY-MM.jsonl in the cache dir");
   addModel("QMD_EMBED_MODEL", "embed", activeModels.embed);
   addModel("QMD_GENERATE_MODEL", "generate", activeModels.generate);
   addModel("QMD_RERANK_MODEL", "rerank", activeModels.rerank);

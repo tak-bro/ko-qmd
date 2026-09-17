@@ -1407,3 +1407,180 @@ describe("MCP HTTP Transport — legacy FTS seed (#792)", () => {
     }
   });
 });
+
+// =============================================================================
+// REST /query + daemon query log (src/query-log.ts)
+// =============================================================================
+
+import { flushQueryLog, queryLogStatus, _resetQueryLogForTesting, type QueryLogStatus } from "../src/query-log";
+import { mkdtempSync, readFileSync as readFileSyncNode, rmSync, writeFileSync as writeFileSyncNode, readdirSync } from "node:fs";
+
+describe("REST /query and the query log", () => {
+  let handle: HttpServerHandle | undefined;
+  let baseUrl: string;
+  let dbPath: string;
+  let configDir: string | undefined;
+  let cacheHome: string;
+  const origIndexPath = process.env.INDEX_PATH;
+  const origConfigDir = process.env.QMD_CONFIG_DIR;
+  const origCache = process.env.XDG_CACHE_HOME;
+  const origFlag = process.env.QMD_QUERY_LOG;
+
+  beforeAll(async () => {
+    dbPath = `/tmp/qmd-rest-query-log-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`;
+    const db = openDatabase(dbPath);
+    initTestDatabase(db);
+    seedTestData(db);
+    const testConfig: CollectionConfig = {
+      collections: { docs: { path: "/test/docs", pattern: "**/*.md" } },
+    };
+    syncConfigToDb(db, testConfig);
+    db.close();
+
+    configDir = await mkdtemp(join(tmpdir(), `qmd-rest-query-log-config-${Date.now()}-`));
+    await writeFile(join(configDir, "index.yml"), YAML.stringify(testConfig));
+
+    process.env.INDEX_PATH = dbPath;
+    process.env.QMD_CONFIG_DIR = configDir;
+    handle = await startMcpHttpServer(0, { quiet: true, dbPath });
+    baseUrl = `http://localhost:${handle.port}`;
+  });
+
+  beforeEach(() => {
+    // Never the real ~/.cache/qmd — the module reads XDG_CACHE_HOME per call.
+    cacheHome = mkdtempSync(join(tmpdir(), "qmd-rest-query-log-cache-"));
+    process.env.XDG_CACHE_HOME = cacheHome;
+    delete process.env.QMD_QUERY_LOG;
+    _resetQueryLogForTesting();
+  });
+
+  afterEach(() => {
+    rmSync(cacheHome, { recursive: true, force: true });
+  });
+
+  afterAll(async () => {
+    if (handle) await handle.stop();
+    _resetProductionModeForTesting();
+    if (origIndexPath !== undefined) process.env.INDEX_PATH = origIndexPath;
+    else delete process.env.INDEX_PATH;
+    if (origConfigDir !== undefined) process.env.QMD_CONFIG_DIR = origConfigDir;
+    else delete process.env.QMD_CONFIG_DIR;
+    if (origCache !== undefined) process.env.XDG_CACHE_HOME = origCache;
+    else delete process.env.XDG_CACHE_HOME;
+    if (origFlag !== undefined) process.env.QMD_QUERY_LOG = origFlag;
+    else delete process.env.QMD_QUERY_LOG;
+    try { unlinkSync(dbPath); } catch {}
+    if (configDir) rmSync(configDir, { recursive: true, force: true });
+  });
+
+  const postQuery = async (headers: Record<string, string> = {}) => {
+    const res = await fetch(`${baseUrl}/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...headers },
+      body: JSON.stringify({ searches: [{ type: "lex", query: "readme" }], collections: ["docs"], limit: 5, rerank: false }),
+    });
+    return { status: res.status, json: await res.json() as { results: { file: string; score: number; snippet: string }[] } };
+  };
+
+  type StatusToolResponse = {
+    result: { structuredContent: { queryLog: QueryLogStatus }; content: { text: string }[] };
+  };
+
+  const callStatusTool = async () => {
+    const name = "status";
+    const res = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": MCP_2026,
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": name,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name, arguments: {}, _meta: mcp2026Meta },
+      }),
+    });
+    return { status: res.status, json: await res.json() as StatusToolResponse }; // shape asserted by the test
+  };
+
+  const logRows = () => {
+    const dir = join(cacheHome, "qmd");
+    let names: string[] = [];
+    try { names = readdirSync(dir).filter((n) => n.startsWith("queries-")); } catch {}
+    return names.flatMap((n) =>
+      readFileSyncNode(join(dir, n), "utf-8").split("\n").filter(Boolean).map((l) => JSON.parse(l)),
+    );
+  };
+
+  test("baseline: 200 with qmd:// results for a lex search", async () => {
+    const { status, json } = await postQuery();
+    expect(status).toBe(200);
+    expect(json.results.length).toBeGreaterThan(0);
+    expect(json.results[0]!.file).toBe("qmd://docs/readme.md");
+    expect(typeof json.results[0]!.score).toBe("number");
+    expect(typeof json.results[0]!.snippet).toBe("string");
+  });
+
+  test("off by default: no log file", async () => {
+    await postQuery();
+    await flushQueryLog();
+    expect(logRows()).toEqual([]);
+  });
+
+  test("QMD_QUERY_LOG=1 writes one row per request with client headers", async () => {
+    process.env.QMD_QUERY_LOG = "1";
+    const { json } = await postQuery({ "X-QMD-Tag": "explore", "X-QMD-Qid": "run-1", "X-QMD-Role": "primary" });
+    await flushQueryLog();
+    const rows = logRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      v: 1,
+      via: "rest",
+      tool: "/query",
+      searches: [{ type: "lex", query: "readme" }],
+      collections: ["docs"],
+      limit: 5,
+      rerank: false,
+      client: { tag: "explore", qid: "run-1", role: "primary" },
+    });
+    expect(rows[0].index.docs).toBeGreaterThan(0);
+    expect(rows[0].results[0]).toEqual({ file: "docs/readme.md", score: json.results[0]!.score, rank: 1 });
+    expect(rows[0].results).toHaveLength(json.results.length);
+    expect(typeof rows[0].ms).toBe("number");
+  });
+
+  test("X-QMD-No-Log: 1 is not logged", async () => {
+    process.env.QMD_QUERY_LOG = "1";
+    await postQuery({ "X-QMD-No-Log": "1" });
+    await flushQueryLog();
+    expect(logRows()).toEqual([]);
+  });
+
+  test("status tool reports the query log state", async () => {
+    process.env.QMD_QUERY_LOG = "1";
+    await postQuery();
+    await flushQueryLog();
+    const { status, json } = await callStatusTool();
+    expect(status).toBe(200);
+    const queryLog = json.result.structuredContent.queryLog;
+    expect(queryLog).toMatchObject({ enabled: true, lastError: null });
+    expect(queryLog.path.startsWith(join(cacheHome, "qmd", "queries-"))).toBe(true);
+    expect(queryLog.lastWrite).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(json.result.content[0]!.text).toContain("Query log (REST /query only):");
+  });
+
+  test("an unwritable log dir leaves the response unchanged", async () => {
+    const before = await postQuery();
+    process.env.QMD_QUERY_LOG = "1";
+    writeFileSyncNode(join(cacheHome, "qmd"), "not a directory");
+    const after = await postQuery();
+    await flushQueryLog();
+    expect(after.status).toBe(200);
+    expect(after.json).toEqual(before.json);
+    expect(queryLogStatus().lastError).not.toBeNull();   // the write was attempted and failed
+  });
+});

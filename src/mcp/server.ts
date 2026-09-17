@@ -29,6 +29,7 @@ import {
 import { getConfigPath } from "../collections.js";
 import { enableProductionMode } from "../store.js";
 import { checkRequestOrigin, resolveOriginGuard } from "./origin-guard.js";
+import { entryFromRest, logQuery, queryLogStatus } from "../query-log.js";
 
 // =============================================================================
 // Types for structured content
@@ -573,10 +574,13 @@ Intent-aware lex (C++ performance, not sports):
       for (const col of status.collections) {
         summary.push(`    - ${col.name}: ${col.path} (${col.documents} docs)`);
       }
+      // ko-qmd: daemon query log state (only this process knows its env and write errors).
+      const queryLog = queryLogStatus();
+      summary.push(`  Query log (REST /query only): ${queryLog.enabled ? queryLog.path : "off"} (last write: ${queryLog.lastWrite ?? "none"}${queryLog.lastError ? `, last error: ${queryLog.lastError}` : ""})`);
 
       return {
         content: [{ type: "text", text: summary.join('\n') }],
-        structuredContent: status,
+        structuredContent: { ...status, queryLog },
       };
     })
   );
@@ -1031,6 +1035,8 @@ export async function startMcpHttpServer(
 
         nodeRes.writeHead(200, { "Content-Type": "application/json" });
         nodeRes.end(JSON.stringify({ results: formatted }));
+        // ko-qmd: opt-in query log (QMD_QUERY_LOG), written after the response.
+        logQuery(entryFromRest({ path: pathname, headers: nodeReq.headers, searches: queries, params, collections: effectiveCollections, results: formatted, ms: Date.now() - reqStart }), store);
         log(`${ts()} POST /query ${params.searches.length} queries (${Date.now() - reqStart}ms)`);
         return;
       }
