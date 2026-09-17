@@ -250,6 +250,13 @@ moves with it: `bm25_r5` 0.7404 → 0.9519, because its `sem-*`/`cro-*` paraphra
 failing on the same AND. `full_r5` stays 1.0000; `hybrid_r5` 1.0000 → 0.9904, one query inside a
 52-query fixture.
 
+Re-run on 2026-09-17 at `52d95f4` (the `scripts/dogfood.sh` gate reads the newest line of this form;
+`full_*` moved within the run-to-run spread noted under B1):
+
+```
+RESULT bm25_r5=0.9519 vector_r5=1.0000 hybrid_r5=0.9904 full_r5=0.9808 full_mrr=0.9423
+```
+
 `sem` at 0.750 is a hybrid-only number, and re-measuring it per query says most of that gap is
 already closed downstream. Per backend on the same 16 queries:
 
