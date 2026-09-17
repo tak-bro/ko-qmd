@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Changes
+
+- `develop` is the working branch; `main` only receives merges from it and is
+  where `/release` tags. `publish.yml` authenticates with the `NPM_TOKEN`
+  repository secret and skips a version that is already on the registry, so a
+  manually published version or a re-pushed tag still gets its GitHub release.
+  CI runs for `develop` pushes and pull requests too.
+
+### Fixes
+
+- The Windows git-install probe failed on every push with `Permission denied
+  (publickey)`: npm and pnpm resolve any github.com dependency over SSH first
+  and do not retry an auth failure over https, the runner has no key, and the
+  repository is private so anonymous https fails as well. The job now rewrites
+  every github.com URL to https with the job token via git `insteadOf` before
+  installing.
+
 ## [2.8.3-ko.2] - 2026-09-17
 
 ### Changes

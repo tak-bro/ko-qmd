@@ -37,7 +37,20 @@ jobs:
           package-manager-cache: false
 
       - run: npm run build
-      - run: npm publish --provenance --access public
+
+      # Idempotent: a version that is already on the registry (first publishes are
+      # manual, and a tag may be re-pushed) is skipped instead of failing with 403,
+      # so the GitHub release below is still created.
+      - name: Publish
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if npm view "ko-qmd@$VERSION" version >/dev/null 2>&1; then
+            echo "ko-qmd@$VERSION is already on npm — skipping publish"
+          else
+            npm publish --provenance --access public
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Extract release notes
         id: notes

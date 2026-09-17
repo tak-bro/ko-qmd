@@ -3,7 +3,7 @@ name: Windows git install
 on:
   workflow_dispatch:
   push:
-    branches: [main, "feat/**"]
+    branches: [main, develop, "feat/**"]
 
 jobs:
   git-install:
@@ -12,12 +12,25 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # npm and pnpm resolve any github.com URL through hosted-git-info and try SSH
+      # first; the runner has no key, and an auth failure is not retried over https.
+      # The repository is private, so anonymous https fails too. Rewrite every
+      # github.com form to https with the job token at the git level.
+      - name: Route github.com over https with the job token
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          AUTH="https://x-access-token:${GITHUB_TOKEN}@github.com/"
+          git config --global url."$AUTH".insteadOf "ssh://git@github.com/"
+          git config --global --add url."$AUTH".insteadOf "git@github.com:"
+          git config --global --add url."$AUTH".insteadOf "https://github.com/"
       - name: npm install from tag
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/npm-probe" && cd "$RUNNER_TEMP/npm-probe"
           npm init -y >/dev/null
-          npm i --foreground-scripts --no-audit --no-fund github:tak-bro/ko-qmd#main
+          npm i --foreground-scripts --no-audit --no-fund "git+https://github.com/tak-bro/ko-qmd.git#main"
           node -e "require('fs').accessSync('node_modules/ko-qmd/dist/index.js')"
       - name: pnpm install from tag
         if: always()
@@ -26,5 +39,5 @@ jobs:
           npm i -g pnpm@10.17.1
           mkdir -p "$RUNNER_TEMP/pnpm-probe" && cd "$RUNNER_TEMP/pnpm-probe"
           npm init -y >/dev/null
-          pnpm add --reporter=append-only --loglevel=debug "github:tak-bro/ko-qmd#main"
+          pnpm add --reporter=append-only --loglevel=debug "git+https://github.com/tak-bro/ko-qmd.git#main"
           node -e "require('fs').accessSync('node_modules/ko-qmd/dist/index.js')"
