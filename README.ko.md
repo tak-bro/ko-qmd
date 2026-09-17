@@ -16,6 +16,8 @@
    - 기본 임베딩 모델: `hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf`(업스트림은 embeddinggemma-300M). 리랭커·질의 확장 모델은 업스트림 기본값 그대로. 업스트림 [README.md](README.md)의 모델 표·"Custom Embedding Model" 절은 업스트림 기본값 기준이다.
    - 스킬 `skills/qmd/SKILL.md`에 "Korean queries" 절(`lex:`에 어간·alias·영문 용어, `vec:`에 한국어 패러프레이즈).
 
+4. 데몬 질의 로그 (`src/query-log.ts`, `server.ts` 접점 = REST 핸들러·`status` 툴): `QMD_QUERY_LOG=1` 로 띄운 HTTP 데몬이 REST 검색마다 `queries-YYYY-MM.jsonl` 에 한 줄을 남긴다(결과 경로·점수, 스니펫 없음). 헤더 `X-QMD-Tag`·`X-QMD-Qid`·`X-QMD-Role`·`X-QMD-No-Log`. 계약은 [README.md § Query log](README.md#query-log-ko-qmd). 업스트림 PR 대상 아님.
+
 ### 기본 임베딩 변경 후 재임베딩
 
 벡터는 모델 사이에 호환되지 않는다. embeddinggemma로 만든 기존 인덱스는 다시 임베딩해야 한다.
@@ -25,6 +27,19 @@ qmd embed -f
 ```
 
 embeddinggemma를 계속 쓰려면 `index.yml`의 `models: embed:` 또는 `QMD_EMBED_MODEL`로 지정한다.
+
+### dogfood — 작업 트리 빌드를 이 머신 데몬에 올리기
+
+```sh
+bash scripts/dogfood.sh              # build → bench-ko 게이트 → npm pack → npm i -g → 데몬 재시작 → 스모크
+bash scripts/dogfood.sh --restore    # 발행본(DOGFOOD_PIN_FILE 의 ko-qmd@<버전>, 없으면 latest)으로 되돌림
+bash scripts/dogfood.sh --check "RESULT bm25_r5=…"   # 게이트 판정만
+```
+
+- 게이트: `bench-ko.sh` 의 `bm25_r5` 가 [BASELINE.md](test/fixtures/ko-vault/BASELINE.md) 의 마지막 bench-ko `RESULT` 줄보다 낮으면 설치 전에 멈춘다(exit 3). bench 는 소스를 tsx 로 돌리므로, 설치된 `dist/` 는 스모크(설치된 `qmd --version` 의 커밋 · `POST /query`)가 확인한다.
+- `npm link` 가 아니라 pack 설치다 — 링크하면 데몬이 작업 트리의 `dist/` 를 서빙해 빌드 중에 깨질 수 있다.
+- 머신 배선은 env: `DOGFOOD_LABEL`(launchd 라벨, 기본 `com.lemoncloud.qmd-daemon`) · `DOGFOOD_URL`(기본 `http://127.0.0.1:8181`) · `DOGFOOD_SMOKE`(추가 스모크 명령 — `"status":"hit"` JSON 을 내야 함) · `DOGFOOD_PIN_FILE`.
+- 성공하면 `~/.cache/qmd/dogfood-deployed` 에 `<시각> <커밋>` 을 쓴다(`--restore` 가 지운다). 배치 중에는 설치된 바이너리가 발행본 핀과 다르다 — `qmd --version` 의 커밋이 구분자.
 
 ### ko-vault 벤치
 
