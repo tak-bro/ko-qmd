@@ -12,10 +12,11 @@
 
 ### Fixes
 
-- The Windows git-install probe fetched `github:tak-bro/ko-qmd#main`, which npm
-  and pnpm resolve over SSH first; the runner has no key, so the job failed on
-  every push (`Permission denied (publickey)`). It now installs from the
-  `git+https://` URL.
+- The Windows git-install probe failed on every push with `Permission denied
+  (publickey)`: npm and pnpm resolve any github.com dependency over SSH first
+  and do not retry an auth failure over https, and the runner has no key. The
+  job now rewrites SSH github.com URLs to https with git `insteadOf` before
+  installing.
 
 ## [2.8.3-ko.2] - 2026-09-17
 
