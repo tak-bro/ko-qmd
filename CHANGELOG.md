@@ -4,6 +4,11 @@
 
 ### Changes
 
+- Published to npm as `ko-qmd`. Install with `npm i -g ko-qmd`
+  after `npm uninstall -g @tobilu/qmd` (both ship a `qmd` bin). `publish.yml` is
+  back: pushing a `v*` tag runs the tests, publishes with provenance and creates
+  the GitHub release. The GitHub-tag install path still works for unpublished
+  commits.
 - New bench tooling: `scripts/bench-vault-paraphrase.ts` builds a paraphrase
   goldset from a vault by asking a local model, through ollama, for the question
   someone would type when they do not know the vocabulary a document is written
