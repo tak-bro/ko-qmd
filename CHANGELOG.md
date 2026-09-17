@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.8.3-ko.2] - 2026-09-17
+
 ### Changes
 
 - Published to npm as `ko-qmd`. Install with `npm i -g ko-qmd`
