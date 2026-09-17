@@ -1,4 +1,4 @@
-> **ko-qmd** — a Korean-language distribution of [tobi/qmd](https://github.com/tobi/qmd) (MIT).
+> **ko-qmd** (`npm i -g ko-qmd`) — a Korean-language distribution of [tobi/qmd](https://github.com/tobi/qmd) (MIT).
 > Hangul particle stripping and syllable-bigram FTS in the lex path, Qwen3-Embedding-0.6B as the
 > default embedding model. Everything below is upstream's README and still applies: the CLI, the MCP
 > server and the package binary are all called `qmd`.

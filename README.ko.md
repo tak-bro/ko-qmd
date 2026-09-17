@@ -2,14 +2,13 @@
 
 [tobi/qmd](https://github.com/tobi/qmd)의 한국어 배포판. 한국어 vault 검색을 위해 작은 패치 스택만 얹는다. 사용법·CLI·MCP 서버는 업스트림 [README.md](README.md)와 같다 — bin 이름과 MCP 서버명은 `qmd` 그대로다.
 
-- 패키지 이름: `ko-qmd` (npm 발행 없음 — git 태그로 소비)
+- 패키지 이름: `ko-qmd` (npm 발행 — `v*` 태그 push 가 `publish.yml` 로 발행)
 - 버전 규칙: `<업스트림 버전>-ko.N` (예: `2.8.3-ko.0`)
 - 브랜치: `main` = 배포 브랜치(업스트림 릴리스 + 한국어 패치 스택). 업스트림은 `upstream` 원격으로만 따라간다 — 포크가 아니다.
-- 설계·계획: [docs/vault-search/design.md](docs/vault-search/design.md), [implementation-plan.md](docs/vault-search/implementation-plan.md)
 
 ## 업스트림과 다른 점
 
-1. 패키징: 이름·repository·플러그인 marketplace owner, `publish.yml` 제거, CI에 `windows-latest`와 Electron 스모크 잡 추가
+1. 패키징: 이름·repository·플러그인 marketplace owner, `publish.yml` 은 `ko-qmd` 로 발행, CI에 `windows-latest`와 Electron 스모크 잡 추가
 2. Hangul FTS (`src/hangul.ts`, `store.ts` 접점 2곳)
    - 질의: 따옴표 없는 한글 단어는 끝 조사 하나 또는 `기`를 뗀 어간도 매칭한다(`검색을` → `검색`, 어간 2음절 이상). 따옴표 구문·한자·가나는 그대로.
    - 색인: 한글 구간의 음절 bigram을 필드 끝에 덧붙인다. `FTS_CJK_NORMALIZED_VERSION`이 `"2"`라 기존 인덱스는 처음 열 때 FTS를 한 번 다시 만든다.
@@ -41,17 +40,15 @@ Qwen3-Embedding 기본값의 벤치 수치는 미측정이다(design §6 라운�
 
 ## 설치
 
-npm 레지스트리가 아니라 GitHub 태그에서 설치한다.
-
 ```sh
 # 팀 CLI
-npm install -g github:tak-bro/ko-qmd#<tag>
+npm install -g ko-qmd@<version>
 
 # 앱 package.json
-"ko-qmd": "github:tak-bro/ko-qmd#<tag>"
+"ko-qmd": "<version>"
 ```
 
-git 설치 시 `prepare`가 `scripts/build.mjs`(= `tsc -p tsconfig.build.json`)로 `dist/`를 만든다. **설치에는 node + tsc만 필요하고 bun은 필요 없다.** 개발용 `npm run test:unit`은 vitest와 `bun test`를 둘 다 돌리므로 bun이 필요하다.
+업스트림 `@tobilu/qmd` 와 bin 이름이 같아 둘을 함께 둘 수 없다 — `npm uninstall -g @tobilu/qmd` 뒤 설치한다. 미발행 커밋은 GitHub 에서 직접(`npm i github:tak-bro/ko-qmd#<sha>`) 받을 수 있고, 그때는 `prepare`가 `scripts/build.mjs`(= `tsc -p tsconfig.build.json`)로 `dist/`를 만든다. **설치에는 node + tsc만 필요하고 bun은 필요 없다.** 개발용 `npm run test:unit`은 vitest와 `bun test`를 둘 다 돌리므로 bun이 필요하다.
 
 설치 스모크(빈 디렉터리):
 
@@ -72,7 +69,7 @@ node -e "import('ko-qmd').then(m=>{if(typeof m.createStore!=='function')process.
 - **pnpm `onlyBuiltDependencies`**: `better-sqlite3`, `node-llama-cpp`
 - `better-sqlite3`는 Electron ABI로 리빌드해야 한다(`@electron/rebuild` 또는 electron-builder `install-app-deps`). 리빌드된 모듈은 시스템 Node(vitest)에서 `NODE_MODULE_VERSION` 불일치로 로드되지 않는다.
 
-Windows CI 결과·리빌드 소요 시간은 [docs/vault-search/WINDOWS.md](docs/vault-search/WINDOWS.md)에 기록한다.
+Windows CI 결과·리빌드 소요 시간은 `docs/vault-search/WINDOWS.md` 에 기록한다(아직 미작성 — CI 로그가 유일한 기록).
 
 ## 업스트림 동기화
 
