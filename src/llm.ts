@@ -78,6 +78,7 @@ import { homedir } from "os";
 import { dirname, join } from "path";
 import { accessSync, constants, existsSync, mkdirSync, statSync, unlinkSync, readdirSync, readFileSync, writeFileSync, openSync, readSync, closeSync } from "fs";
 import { createRequire } from "node:module";
+import { hangulBigramTail, sharesHangulBigram } from "./hangul.js";
 
 // =============================================================================
 // Embedding Formatting Functions
@@ -266,6 +267,73 @@ export type Queryable = {
   type: QueryType;
   text: string;
 };
+
+/**
+ * Thinking tags welded onto an expansion line.
+ *
+ * The model is prompted with /no_think and the grammar forbids newlines inside a line,
+ * so a thinking block cannot arrive as a line of its own — it arrives attached to a
+ * sub-query, usually as a trailing "</think>" the grammar had no reason to reject.
+ * Measured 2026-09-18 on 30 Korean queries, 20 of 46 hyde expansions carried one; left
+ * in, the tag is embedded and searched for along with the text that matters.
+ */
+function stripThinkTags(text: string): string {
+  return text
+    .replace(/<think>[\s\S]*?<\/think>/g, " ")
+    .replace(/<\/?think>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Parse the expansion model's "type: text" lines into sub-queries, dropping the ones
+ * that would cost a search and return nothing useful.
+ *
+ * Three rejections, in order: a line whose text is empty once thinking tags are removed;
+ * a line that drifted off the query; and a line repeating a sub-query already kept for
+ * the same backend, which is the same search run twice.
+ *
+ * The drift rule needs an anchor shared with the query. Upstream reads [a-z0-9] words,
+ * so for a Hangul query the anchor list came out empty and the rule passed everything —
+ * measured 2026-09-18 over 151 expansions of 30 Korean queries it rejected none, keeping
+ * 22 that were generic English boilerplate ("Proper implementation follows established
+ * patterns and best practices.") unrelated to the query. Accepting a shared Hangul
+ * syllable bigram as an anchor drops those 22 and 2 of the 129 Korean expansions, both
+ * sentence fragments with no content word.
+ *
+ * A query with no anchor of either kind (a lone syllable, a symbol) keeps every line, as
+ * before: there is nothing to compare against.
+ */
+export function parseExpansionLines(query: string, raw: string): Queryable[] {
+  // Single characters are not anchors: a query containing "1:1" would otherwise keep
+  // every expansion with a digit in it, which is most of them.
+  const queryTerms = query.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(t => t.length >= 2);
+  const queryHasHangul = hangulBigramTail(query).length > 0;
+
+  const onQuery = (text: string): boolean => {
+    if (queryTerms.length === 0 && !queryHasHangul) return true;
+    const lower = text.toLowerCase();
+    if (queryTerms.some(term => lower.includes(term))) return true;
+    return queryHasHangul && sharesHangulBigram(query, text);
+  };
+
+  const seen = new Set<string>();
+  const queryables: Queryable[] = [];
+  for (const line of raw.trim().split("\n")) {
+    const colonIdx = line.indexOf(":");
+    if (colonIdx === -1) continue;
+    const type = line.slice(0, colonIdx).trim();
+    if (type !== "lex" && type !== "vec" && type !== "hyde") continue;
+    const text = stripThinkTags(line.slice(colonIdx + 1));
+    if (!text) continue;
+    if (!onQuery(text)) continue;
+    const key = `${type}\n${text.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    queryables.push({ type, text });
+  }
+  return queryables;
+}
 
 /**
  * Document to rerank
@@ -1677,25 +1745,7 @@ export class LlamaCpp implements LLM {
         },
       });
 
-      const lines = result.trim().split("\n");
-      const queryLower = query.toLowerCase();
-      const queryTerms = queryLower.replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
-
-      const hasQueryTerm = (text: string): boolean => {
-        const lower = text.toLowerCase();
-        if (queryTerms.length === 0) return true;
-        return queryTerms.some(term => lower.includes(term));
-      };
-
-      const queryables: Queryable[] = lines.map(line => {
-        const colonIdx = line.indexOf(":");
-        if (colonIdx === -1) return null;
-        const type = line.slice(0, colonIdx).trim();
-        if (type !== 'lex' && type !== 'vec' && type !== 'hyde') return null;
-        const text = line.slice(colonIdx + 1).trim();
-        if (!hasQueryTerm(text)) return null;
-        return { type: type as QueryType, text };
-      }).filter((q): q is Queryable => q !== null);
+      const queryables = parseExpansionLines(query, result);
 
       // Filter out lex entries if not requested
       const filtered = includeLexical ? queryables : queryables.filter(q => q.type !== 'lex');

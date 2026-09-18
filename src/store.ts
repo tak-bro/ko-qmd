@@ -4073,6 +4073,23 @@ function mergeSearchResultsByScore(lists: SearchResult[][], limit: number): Sear
     .slice(0, limit);
 }
 
+/**
+ * Fewest documents a retrieval pass looks at, whatever `limit` the caller asked for.
+ *
+ * Both searches over-fetch by a multiple of `limit` — FTS by 10x when the collection
+ * filter runs after the match, vectors by 3x or 30x because several chunks of one
+ * document collapse into one result. Those multiples are of a number the caller picked
+ * for display, so a small `limit` leaves a pool that post-filtering can exhaust, and
+ * `-n 5` was not the first five of `-n 20`. The CLI makes that visible: its default
+ * limit is 20 for `--json`/`--files` and 5 otherwise (src/cli/qmd.ts), so the output
+ * format changed which documents came back. README documents `limit` as "Max results"
+ * and `candidateLimit` as the candidate knob; the floor is what makes that true.
+ *
+ * 20 is the breadth hybridQuery already passes explicitly on every one of its own
+ * retrieval calls.
+ */
+const MIN_RETRIEVAL_BREADTH = 20;
+
 export function searchFTS(db: Database, query: string, limit: number = 20, collectionName?: string | readonly string[]): SearchResult[] {
   const names = scopedCollectionNames(collectionName);
   // Search each requested collection before merging/truncating so a large
@@ -4096,7 +4113,8 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
     // When filtering by collection, fetch extra candidates from the FTS index
     // since some will be filtered out. Without a collection filter we can
     // fetch exactly the requested limit.
-    const ftsLimit = collectionFilter ? limit * 10 : limit;
+    const breadth = Math.max(limit, MIN_RETRIEVAL_BREADTH);
+    const ftsLimit = collectionFilter ? breadth * 10 : breadth;
 
     let sql = `
       WITH fts_matches AS (
@@ -4240,6 +4258,7 @@ export async function searchVec(db: Database, query: string, model: string, limi
     return mergeSearchResultsByScore(lists, limit);
   }
   const collectionFilter = names?.[0];
+  const breadth = Math.max(limit, MIN_RETRIEVAL_BREADTH);
 
   // IMPORTANT: We use a two-step query approach here because sqlite-vec virtual tables
   // hang indefinitely when combined with JOINs in the same query. Do NOT try to
@@ -4269,13 +4288,13 @@ export async function searchVec(db: Database, query: string, model: string, limi
     if (collectionHashSeqs.length === 0) return [];
 
     if (collectionHashSeqs.length <= COLLECTION_VEC_EXACT_SCAN_MAX) {
-      vecResults = exactVecScanByHashSeq(db, embedding, collectionHashSeqs, limit);
+      vecResults = exactVecScanByHashSeq(db, embedding, collectionHashSeqs, breadth);
     } else {
       // Large collection: ANN with over-fetch, hard-capped at sqlite-vec's max k.
-      vecResults = annVecScan(db, embedding, Math.max(limit * 30, limit * 3));
+      vecResults = annVecScan(db, embedding, breadth * 30);
     }
   } else {
-    vecResults = annVecScan(db, embedding, limit * 3);
+    vecResults = annVecScan(db, embedding, breadth * 3);
   }
 
   if (vecResults.length === 0) return [];
@@ -5505,6 +5524,38 @@ export function getHybridRrfWeights(rankedListMeta: RankedListMeta[]): number[] 
 }
 
 /**
+ * How much of the blended score the retrieval position is worth. The reranker
+ * decides; position only separates documents it scores alike.
+ */
+const POSITION_TIEBREAK_WEIGHT = 0.1;
+
+/**
+ * Blend a reranker score with a linear retrieval-position tiebreak.
+ *
+ * The position term used to be 1/rrfRank under rank-gated weights (0.75/0.60/0.40).
+ * That score drops 50% between rank 1 and rank 2 — a gap of 0.375 at weight 0.75,
+ * larger than the 0.25 the whole reranker term could ever contribute — so no
+ * reranker score could displace the top retrieval hit, and the reranker was inert
+ * exactly where it decided the answer. A linear decay over the candidate window
+ * separates adjacent ranks by a constant the reranker can overcome.
+ *
+ * Measured 2026-09-18 on one fixed candidate dump per goldset, so every formula was
+ * scored against identical retrieval (scripts/bench-dump-candidates.ts feeding
+ * scripts/bench-blend-sweep.mjs):
+ *
+ *                 alias (n=223)         paraphrase (n=30)
+ *   1/rrfRank     r@1 .713  mrr .808    r@1 .467  mrr .664
+ *   this          r@1 .874  mrr .927    r@1 .867  mrr .903
+ *
+ * On both goldsets the old blend's r@1 equalled retrieval-only r@1 to three
+ * decimals, which is what "the reranker cannot move rank 1" looks like as a number.
+ */
+export function blendRerankScore(rrfRank: number, rerankScore: number, candidateLimit: number): number {
+  const positionScore = 1 - (rrfRank - 1) / candidateLimit;
+  return (1 - POSITION_TIEBREAK_WEIGHT) * rerankScore + POSITION_TIEBREAK_WEIGHT * positionScore;
+}
+
+/**
  * Hybrid search: BM25 + vector + query expansion + RRF + chunked reranking.
  *
  * Pipeline:
@@ -5765,12 +5816,8 @@ export async function hybridQuery(
 
   const blended = reranked.map(r => {
     const rrfRank = rrfRankMap.get(r.file) || candidateLimit;
-    let rrfWeight: number;
-    if (rrfRank <= 3) rrfWeight = 0.75;
-    else if (rrfRank <= 10) rrfWeight = 0.60;
-    else rrfWeight = 0.40;
-    const rrfScore = 1 / rrfRank;
-    const blendedScore = rrfWeight * rrfScore + (1 - rrfWeight) * r.score;
+    const rrfScore = 1 - (rrfRank - 1) / candidateLimit;
+    const blendedScore = blendRerankScore(rrfRank, r.score, candidateLimit);
 
     const candidate = candidateMap.get(r.file);
     const chunkInfo = docChunkMap.get(r.file);
@@ -5784,7 +5831,7 @@ export async function hybridQuery(
       rrf: {
         rank: rrfRank,
         positionScore: rrfScore,
-        weight: rrfWeight,
+        weight: POSITION_TIEBREAK_WEIGHT,
         baseScore: trace?.baseScore ?? 0,
         topRankBonus: trace?.topRankBonus ?? 0,
         totalScore: trace?.totalScore ?? 0,
@@ -6159,12 +6206,8 @@ export async function structuredSearch(
 
   const blended = reranked.map(r => {
     const rrfRank = rrfRankMap.get(r.file) || candidateLimit;
-    let rrfWeight: number;
-    if (rrfRank <= 3) rrfWeight = 0.75;
-    else if (rrfRank <= 10) rrfWeight = 0.60;
-    else rrfWeight = 0.40;
-    const rrfScore = 1 / rrfRank;
-    const blendedScore = rrfWeight * rrfScore + (1 - rrfWeight) * r.score;
+    const rrfScore = 1 - (rrfRank - 1) / candidateLimit;
+    const blendedScore = blendRerankScore(rrfRank, r.score, candidateLimit);
 
     const candidate = candidateMap.get(r.file);
     const chunkInfo = docChunkMap.get(r.file);
@@ -6178,7 +6221,7 @@ export async function structuredSearch(
       rrf: {
         rank: rrfRank,
         positionScore: rrfScore,
-        weight: rrfWeight,
+        weight: POSITION_TIEBREAK_WEIGHT,
         baseScore: trace?.baseScore ?? 0,
         topRankBonus: trace?.topRankBonus ?? 0,
         totalScore: trace?.totalScore ?? 0,

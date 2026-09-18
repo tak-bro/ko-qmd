@@ -11,9 +11,14 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-vault="$1"; bench="$2"; shift 2
+vault="$(cd "$1" && pwd)"; bench="$2"; shift 2
 name="$(basename "$vault")"
 work="$ROOT/tmp/real-bench/$name"  # gitignored scratch, never the vault itself
+# The work directory is derived from the vault's name, so a vault that already lives in
+# tmp/real-bench resolves to itself and the rm below would delete the corpus being measured.
+case "$vault" in
+  "$work"|"$work"/*) echo "vault $vault is inside the work directory $work — move it out" >&2; exit 1 ;;
+esac
 rm -rf "$work"; mkdir -p "$work/config"
 export INDEX_PATH="$work/index.sqlite"
 export QMD_CONFIG_DIR="$work/config"

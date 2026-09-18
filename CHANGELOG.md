@@ -4,6 +4,49 @@
 
 ### Changes
 
+- `qmd query`'s reranker can now change which document comes first. The score
+  that orders results blended the reranker against a retrieval-position term of
+  `1 / rrfRank` under rank-gated weights, and that term falls 0.375 between rank
+  1 and rank 2 — more than the 0.25 the entire reranker term could contribute.
+  The top retrieval hit was therefore unreachable: a document the reranker scored
+  0.03 stayed ahead of one it scored 1.00. Position is now a linear decay across
+  the candidate window worth 10% of the blend, so it separates documents the
+  reranker scores alike instead of overruling it. Measured over a fixed candidate
+  dump per goldset, so every formula saw identical retrieval: recall@1 went .713
+  to .874 on 223 alias queries and .467 to .867 on 30 paraphrase queries. On both
+  goldsets the old blend's recall@1 equalled retrieval-only recall@1 to three
+  decimals, which is what an inert reranker looks like as a number.
+- New bench tooling: `scripts/bench-vault-summarize.ts` writes a plain-language
+  summary per document with a local model, and `bench-vault-summary-apply.mjs`
+  builds the summary-augmented copy of a vault that the bench then indexes. This
+  measures whether the vocabulary gap the paraphrase goldset is made of closes at
+  index time. On 16 such queries, giving each document three everyday-language
+  lines took `search` (BM25, no LLM) from .250 to .562 recall@5 and the unreranked
+  hybrid path from .625 to .812. The reranked path did not move (.875 both ways,
+  the same two queries missed): it was already covering the gap, so the summaries
+  buy the cheap backends most of what the expensive one had. The BM25 number
+  carries no confound — that backend never calls query expansion. Summary lines
+  are filtered by document frequency, because a model that emits "이 도구는 뭘 하는
+  건데?" would otherwise give every vague query a weak match on an unrelated
+  document.
+- New bench tooling: `scripts/bench-dump-candidates.ts` records the RRF rank and
+  reranker score of every candidate for each goldset query, and
+  `scripts/bench-blend-sweep.mjs` re-scores that dump under different blend
+  formulas. Comparing two formulas used to mean two bench runs, which vary in
+  their retrieval and take about an hour each; it now costs one dump and a
+  millisecond per formula, and the variants are compared against the same
+  candidates.
+
+- `bench-vault-goldset.mjs` adds two buckets that cost no model call: `alias`,
+  the display text of a `[[target|alias]]` wikilink, and `fmalias`, an entry of
+  the target's own `aliases:` frontmatter list. Both are human-written other
+  names for a document. First measurement on a 232-document vault (223 queries):
+  `full` scored 0.924 r@5 against `hybrid` 0.978 and `vector` 0.982 — of the 17
+  queries `full` missed, `hybrid` had 14 in its top five. The reranker demotes
+  short name-like queries that retrieval already found.
+- `bench-vault-paraphrase.ts` writes its output after every document, so a run
+  killed from outside keeps what it had done.
+
 - `QMD_LLM_IDLE_TIMEOUT_MS` sets how long loaded models stay idle before they
   are unloaded (`0` = never), overriding the 5 minutes `createStore()` passes.
   On a long-running HTTP daemon the first search after a quiet spell no longer
@@ -27,6 +70,44 @@
   CI runs for `develop` pushes and pull requests too.
 
 ### Fixes
+
+- `bench-vault-report.mjs` writes its miss list next to the input, never on top
+  of it. The path came from `replace('bench.json', 'misses.json')`, a no-op for
+  any other file name, so reporting on a copied result overwrote that result.
+- Query expansion drops sub-queries that have nothing to do with the query again.
+  The drift filter kept an expansion only if it shared a word with the query, but
+  it read the query as `[a-z0-9]` words, so a Korean query produced an empty word
+  list and the filter passed everything. Measured over 151 expansions of 30
+  Korean queries it rejected none, including 22 that were generic English
+  boilerplate ("Proper implementation follows established patterns and best
+  practices.") with no relation to the query — each one an embedding call and a
+  vector search spent on noise. A shared Hangul syllable bigram now counts as the
+  same kind of anchor: it drops those 22 and keeps 127 of the 129 Korean
+  expansions. A query with no anchor of either kind still keeps everything.
+- Query expansion strips thinking tags from a sub-query before searching for it.
+  The grammar forbids newlines inside a line, so a `</think>` arrives welded to
+  the sub-query text rather than on a line of its own that parsing would skip; 20
+  of 46 hyde expansions in the same measurement carried one, and the tag was
+  embedded along with the text that mattered.
+- Query expansion no longer runs the same sub-query twice on the same backend.
+- `limit` no longer decides how wide a search looks, only how many results come
+  back. Both searches over-fetch by a multiple of `limit` — the FTS index by 10x
+  because the collection filter runs after the match, vectors by 3x or 30x
+  because chunks of one document collapse into one result — so a small `limit`
+  left a pool that post-filtering could exhaust, and `-n 5` was not the first five
+  of `-n 20`. The CLI made it visible: its default limit is 20 for `--json` and
+  `--files` and 5 otherwise, so the output format changed which documents were
+  found. Retrieval now looks at 20 documents at minimum whatever `limit` says,
+  which is the breadth `qmd query` already used internally.
+- `bench-vault.sh` refuses to run when the vault it was given sits inside the
+  work directory it is about to `rm -rf`. The work directory is named after the
+  vault, so a vault under `tmp/real-bench/` resolved to the same path and the
+  corpus was deleted before it could be indexed, which showed up as a bench over
+  zero documents rather than as an error.
+- `bench-vault-report.mjs` prints every backend that ran under each bucket, and
+  takes its miss list from the best backend rather than from BM25. The bucket
+  lines were BM25-only under a bare bucket name, so a run's `sem: 9/16` read as
+  the result of the pipeline the run was measuring.
 
 - The Windows git-install probe failed on every push with `Permission denied
   (publickey)`: npm and pnpm resolve any github.com dependency over SSH first

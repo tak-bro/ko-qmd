@@ -58,6 +58,7 @@ import {
   cleanupOrphanedVectors,
   generateEmbeddings,
   getHybridRrfWeights,
+  blendRerankScore,
   _resetProductionModeForTesting,
   hybridQuery,
   structuredSearch,
@@ -1642,6 +1643,42 @@ describe("FTS Search", () => {
     await cleanupTestDb(store);
   });
 
+  test("searchFTS keeps its candidate pool when a small limit is asked for", async () => {
+    // `limit` is documented as "Max results", but the collection filter runs after the
+    // FTS match, so the pre-filter fetch used to be limit * 10 — at -n 1 that is ten rows,
+    // all of them noise, and the one matching document in the scoped collection came back
+    // empty. The CLI made this visible: its default limit is 20 for --json and 5
+    // otherwise, so the output format decided what was found.
+    const store = await createTestStore();
+    const noise = await createTestCollection({ name: "noise-breadth", pwd: "/test/noise-breadth" });
+    const scoped = await createTestCollection({ name: "scoped-breadth", pwd: "/test/scoped-breadth" });
+
+    for (let i = 0; i < 30; i++) {
+      await insertTestDocument(store.db, noise, {
+        name: `noise-${i}`,
+        title: "retrieval breadth",
+        body: `Noise ${i} about retrieval breadth, repeated retrieval breadth.`,
+        displayPath: `noise-${i}.md`,
+      });
+    }
+    await insertTestDocument(store.db, scoped, {
+      name: "scoped",
+      title: "Scratch",
+      body: "A single passing mention of breadth.",
+      displayPath: "scoped.md",
+    });
+
+    const narrow = store.searchFTS("breadth", 1, scoped);
+    expect(narrow).toHaveLength(1);
+    expect(narrow[0]!.displayPath).toBe(`${scoped}/scoped.md`);
+
+    // And a small limit returns a prefix of a large one, which is what "max results" means.
+    const wide = store.searchFTS("breadth", 20, scoped);
+    expect(wide.slice(0, 1).map(r => r.displayPath)).toEqual(narrow.map(r => r.displayPath));
+
+    await cleanupTestDb(store);
+  });
+
   test("searchFTS finds CJK documents by exact and mixed queries", async () => {
     const store = await createTestStore();
     const collectionName = await createTestCollection();
@@ -2785,6 +2822,25 @@ describe("Reciprocal Rank Fusion", () => {
     expect(semanticWeights).toEqual([2.0, 0.75, 1.0]);
     expect(fixedOrder.findIndex(r => r.file === "original-vector.md"))
       .toBeLessThan(fixedOrder.findIndex(r => r.file === "lex-expansion-only.md"));
+  });
+
+  test("reranker can displace the top retrieval hit", () => {
+    // The regression this formula exists for: under the old 1/rrfRank position score
+    // the rank-1 to rank-2 gap (0.375) exceeded the whole reranker term (0.25), so a
+    // document the reranker scored 0.03 still beat one it scored 1.00.
+    const topHitTheRerankerRejects = blendRerankScore(1, 0.03, 40);
+    const secondHitTheRerankerLoves = blendRerankScore(2, 1.0, 40);
+
+    expect(secondHitTheRerankerLoves).toBeGreaterThan(topHitTheRerankerRejects);
+  });
+
+  test("retrieval position breaks ties the reranker does not", () => {
+    // Same reranker score, so only position separates them.
+    expect(blendRerankScore(1, 0.8, 40)).toBeGreaterThan(blendRerankScore(5, 0.8, 40));
+  });
+
+  test("blend is monotonic in the reranker score at a fixed rank", () => {
+    expect(blendRerankScore(7, 0.9, 40)).toBeGreaterThan(blendRerankScore(7, 0.4, 40));
   });
 
   test("RRF adds top-rank bonus", () => {

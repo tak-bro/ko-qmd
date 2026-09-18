@@ -44,6 +44,23 @@ export function hangulBigramTail(text: string): string {
 }
 
 /**
+ * Whether two texts share a Hangul syllable bigram (`검색을 고치기` and `문서 검색`
+ * share `검색`). Two Korean sentences about the same thing overlap in syllables long
+ * before they overlap in whole words, because the words carry different particles and
+ * endings, so a bigram is the smallest unit that says "these are about the same thing"
+ * without stemming both sides. Returns false when either side has no Hangul run of two
+ * or more syllables.
+ */
+export function sharesHangulBigram(a: string, b: string): boolean {
+  const left = new Set((a.match(HANGUL_RUN_PATTERN) ?? []).flatMap(syllableBigrams));
+  if (left.size === 0) return false;
+  for (const run of b.match(HANGUL_RUN_PATTERN) ?? []) {
+    for (const gram of syllableBigrams(run)) if (left.has(gram)) return true;
+  }
+  return false;
+}
+
+/**
  * Strip one trailing particle (or 기) from a pure-Hangul word when the stem
  * keeps at least two syllables (`검색을` → `검색`, `책을` stays). Returns null
  * when nothing is stripped.

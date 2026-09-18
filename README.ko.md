@@ -13,7 +13,7 @@
    - 질의: 따옴표 없는 한글 단어는 끝 조사 하나 또는 `기`를 뗀 어간도 매칭한다(`검색을` → `검색`, 어간 2음절 이상). 따옴표 구문·한자·가나는 그대로.
    - 색인: 한글 구간의 음절 bigram을 필드 끝에 덧붙인다. `FTS_CJK_NORMALIZED_VERSION`이 `"2"`라 기존 인덱스는 처음 열 때 FTS를 한 번 다시 만든다.
 3. 한국어 기본값
-   - 기본 임베딩 모델: `hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf`(업스트림은 embeddinggemma-300M). 리랭커·질의 확장 모델은 업스트림 기본값 그대로. 업스트림 [README.md](README.md)의 모델 표·"Custom Embedding Model" 절은 업스트림 기본값 기준이다.
+   - 기본 임베딩 모델: `hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf`(업스트림은 embeddinggemma-300M). [README.md](README.md)의 모델 표·"Custom Embedding Model"·"Model Configuration" 절도 이 기본값 기준으로 고쳐 뒀다. 리랭커·질의 확장 모델은 업스트림 기본값 그대로.
    - 스킬 `skills/qmd/SKILL.md`에 "Korean queries" 절(`lex:`에 어간·alias·영문 용어, `vec:`에 한국어 패러프레이즈).
 
 4. 데몬 질의 로그 (`src/query-log.ts`, `server.ts` 접점 = REST 핸들러·`status` 툴): `QMD_QUERY_LOG=1` 로 띄운 HTTP 데몬이 REST 검색마다 `queries-YYYY-MM.jsonl` 에 한 줄을 남긴다(결과 경로·점수, 스니펫 없음). 헤더 `X-QMD-Tag`·`X-QMD-Qid`·`X-QMD-Role`·`X-QMD-No-Log`. 계약은 [README.md § Query log](README.md#query-log-ko-qmd). 업스트림 PR 대상 아님.
@@ -63,6 +63,8 @@ npm install -g ko-qmd@<version>
 # 앱 package.json
 "ko-qmd": "<version>"
 ```
+
+버전은 `<업스트림 버전>-ko.N` 형태의 prerelease 라, `^`·`~` 범위는 같은 `major.minor.patch` 의 `-ko.*` 안에서만 움직인다(`^2.8.3-ko.0` 은 `2.8.4-ko.0` 을 안 집는다). 정확한 버전으로 핀한다.
 
 업스트림 `@tobilu/qmd` 와 bin 이름이 같아 둘을 함께 둘 수 없다 — `npm uninstall -g @tobilu/qmd` 뒤 설치한다. 미발행 커밋은 GitHub 에서 직접(`npm i github:tak-bro/ko-qmd#<sha>`) 받을 수 있고, 그때는 `prepare`가 `scripts/build.mjs`(= `tsc -p tsconfig.build.json`)로 `dist/`를 만든다. **설치에는 node + tsc만 필요하고 bun은 필요 없다.** 개발용 `npm run test:unit`은 vitest와 `bun test`를 둘 다 돌리므로 bun이 필요하다.
 
