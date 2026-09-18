@@ -58,10 +58,10 @@ shippable without the glob syntax, without `grep`, and without touching the embe
 
 ## The plan
 
-Order: 3, 1, 2, 5, 4 — the engineering order was 1, 2, 5, 3, 4, cheapest first, and this is
-the same list ordered by what a user notices. Item 3 moves first because a stale index is
-the only item on this list that makes the tool wrong rather than merely limited; item 1 is
-next because `--since` completes that story. 4 stays last, and see the note under it.
+Order: 3, 1, 2, 5 — the engineering order was 1, 2, 5, 3, cheapest first, and this is the
+same list ordered by what a user notices. Item 3 goes first because a stale index is the
+only one here that makes the tool wrong rather than merely limited; item 1 is next because
+`--since` completes that story. Item 4 is deferred (see Settled).
 
 Items are numbered by the order they were decided, not the order they get built.
 
@@ -152,7 +152,9 @@ The mtime check walks the collection's files. On a large or network-backed vault
 is the cost, not the re-index, so the cooldown is what bounds it: one walk per 30 seconds
 per collection, skipped entirely when no query arrives.
 
-### 4. A lighter embedding backend
+### 4. A lighter embedding backend (deferred)
+
+Not in this round. Recorded here because the decision and its reasoning are worth keeping.
 
 transformers.js with a small multilingual ONNX model (`multilingual-e5-small` class),
 offered alongside node-llama-cpp. Qwen3-Embedding-0.6B stays the default; this is opt-in for
@@ -233,10 +235,10 @@ which items 1 and 2 must call less often rather than more.
 
 | Risk | Response |
 | --- | --- |
-| Item 4 rebuilds the vector table under a user's real 1042-document index | Opt-in only, never on upgrade; the rebuild path must be reversible before the backend ships |
+| Item 4 rebuilds the vector table under a user's real 1042-document index | Deferred out of this round; when it returns, opt-in only, never on upgrade, and reversible before the backend ships |
 | Item 3 writes to the shared index while sessions read it | The existing concurrency boundary, plus text-only writes so a refresh is milliseconds |
 | Item 2 duplicates ripgrep and is used by nobody | Justified above on the shell-less caller; measure it — if the MCP tool never sees it in a month, delete it |
-| The round grows past what one person finishes | Items 4 and 5 are the designated cuts, in that order |
+| The round grows past what one person finishes | Item 4 is already cut; item 5 is the next one to drop |
 
 ## Not in scope
 
@@ -252,9 +254,12 @@ MCP response: the shape is a contract other sessions depend on.
 - The three `searchVec` dimension-mismatch test failures are a fixture pinned to 768
   dimensions against a 1024-dimension default; item 4 forces the question.
 
-## Open
+## Settled
 
-1. How many PRs to split this into — recommend one per item, because 3 and 4 can be cut
-   without stranding 1, 2 and 5. Alternative: one PR for 1+2+5 and one each for 3 and 4.
-2. Whether item 4 stays in this round at all — recommend deferring it until the rebuild
-   path is designed, since the backend is a day and the migration is the project.
+- **One PR** for the whole round. The items share the CLI option table and the store entry
+  points, so splitting them would mean three passes over the same files.
+- **Item 4 is out of this round.** The lighter backend is a day's work; rebuilding a
+  fixed-dimension vector table under a real index is the project, and it is the only item
+  here that touches a user's existing data. It returns when that rebuild path is designed.
+
+The round is items 3, 1, 2 and 5.
