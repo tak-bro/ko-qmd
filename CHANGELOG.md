@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.8.3-ko.3] - 2026-09-18
+
 The reranker now decides which document ranks first. The blend's retrieval-position
 term could outweigh the entire reranker score, so the top retrieval hit was
 unreachable; making position a 10% linear decay took recall@1 from .713 to .874 on
