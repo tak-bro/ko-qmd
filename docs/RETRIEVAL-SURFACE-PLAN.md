@@ -43,11 +43,27 @@ a little ordering in the reranked path. Both changes stand on what they remove �
 boilerplate sub-queries that cost an embedding call each, and a result set that changed with
 `-n` — not on recall.
 
+## Who this is for, and the one story that matters
+
+Two users. A person at a terminal with a vault of Markdown, and an agent session reaching
+the same index over MCP — which on this machine is the heavier user of the two.
+
+The story neither can tell today: *write a note, ask about it a minute later, find it.*
+Right now the answer is "run `qmd update` first", and nobody remembers to. Everything else
+in this plan is a convenience; that one is the difference between a tool you trust and a
+tool you re-run by hand. It is item 3.
+
+**MVP**: item 3 plus `--since` from item 1. That is the whole story above, and it is
+shippable without the glob syntax, without `grep`, and without touching the embedding stack.
+
 ## The plan
 
-Order: 1, 2, 5, 3, 4. The cheap independent ones first; 5 before 3 and 4 because it is the
-instrument that shows what expansion actually did, and 3 and 4 are the two that are hard to
-undo.
+Order: 3, 1, 2, 5, 4 — the engineering order was 1, 2, 5, 3, 4, cheapest first, and this is
+the same list ordered by what a user notices. Item 3 moves first because a stale index is
+the only item on this list that makes the tool wrong rather than merely limited; item 1 is
+next because `--since` completes that story. 4 stays last, and see the note under it.
+
+Items are numbered by the order they were decided, not the order they get built.
 
 ### 1. Path and time filters on a query
 
@@ -90,6 +106,13 @@ Results are lines grouped by file, with line numbers that address `qmd get file.
 
 This is the escape hatch for the failure mode this fork keeps hitting: a query that finds
 nothing because Hangul tokenization did not produce the term the document contains.
+
+Why not just ripgrep, which is already on the machine and faster? For a person at a terminal
+that is often the right answer, and this feature does not pretend otherwise. It earns its
+place for the caller who has no shell — an MCP client whose only tools are `query`, `get`
+and `multi_get` — and for the caller who wants one corpus definition: `qmd grep` searches
+exactly what the index holds, honours collection exclusion, and returns `qmd://` paths and
+docids that `qmd get` accepts. If those two reasons stop being true, cut the item.
 
 Risk to design for: a user-supplied pattern compiled as a JS `RegExp` is a ReDoS surface,
 and a per-document time budget does not contain it — a catastrophic backtrack blocks the
@@ -147,7 +170,13 @@ drops and recreates `vectors_vec` so the next embed run can size it to the new m
 `embed_fingerprint` already keys rows per model, so the parts exist — what is missing is the
 decision of what happens to a user who switches models with a half-embedded index.
 
-### 5. Per-group ranks in `--explain`
+### 5. Per-group ranks in `--explain` (developer-facing)
+
+This one buys a user nothing. It is instrumentation: it exists so the next question about
+expansion quality is answered by a flag instead of a one-off script, and it is in the plan
+on that basis, not as product value. Cut it first if the round runs long.
+
+
 
 Keep the fused list as the answer, and expose the per-sub-query lists under `--explain`
 only, so neither the default output nor the MCP response shape changes.
@@ -199,6 +228,15 @@ plan can reintroduce. Their tests are required, not optional.
 `rebuildFTSForCjkNormalization`; `clearAllEmbeddings` and `embed_fingerprint` for the
 backend migration; `rankedListMeta` and `buildRrfTrace` for item 5; `getContextForFile`,
 which items 1 and 2 must call less often rather than more.
+
+## Risks
+
+| Risk | Response |
+| --- | --- |
+| Item 4 rebuilds the vector table under a user's real 1042-document index | Opt-in only, never on upgrade; the rebuild path must be reversible before the backend ships |
+| Item 3 writes to the shared index while sessions read it | The existing concurrency boundary, plus text-only writes so a refresh is milliseconds |
+| Item 2 duplicates ripgrep and is used by nobody | Justified above on the shell-less caller; measure it — if the MCP tool never sees it in a month, delete it |
+| The round grows past what one person finishes | Items 4 and 5 are the designated cuts, in that order |
 
 ## Not in scope
 
