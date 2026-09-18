@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+The reranker now decides which document ranks first. The blend's retrieval-position
+term could outweigh the entire reranker score, so the top retrieval hit was
+unreachable; making position a 10% linear decay took recall@1 from .713 to .874 on
+223 name-like queries and from .467 to .867 on 30 paraphrase queries. The HTTP daemon
+gains two operational knobs: `QMD_QUERY_LOG=1` records every search it serves to a
+monthly JSONL, and `QMD_LLM_IDLE_TIMEOUT_MS=0` keeps models resident, which takes the
+first search after an idle spell from ~1.8s to ~0.07s.
+
 ### Changes
 
 - `qmd query`'s reranker can now change which document comes first. The score
