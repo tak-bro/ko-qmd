@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changes
+
+- The daemon's query log now covers the MCP `query` tool, not just the REST
+  endpoints. A search an agent runs through MCP over HTTP lands in the same
+  `queries-YYYY-MM.jsonl` with `via: "mcp"`, the same result path spelling and
+  the same `X-QMD-*` header handling, so a dogfooding session's real traffic is
+  in one file. A plain `query` argument is recorded as one search of type
+  `auto`. stdio MCP calls stay unlogged — they carry no request to annotate.
+
 ## [2.8.3-ko.3] - 2026-09-18
 
 The reranker now decides which document ranks first. The blend's retrieval-position

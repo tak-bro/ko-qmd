@@ -1415,7 +1415,7 @@ describe("MCP HTTP Transport — legacy FTS seed (#792)", () => {
 import { flushQueryLog, queryLogStatus, _resetQueryLogForTesting, type QueryLogStatus } from "../src/query-log";
 import { mkdtempSync, readFileSync as readFileSyncNode, rmSync, writeFileSync as writeFileSyncNode, readdirSync } from "node:fs";
 
-describe("REST /query and the query log", () => {
+describe("REST /query, MCP query and the query log", () => {
   let handle: HttpServerHandle | undefined;
   let baseUrl: string;
   let dbPath: string;
@@ -1507,6 +1507,34 @@ describe("REST /query and the query log", () => {
     return { status: res.status, json: await res.json() as StatusToolResponse }; // shape asserted by the test
   };
 
+  type QueryToolResponse = {
+    result: { structuredContent: { results: { file: string; score: number }[] } };
+  };
+
+  const callQueryTool = async (
+    args: Record<string, unknown>,
+    headers: Record<string, string> = {},
+  ) => {
+    const res = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": MCP_2026,
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": "query",
+        ...headers,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "query", arguments: args, _meta: mcp2026Meta },
+      }),
+    });
+    return { status: res.status, json: await res.json() as QueryToolResponse }; // shape asserted by the test
+  };
+
   const logRows = () => {
     const dir = join(cacheHome, "qmd");
     let names: string[] = [];
@@ -1570,7 +1598,54 @@ describe("REST /query and the query log", () => {
     expect(queryLog).toMatchObject({ enabled: true, lastError: null });
     expect(queryLog.path.startsWith(join(cacheHome, "qmd", "queries-"))).toBe(true);
     expect(queryLog.lastWrite).toMatch(/^\d{4}-\d{2}-\d{2}T/);
-    expect(json.result.content[0]!.text).toContain("Query log (REST /query only):");
+    expect(json.result.content[0]!.text).toContain("Query log (REST + MCP over HTTP):");
+  });
+
+  test("the MCP query tool over HTTP writes a row in the REST row's shape", async () => {
+    process.env.QMD_QUERY_LOG = "1";
+    const { status, json } = await callQueryTool(
+      { searches: [{ type: "lex", query: "readme" }], collections: ["docs"], limit: 5, rerank: false },
+      { "X-QMD-Tag": "explore", "X-QMD-Qid": "run-2", "X-QMD-Role": "probe" },
+    );
+    expect(status).toBe(200);
+    await flushQueryLog();
+    const rows = logRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      v: 1,
+      via: "mcp",
+      tool: "query",
+      searches: [{ type: "lex", query: "readme" }],
+      collections: ["docs"],
+      limit: 5,
+      rerank: false,
+      client: { tag: "explore", qid: "run-2", role: "probe" },
+    });
+    // Same path spelling as the REST row: no qmd:// prefix, no percent-encoding.
+    expect(rows[0].results[0]).toEqual({
+      file: "docs/readme.md",
+      score: json.result.structuredContent.results[0]!.score,
+      rank: 1,
+    });
+  });
+
+  test("a plain MCP query is logged as one auto-expanded search", async () => {
+    process.env.QMD_QUERY_LOG = "1";
+    await callQueryTool({ query: "readme", collections: ["docs"], limit: 5, rerank: false });
+    await flushQueryLog();
+    const rows = logRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].searches).toEqual([{ type: "auto", query: "readme" }]);
+  });
+
+  test("X-QMD-No-Log: 1 is not logged on the MCP path either", async () => {
+    process.env.QMD_QUERY_LOG = "1";
+    await callQueryTool(
+      { searches: [{ type: "lex", query: "readme" }], collections: ["docs"], limit: 5, rerank: false },
+      { "X-QMD-No-Log": "1" },
+    );
+    await flushQueryLog();
+    expect(logRows()).toEqual([]);
   });
 
   test("an unwritable log dir leaves the response unchanged", async () => {

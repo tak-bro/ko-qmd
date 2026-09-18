@@ -29,7 +29,7 @@ import {
 import { getConfigPath } from "../collections.js";
 import { enableProductionMode } from "../store.js";
 import { checkRequestOrigin, resolveOriginGuard } from "./origin-guard.js";
-import { entryFromRest, logQuery, queryLogStatus } from "../query-log.js";
+import { entryFromMcp, entryFromRest, logQuery, queryLogStatus } from "../query-log.js";
 
 // =============================================================================
 // Types for structured content
@@ -167,8 +167,12 @@ async function buildInstructions(store: QMDStore): Promise<string> {
 /**
  * Create an MCP server with all QMD tools, resources, and prompts registered.
  * Shared by both stdio and HTTP transports.
+ *
+ * `httpHeaders` carries the HTTP request the instance serves, so the `query`
+ * tool can log the call the way the REST handler does. stdio passes nothing —
+ * a stdio call has no request to annotate and is never logged.
  */
-async function createMcpServer(store: QMDStore, inflight?: InflightGate): Promise<McpServer> {
+async function createMcpServer(store: QMDStore, inflight?: InflightGate, httpHeaders?: Headers): Promise<McpServer> {
   // Wraps request handlers so a stdio EOF shutdown can wait for in-flight
   // work to settle before disposing the store/llm underneath it.
   const track = inflight?.track ?? (<T,>(fn: T): T => fn);
@@ -338,6 +342,7 @@ Intent-aware lex (C++ performance, not sports):
       }),
     },
     track(async ({ query, searches, limit, minScore, candidateLimit, collections, intent, rerank }) => {
+      const startedAt = Date.now();
       // Require exactly one of `query` (plain text, auto-expanded) or `searches` (typed sub-queries).
       if (!query && (!searches || searches.length === 0)) {
         return {
@@ -390,6 +395,20 @@ Intent-aware lex (C++ performance, not sports):
           snippet: addLineNumbers(snippet, line),
         };
       });
+
+      // ko-qmd: opt-in query log (QMD_QUERY_LOG), HTTP transport only.
+      if (httpHeaders) {
+        logQuery(entryFromMcp({
+          headers: httpHeaders,
+          // A plain `query` is one auto-expanded search; `searches` are already typed.
+          searches: query ? [{ type: "auto", query }] : (searches ?? []).map(s => ({ type: s.type, query: s.query })),
+          collections: effectiveCollections,
+          limit,
+          rerank,
+          results: filtered,
+          ms: Date.now() - startedAt,
+        }), store);
+      }
 
       return {
         content: [{ type: "text", text: formatSearchSummary(filtered, primaryQuery) }],
@@ -576,7 +595,7 @@ Intent-aware lex (C++ performance, not sports):
       }
       // ko-qmd: daemon query log state (only this process knows its env and write errors).
       const queryLog = queryLogStatus();
-      summary.push(`  Query log (REST /query only): ${queryLog.enabled ? queryLog.path : "off"} (last write: ${queryLog.lastWrite ?? "none"}${queryLog.lastError ? `, last error: ${queryLog.lastError}` : ""})`);
+      summary.push(`  Query log (REST + MCP over HTTP): ${queryLog.enabled ? queryLog.path : "off"} (last write: ${queryLog.lastWrite ?? "none"}${queryLog.lastError ? `, last error: ${queryLog.lastError}` : ""})`);
 
       return {
         content: [{ type: "text", text: summary.join('\n') }],
@@ -875,7 +894,7 @@ export async function startMcpHttpServer(
   // responses (matches the previous enableJsonResponse: true). Dual-speaks
   // 2025-era traffic statelessly by default (`legacy: "stateless"`).
   const mcpHandler = createMcpHandler(
-    () => createMcpServer(store),
+    (ctx) => createMcpServer(store, undefined, ctx.requestInfo?.headers),
     { responseMode: "json" },
   );
 
