@@ -47,7 +47,10 @@ jobs:
           if npm view "ko-qmd@$VERSION" version >/dev/null 2>&1; then
             echo "ko-qmd@$VERSION is already on npm — skipping publish"
           else
-            npm publish --provenance --access public
+            # Every ko-qmd version is a `-ko.N` prerelease, and npm refuses to
+            # publish one without an explicit dist-tag. `latest` is what the
+            # fork wants: `npm i -g ko-qmd` must resolve to the newest build.
+            npm publish --provenance --access public --tag latest
           fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
