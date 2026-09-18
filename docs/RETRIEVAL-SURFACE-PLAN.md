@@ -61,7 +61,19 @@ be that clause and not a post-filter: `MIN_RETRIEVAL_BREADTH` guarantees 20 cand
 a narrow request silently searching a narrow pool.
 
 `--mask` / `--glob` are taken by collection creation, which is why the query-side flag is
-`--path`.
+`--path`. Match globs with `picomatch`, already a dependency and already how collection
+masks and ignore rules are matched (`src/store.ts:3422`, `:4776`).
+
+Vector search cannot take the same `WHERE`. `annVecScan` searches the whole table and the
+document predicate is applied to its output, which is the post-filter starvation that
+collection scoping already hit (#791, #803): a narrow filter leaves nothing behind. Reuse
+the fix that landed for collections — resolve the filter to a `hash_seq` set first and run
+`exactVecScanByHashSeq` when that set is under `COLLECTION_VEC_EXACT_SCAN_MAX`, otherwise
+ANN with over-fetch and a documented ceiling on how narrow a filter it can serve.
+
+A filter that removes everything must say so. `search`, `vsearch` and `query` returning an
+empty list is indistinguishable from "no match"; report the filtered corpus size when the
+filter matched zero documents.
 
 ### 2. `qmd grep`
 
@@ -79,8 +91,21 @@ Results are lines grouped by file, with line numbers that address `qmd get file.
 This is the escape hatch for the failure mode this fork keeps hitting: a query that finds
 nothing because Hangul tokenization did not produce the term the document contains.
 
-Risk to design for: a user-supplied pattern compiled as a JS `RegExp` is a ReDoS surface.
-Bound the pattern length and give each document a time budget.
+Risk to design for: a user-supplied pattern compiled as a JS `RegExp` is a ReDoS surface,
+and a per-document time budget does not contain it — a catastrophic backtrack blocks the
+only thread, so no timer fires and the daemon stops answering every session on the machine.
+Contain it structurally: run the scan in a worker thread the caller can terminate, and cap
+pattern length. A per-document budget is still worth having, but as a fairness limit, not
+as the ReDoS answer.
+
+Do not load the corpus into one array. `rebuildFTSForCjkNormalization` already reads bodies
+in keyset-paginated batches (`WHERE id > ? ORDER BY id LIMIT ?`) for exactly this reason;
+the scan reuses that shape and stops once `limit` files have matched. `--path` from item 1
+narrows the scan before it starts, which is the cheap way to make a large vault tolerable.
+
+Per-result context is an N+1: `getContextForFile` re-reads every collection per call
+(`src/store.ts:3490`). Line-grouped results multiply it, so resolve context once per file
+and hoist the collection list out of the loop.
 
 ### 3. Daemon refresh
 
@@ -90,8 +115,19 @@ re-embed would hold the GPU during someone's search. A new document is findable 
 immediately and by vector search after the next `qmd embed`, which is a better failure than
 a stalled query.
 
+The refresh re-indexes and nothing else. `qmd update` runs a collection's configured
+pre-update command first — `git pull` in the documented example — and those hooks are gated
+on `qmd trust`. A refresh that fired them would run shell commands on a timer nobody asked
+for, so it must call the indexing path directly rather than the update command, and must
+never prompt for trust. Hook execution lives in the CLI (`src/cli/qmd.ts`), which keeps the
+two apart as long as the daemon does not reach for it.
+
 The MCP daemon is shared by several sessions, so the refresh writes while other sessions
 read. `test/store-concurrency.test.ts` already fixes what that boundary must hold.
+
+The mtime check walks the collection's files. On a large or network-backed vault that walk
+is the cost, not the re-index, so the cooldown is what bounds it: one walk per 30 seconds
+per collection, skipped entirely when no query arrives.
 
 ### 4. A lighter embedding backend
 
@@ -106,7 +142,10 @@ The real cost is not the backend but the migration. `vectors_vec` is a fixed-dim
 table; `content_vectors.embed_fingerprint` distinguishes models per row, but the vector
 table does not. Switching models means rebuilding it, and the three `searchVec` tests that
 fail on a fixture embedded at 768 dimensions against a 1024-dimension default are that
-mismatch already showing. Design the rebuild path first; the backend is the easy half.
+mismatch already showing. Design the rebuild path first; the backend is the easy half. `clearAllEmbeddings` already
+drops and recreates `vectors_vec` so the next embed run can size it to the new model, and
+`embed_fingerprint` already keys rows per model, so the parts exist — what is missing is the
+decision of what happens to a user who switches models with a half-embedded index.
 
 ### 5. Per-group ranks in `--explain`
 
@@ -117,6 +156,67 @@ only, so neither the default output nor the MCP response shape changes.
 and `buildRrfTrace` already walks them. Diagnosing "what did expansion contribute" took a
 one-off probe script this week; this is that probe, in the product.
 
+## Tests each item owes
+
+Named per branch the item introduces, because a branch with no test is the one that breaks
+quietly. `test/store.test.ts` and `test/mcp.test.ts` are where the first three land.
+
+1. **Filters** — a path glob that keeps a document and one that excludes it; a `!` exclusion
+   beating an include; `--since` accepting both `7d` and a date, and rejecting garbage; a
+   filter narrow enough that the old post-filter would have starved it, asserting the result
+   still comes back (the regression test for the vector path above); a filter matching zero
+   documents reporting that rather than an empty list; the same filter through the MCP tool.
+2. **grep** — smart case both ways; a pattern with regex metacharacters; a match on a line
+   whose number is then fed to `qmd get`; an excluded collection staying out of results;
+   a pattern that a Hangul FTS query misses but grep finds, which is the reason it exists;
+   a pathological pattern terminating instead of hanging.
+3. **Refresh** — a file changed on disk becoming findable on the next query; the cooldown
+   suppressing the second walk; a configured update hook *not* running; a refresh writing
+   while a second connection reads.
+4. **Embedding backend** — an index embedded by one backend rejecting a query embedded by
+   the other with a clear message, not a dimension error; the rebuild path emptying and
+   re-creating `vectors_vec`.
+5. **Explain groups** — a query whose expansion produced three sub-queries showing three
+   groups with their own ranks, and the default output shape unchanged.
+
+Regression rule: the starvation case in (1) and the hang case in (2) are both bugs this
+plan can reintroduce. Their tests are required, not optional.
+
+## Failure modes
+
+| Path | Fails as | Seen by the user as |
+| --- | --- | --- |
+| Filter + vector | Post-filter starvation | Fewer results than asked for, no error — the reason (1) reports filtered corpus size |
+| grep pattern | Catastrophic backtracking | Daemon stops answering every session — contained by the worker thread |
+| Refresh | Write during read | Query error under concurrency — covered by the existing concurrency boundary |
+| Refresh | mtime walk on a network vault | Every query pays the walk — bounded by the cooldown |
+| Backend switch | Dimension mismatch | `Expected 768 dimensions but received 1024`, today's test failure, shown to users |
+
+## What already exists
+
+`picomatch` (a dependency) for globs; `exactVecScanByHashSeq` and
+`COLLECTION_VEC_EXACT_SCAN_MAX` for filtered vector scans; keyset-batched body reads in
+`rebuildFTSForCjkNormalization`; `clearAllEmbeddings` and `embed_fingerprint` for the
+backend migration; `rankedListMeta` and `buildRrfTrace` for item 5; `getContextForFile`,
+which items 1 and 2 must call less often rather than more.
+
+## Not in scope
+
+Symbol-type filters and ripgrep file types (zvec has both): this corpus is Markdown, and
+qmd's AST chunking already covers the code case. A remote embedding service: the point of
+this tool is that nothing leaves the machine. Per-group ranks in the default output or the
+MCP response: the shape is a contract other sessions depend on.
+
+## TODOs surfaced by this review
+
+- `getContextForFile` re-reads the collection list per result row — an N+1 that predates
+  this plan and gets worse with line-level results.
+- The three `searchVec` dimension-mismatch test failures are a fixture pinned to 768
+  dimensions against a 1024-dimension default; item 4 forces the question.
+
 ## Open
 
-How many PRs to split this into.
+1. How many PRs to split this into — recommend one per item, because 3 and 4 can be cut
+   without stranding 1, 2 and 5. Alternative: one PR for 1+2+5 and one each for 3 and 4.
+2. Whether item 4 stays in this round at all — recommend deferring it until the rebuild
+   path is designed, since the backend is a day and the migration is the project.
