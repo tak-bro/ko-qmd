@@ -9,11 +9,24 @@ if (s['vector'] && s['vector']['avg_recall_at_5'] > 0) {
 }
 const by = {}
 for (const q of j.results) (by[q.id.split('-')[0]] ??= []).push(q)
-for (const [b, qs] of Object.entries(by)) {
-  const hit = qs.filter((q) => q.backends.bm25.recall_at_5 > 0).length
-  console.log(`  ${b}: ${hit}/${qs.length} = ${(hit / qs.length).toFixed(3)}`)
+// Per bucket for every backend that ran, not just bm25: the buckets exist to separate
+// query shapes, and which backend wins changes with the shape. Printing one backend's
+// numbers under a bare bucket name invites reading them as the whole run's.
+const ran = ['bm25', 'vector', 'hybrid', 'full']
+  .filter((b) => j.summary[b] && (b === 'bm25' || j.summary[b].avg_recall_at_5 > 0))
+for (const [bucket, qs] of Object.entries(by)) {
+  const cells = ran.map((b) => {
+    const hit = qs.filter((q) => q.backends[b].recall_at_5 > 0).length
+    return `${b} ${(hit / qs.length).toFixed(3)}`
+  })
+  console.log(`  ${bucket} (n=${qs.length}): ${cells.join('  ')}`)
 }
-const miss = j.results.filter((q) => q.backends.bm25.recall_at_5 === 0)
-writeFileSync(path.replace('bench.json', 'misses.json'), JSON.stringify(
-  miss.map((q) => ({ id: q.id, query: q.query, expected: q.backends.bm25.unmatched_expected_files, top: q.backends.bm25.top_files.slice(0, 3) })), null, 1))
-console.log(`misses=${miss.length}`)
+// The miss list is the best backend's, since that is the set still unsolved by anything.
+const bestBackend = ran[ran.length - 1]
+const miss = j.results.filter((q) => q.backends[bestBackend].recall_at_5 === 0)
+// Next to the input, never on top of it: `replace('bench.json', …)` was a no-op for any other
+// file name, so reporting on a copied result overwrote that result with its own miss list.
+const missPath = path.endsWith('bench.json') ? path.replace(/bench\.json$/, 'misses.json') : `${path}.misses.json`
+writeFileSync(missPath, JSON.stringify(
+  miss.map((q) => ({ id: q.id, query: q.query, expected: q.backends[bestBackend].unmatched_expected_files, top: q.backends[bestBackend].top_files.slice(0, 3) })), null, 1))
+console.log(`misses=${miss.length} (${bestBackend})`)

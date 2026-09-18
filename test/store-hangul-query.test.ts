@@ -20,6 +20,7 @@ import {
   hangulMixedQuery,
   hangulStems,
   hangulTermQuery,
+  sharesHangulBigram,
   stripHangulParticle,
 } from "../src/hangul.js";
 
@@ -37,6 +38,21 @@ describe("hangulBigramTail", () => {
   test("normalizeCjkForFTS keeps character tokens and appends bigrams", () => {
     expect(normalizeCjkForFTS("검색을").split(/\s+/).filter(Boolean)).toEqual(["검", "색", "을", "검색", "색을"]);
     expect(normalizeCjkForFTS("中文 test").split(/\s+/).filter(Boolean)).toEqual(["中", "文", "test"]);
+  });
+});
+
+describe("sharesHangulBigram", () => {
+  test("two inflections of the same word share a bigram", () => {
+    expect(sharesHangulBigram("검색을 고치기", "문서 검색 품질")).toBe(true);
+  });
+
+  test("unrelated Korean sentences share nothing", () => {
+    expect(sharesHangulBigram("문서 검색 속도", "점심 메뉴 추천")).toBe(false);
+  });
+
+  test("a side with no Hangul run of two syllables shares nothing", () => {
+    expect(sharesHangulBigram("책", "책 이야기")).toBe(false);
+    expect(sharesHangulBigram("문서 검색", "vector search quality")).toBe(false);
   });
 });
 

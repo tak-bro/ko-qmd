@@ -1,7 +1,8 @@
 > **ko-qmd** (`npm i -g ko-qmd`) — a Korean-language distribution of [tobi/qmd](https://github.com/tobi/qmd) (MIT).
 > Hangul particle stripping and syllable-bigram FTS in the lex path, Qwen3-Embedding-0.6B as the
 > default embedding model. Everything below is upstream's README and still applies: the CLI, the MCP
-> server and the package binary are all called `qmd`.
+> server and the package binary are all called `qmd`. Where it says `@tobilu/qmd` — install commands,
+> SDK `import`s — use `ko-qmd`; the upstream name installs upstream, with none of the Hangul patches.
 > Korean notes, install and release process: [README.ko.md](README.ko.md).
 
 # QMD - Query Markup Documents
@@ -118,7 +119,7 @@ Although the tool works perfectly fine when you just tell your agent to use it o
 **Claude Code** — Install the plugin (recommended):
 
 ```bash
-claude plugin marketplace add tobi/qmd
+claude plugin marketplace add tak-bro/ko-qmd
 claude plugin install qmd@qmd
 ```
 
@@ -587,29 +588,29 @@ QMD uses three local GGUF models (auto-downloaded on first use):
 
 | Model | Purpose | Size |
 |-------|---------|------|
-| `embeddinggemma-300M-Q8_0` | Vector embeddings (default) | ~300MB |
+| `Qwen3-Embedding-0.6B-Q8_0` | Vector embeddings (default) | ~640MB |
 | `qwen3-reranker-0.6b-q8_0` | Re-ranking | ~640MB |
-| `qmd-query-expansion-1.7B-q4_k_m` | Query expansion (fine-tuned) | ~1.1GB |
+| `qmd-query-expansion-1.7B-q4_k_m` | Query expansion (fine-tuned) | ~1.3GB |
 
 Models are downloaded from HuggingFace and cached in `~/.cache/qmd/models/`.
 
 ### Custom Embedding Model
 
-Override the default embedding model via the `QMD_EMBED_MODEL` environment variable.
-This is useful for multilingual corpora (e.g. Chinese, Japanese, Korean) where
-`embeddinggemma-300M` has limited coverage.
+The default is Qwen3-Embedding-0.6B — multilingual (119 languages including CJK),
+MTEB top-ranked. Override it via the `QMD_EMBED_MODEL` environment variable, for
+example to fall back to embeddinggemma-300M's smaller footprint on an English-only
+corpus:
 
 ```sh
-# Use Qwen3-Embedding-0.6B for better multilingual (CJK) support
-export QMD_EMBED_MODEL="hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf"
+export QMD_EMBED_MODEL="hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf"
 
 # After changing the model, re-embed all collections:
 qmd embed -f
 ```
 
 Supported model families:
-- **embeddinggemma** (default) — English-optimized, small footprint
-- **Qwen3-Embedding** — Multilingual (119 languages including CJK), MTEB top-ranked
+- **Qwen3-Embedding** (default) — Multilingual (119 languages including CJK), MTEB top-ranked
+- **embeddinggemma** — English-optimized, small footprint
 
 > **Note:** When switching embedding models, you must re-index with `qmd embed -f`
 > since vectors are not cross-compatible between models. The prompt format is
@@ -626,8 +627,8 @@ bun install -g @tobilu/qmd
 ### Development
 
 ```sh
-git clone https://github.com/tobi/qmd
-cd qmd
+git clone https://github.com/tak-bro/ko-qmd
+cd ko-qmd
 npm install
 npm link
 ```
@@ -756,7 +757,7 @@ editor_uri: "vscode://file{path}:{line}:{col}"
 # built-in defaults. `qmd init` writes this block pre-filled with the
 # resolved defaults. See "Model Configuration" for the default URIs.
 models:
-  embed: "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf"
+  embed: "hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf"
   rerank: "hf:ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF/qwen3-reranker-0.6b-q8_0.gguf"
   generate: "hf:tobil/qmd-query-expansion-1.7B-gguf/qmd-query-expansion-1.7B-q4_k_m.gguf"
 
@@ -1301,14 +1302,16 @@ Query ──► LLM Expansion ──► [Original, Variant 1, Variant 2]
 The default models are defined in `src/llm.ts` as HuggingFace URIs:
 
 ```typescript
-const DEFAULT_EMBED_MODEL = "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf";
+const DEFAULT_EMBED_MODEL = "hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf";
 const DEFAULT_RERANK_MODEL = "hf:ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF/qwen3-reranker-0.6b-q8_0.gguf";
 const DEFAULT_GENERATE_MODEL = "hf:tobil/qmd-query-expansion-1.7B-gguf/qmd-query-expansion-1.7B-q4_k_m.gguf";
 ```
 
 Override them per-role without touching source via the `models:` block in
 `index.yml` (see [Configuring `index.yml`](#configuring-indexyml)) or the
-`QMD_EMBED_MODEL` env var. Re-run `qmd embed` after changing the embedding model.
+`QMD_EMBED_MODEL` / `QMD_RERANK_MODEL` / `QMD_GENERATE_MODEL` env vars. The
+config block wins over the env var, which wins over the built-in default.
+Re-run `qmd embed` after changing the embedding model.
 
 ### EmbeddingGemma Prompt Format
 

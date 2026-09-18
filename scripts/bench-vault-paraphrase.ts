@@ -303,6 +303,14 @@ const main = async () => {
     counts[reason]++
     if (args.keepRejects) rejects.push({ file, query, reason })
   }
+  const flush = (docsDone: number) => {
+    writeFileSync(args.out, JSON.stringify({
+      description: `generated paraphrase goldset from ${args.vault}`,
+      version: '1', generator: 'bench-vault-paraphrase', model: args.model,
+      collection: args.collection, docs_done: docsDone, docs_total: files.length, queries,
+    }, null, 1))
+    if (args.keepRejects) writeFileSync(args.keepRejects, JSON.stringify(rejects, null, 1))
+  }
 
   for (const [i, { rel, text }] of files.entries()) {
     if (Date.now() >= deadline) {
@@ -340,15 +348,14 @@ const main = async () => {
         expected_files: [rel], expected_in_top_k: 1,
       })
     }
+    // Checkpoint after every document. A run this long gets killed from outside (2026-09-17: a
+    // memory guard took a 35-minute run at document 20 and nothing had been written), and two
+    // small JSON writes per document cost nothing next to two model calls.
+    flush(i + 1)
     if ((i + 1) % 10 === 0) process.stderr.write(`  ${i + 1}/${files.length} docs, ${queries.length} queries\n`)
   }
 
-  writeFileSync(args.out, JSON.stringify({
-    description: `generated paraphrase goldset from ${args.vault}`,
-    version: '1', generator: 'bench-vault-paraphrase', model: args.model,
-    collection: args.collection, queries,
-  }, null, 1))
-  if (args.keepRejects) writeFileSync(args.keepRejects, JSON.stringify(rejects, null, 1))
+  flush(files.length)
   const processed = stoppedEarly ? `stopped early, budget ${args.minutes}m` : 'all'
   console.log(`docs=${files.length} (${processed}) queries=${queries.length} rejected=${JSON.stringify(counts)}`)
 }

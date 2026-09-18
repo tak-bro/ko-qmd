@@ -32,6 +32,7 @@ import {
   resolveRerankModel,
   resolveModels,
   pullModels,
+  parseExpansionLines,
   withLLMSession,
   canUnloadLLM,
   SessionReleasedError,
@@ -592,6 +593,52 @@ describe("embedding context VRAM pool (#799)", () => {
       perContextMB: 150,
       reserveMB: EMBED_POOL_RERANK_RESERVE_MB,
     })).toBe(8);
+  });
+});
+
+describe("parseExpansionLines", () => {
+  test("keeps a Korean expansion that shares a syllable bigram with the query", () => {
+    const out = parseExpansionLines("에이전트가 답을 보내다가 중간에 죽으면", "vec: 에이전트 응답이 끊겼을 때 복구하는 방법\n");
+    expect(out).toEqual([{ type: "vec", text: "에이전트 응답이 끊겼을 때 복구하는 방법" }]);
+  });
+
+  test("drops English boilerplate for a Korean query", () => {
+    // The whole reason the filter was repaired: this line shares nothing with the query,
+    // and under the [a-z0-9]-only anchor list it was kept and searched for.
+    const raw = "hyde: Proper implementation follows established patterns and best practices.\n";
+    expect(parseExpansionLines("문서 검색이 왜 느린가요", raw)).toEqual([]);
+  });
+
+  test("keeps English boilerplate when the query is English", () => {
+    const raw = "hyde: Proper implementation follows established patterns and best practices.\n";
+    const out = parseExpansionLines("implementation patterns", raw);
+    expect(out).toHaveLength(1);
+  });
+
+  test("a query with no anchor of either kind keeps every line", () => {
+    const out = parseExpansionLines("책", "vec: 무엇이든\nlex: 아무거나\n");
+    expect(out).toHaveLength(2);
+  });
+
+  test("strips a thinking tag welded onto the text", () => {
+    const out = parseExpansionLines("문서 검색", "hyde: 문서 검색 품질 이야기</think>\n");
+    expect(out).toEqual([{ type: "hyde", text: "문서 검색 품질 이야기" }]);
+  });
+
+  test("drops a line that is nothing but a thinking tag", () => {
+    expect(parseExpansionLines("문서 검색", "vec: <think></think>\n")).toEqual([]);
+  });
+
+  test("drops a sub-query repeated for the same backend", () => {
+    const raw = "lex: 문서 검색\nlex: 문서 검색\nvec: 문서 검색\n";
+    expect(parseExpansionLines("문서 검색", raw)).toEqual([
+      { type: "lex", text: "문서 검색" },
+      { type: "vec", text: "문서 검색" },
+    ]);
+  });
+
+  test("ignores lines with an unknown type or no colon", () => {
+    expect(parseExpansionLines("문서 검색", "note: 문서 검색\n문서 검색\n")).toEqual([]);
   });
 });
 
