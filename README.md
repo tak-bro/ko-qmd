@@ -164,13 +164,16 @@ The HTTP server exposes two endpoints:
 ##### Query log (ko-qmd)
 
 Start the daemon with `QMD_QUERY_LOG=1` (`true`/`yes` also work; anything else
-is off) and every search served by `POST /query` or `/search` is appended as
-one JSON line to `$XDG_CACHE_HOME/qmd/queries-YYYY-MM.jsonl` (default
-`~/.cache/qmd`, one file per local month, mode `0600`, never pruned). CLI
-searches and MCP tool calls are not logged.
+is off) and every search it serves — `POST /query`, `/search`, and the MCP
+`query` tool over HTTP — is appended as one JSON line to
+`$XDG_CACHE_HOME/qmd/queries-YYYY-MM.jsonl` (default `~/.cache/qmd`, one file
+per local month, mode `0600`, never pruned). CLI searches are not logged, and
+neither is an MCP call over stdio: it carries no request to annotate.
 
 A row records the qmd version and commit, an index fingerprint (document count
-and last update), the searches, collections, limit, rerank flag, each result's
+and last update), `via` (`rest` or `mcp`), the searches (a plain MCP `query`
+argument is recorded as one search of type `auto`), collections, limit, rerank
+flag, each result's
 `<collection>/<path>`, score and rank, and the elapsed milliseconds — no
 snippets or document text. Clients can annotate rows with request headers:
 
@@ -1180,7 +1183,7 @@ llm_cache       -- Cached LLM responses (query expansion, rerank scores)
 | `QMD_CONFIG_DIR` | unset | Override the config directory outright (takes precedence over `XDG_CONFIG_HOME`) |
 | `QMD_LLAMA_GPU` | `auto` | Force llama.cpp GPU backend (`metal`, `vulkan`, `cuda`) or disable GPU with `false` |
 | `QMD_FORCE_CPU` | unset | Set to `1`/`true` to force CPU mode before any CUDA/Vulkan/Metal probing. Equivalent CLI flag: `--no-gpu`. |
-| `QMD_QUERY_LOG` | unset | ko-qmd: set to `1`/`true`/`yes` on the HTTP daemon to append each search to `$XDG_CACHE_HOME/qmd/queries-YYYY-MM.jsonl` (see [Query log](#query-log-ko-qmd)) |
+| `QMD_QUERY_LOG` | unset | ko-qmd: set to `1`/`true`/`yes` on the HTTP daemon to append each REST or MCP search to `$XDG_CACHE_HOME/qmd/queries-YYYY-MM.jsonl` (see [Query log](#query-log-ko-qmd)) |
 | `QMD_LLM_IDLE_TIMEOUT_MS` | `300000` | ko-qmd: idle time in ms before loaded models and contexts are unloaded; `0` never unloads. Overrides the SDK's `createStore()` timeout, so a long-running HTTP daemon can skip the model reload on its first search after a quiet spell, at the cost of keeping that memory in use. |
 | `QMD_EMBED_PARALLELISM` | automatic | Override embedding/reranking context parallelism (1-8). Windows CUDA defaults to `1` because parallel CUDA contexts can crash with `ggml-cuda.cu:98`; use Vulkan or raise this only if your driver is stable. |
 

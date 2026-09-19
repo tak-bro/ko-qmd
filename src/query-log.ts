@@ -1,7 +1,8 @@
 /**
  * Daemon query log — an opt-in JSONL record of searches served by the HTTP
- * daemon's REST `/query`·`/search` endpoints, so a user dogfooding a build can
- * mine their real queries for misses. MCP tool calls are not logged yet.
+ * daemon: the REST `/query`·`/search` endpoints and the MCP `query` tool, so a
+ * user dogfooding a build can mine their real queries for misses. Only HTTP
+ * traffic is logged; a stdio MCP connection has no request to annotate.
  *
  * - Off unless `QMD_QUERY_LOG` is `1`, `true` or `yes` (case-insensitive).
  *   CLI searches never call this module.
@@ -278,6 +279,29 @@ export const entryFromRest = (input: {
     // Same default as the REST handler in src/mcp/server.ts.
     limit: typeof input.params.limit === "number" ? input.params.limit : 10,
     rerank: typeof input.params.rerank === "boolean" ? input.params.rerank : null,
+    results: input.results,
+    ms: input.ms,
+  });
+
+/** Map an MCP `query` tool call. Only the HTTP transport supplies headers. */
+export const entryFromMcp = (input: {
+  headers: Headers;
+  /** The tool's typed sub-queries, or the plain `query` it auto-expanded. */
+  searches: { type: string; query: string }[];
+  /** The collections actually searched (the tool's defaults applied). */
+  collections: string[];
+  limit: number;
+  rerank: boolean;
+  results: { file: string; score: number }[];
+  ms: number;
+}): QueryLogEntry => ({
+    via: "mcp",
+    tool: "query",
+    headers: input.headers,
+    searches: input.searches,
+    collections: input.collections.length > 0 ? input.collections : null,
+    limit: input.limit,
+    rerank: input.rerank,
     results: input.results,
     ms: input.ms,
   });
