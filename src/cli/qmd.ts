@@ -72,6 +72,7 @@ import {
   addLineNumbers,
   type ExpandedQuery,
   type HybridQueryExplain,
+  type RRFContributionTrace,
   DEFAULT_EMBED_MODEL,
   DEFAULT_EMBED_MAX_BATCH_BYTES,
   DEFAULT_EMBED_MAX_DOCS_PER_BATCH,
@@ -2353,6 +2354,37 @@ type OutputOptions = {
   filter?: DocumentFilter;  // --path / --since / --until
 };
 
+/**
+ * Which sub-query found this document, and where did it place in that sub-query's own list?
+ *
+ * Expansion turns one query into a dozen, fuses their lists and reports one number. A single
+ * fused rank cannot say whether a result placed first in the hyde list and nowhere else, or
+ * middling everywhere — and those call for different fixes. Each expansion gets a line, with
+ * the sub-query text it ran, so the fused score can be read back to the query that earned it.
+ */
+export function explainGroupLines(contributions: readonly RRFContributionTrace[]): string[] {
+  if (contributions.length === 0) return [];
+  const ordered = contributions.slice().sort((a, b) => b.rrfContribution - a.rrfContribution);
+  const lines = [`  Sub-query ranks (${ordered.length} of the expansion's lists placed this document):`];
+  for (const contribution of ordered) {
+    const preview = contribution.query.replace(/\s+/g, " ").trim();
+    const shown = preview.length > 56 ? `${preview.slice(0, 53)}...` : preview;
+    const label = `${contribution.source}/${contribution.queryType}`.padEnd(12);
+    const rank = `#${contribution.rank}`.padStart(4);
+    lines.push(
+      `    ${label} ${rank}  rrf=${formatExplainNumber(contribution.rrfContribution)}` +
+      ` backend=${formatExplainNumber(contribution.backendScore)}${shown ? `  ${shown}` : ""}`,
+    );
+  }
+  return lines;
+}
+
+function printExplainGroups(contributions: readonly RRFContributionTrace[]): void {
+  for (const line of explainGroupLines(contributions)) {
+    console.log(`${c.dim}${line}${c.reset}`);
+  }
+}
+
 // Highlight query terms in text (skip short words < 3 chars)
 function highlightTerms(text: string, query: string): string {
   if (!useColor) return text;
@@ -2650,19 +2682,10 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
         const vecScores = explain.vectorScores.length > 0
           ? explain.vectorScores.map(formatExplainNumber).join(", ")
           : "none";
-        const contribSummary = explain.rrf.contributions
-          .slice()
-          .sort((a, b) => b.rrfContribution - a.rrfContribution)
-          .slice(0, 3)
-          .map(c => `${c.source}/${c.queryType}#${c.rank}:${formatExplainNumber(c.rrfContribution)}`)
-          .join(" | ");
-
         console.log(`${c.dim}Explain: fts=[${ftsScores}] vec=[${vecScores}]${c.reset}`);
         console.log(`${c.dim}  RRF: total=${formatExplainNumber(explain.rrf.totalScore)} base=${formatExplainNumber(explain.rrf.baseScore)} bonus=${formatExplainNumber(explain.rrf.topRankBonus)} rank=${explain.rrf.rank}${c.reset}`);
         console.log(`${c.dim}  Blend: ${Math.round(explain.rrf.weight * 100)}%*${formatExplainNumber(explain.rrf.positionScore)} + ${Math.round((1 - explain.rrf.weight) * 100)}%*${formatExplainNumber(explain.rerankScore)} = ${formatExplainNumber(explain.blendedScore)}${c.reset}`);
-        if (contribSummary.length > 0) {
-          console.log(`${c.dim}  Top RRF contributions: ${contribSummary}${c.reset}`);
-        }
+        printExplainGroups(explain.rrf.contributions);
       }
       console.log();
 

@@ -14,6 +14,13 @@
   global top-K. A span that does not parse is an error, and a filter that
   leaves nothing to search says so instead of looking like "no match".
 
+- `qmd query --explain` now lists every expansion sub-query that placed the
+  document, with that sub-query's own rank, contribution, backend score and the
+  text it ran. It previously showed the top three contributions collapsed onto
+  one line without the query text, which could not distinguish a document that
+  ranked first in one sub-query and nowhere else from one that ranked middling
+  everywhere — two situations that call for different fixes.
+
 - `qmd grep <pattern>` matches document bodies exactly, by string or regular
   expression, with no ranking and no LLM: every matching line, grouped by file,
   with line numbers that `qmd get <file>:<n>:<count>` accepts. It is the escape

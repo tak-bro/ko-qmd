@@ -926,6 +926,7 @@ and `deep-search` (→ `query`).
 --full             # Show full document content
 --line-numbers     # Add line numbers to output
 --explain          # Include retrieval score traces (query, JSON/CLI output)
+                   # ko-qmd: also lists each sub-query's own rank for the result
 --index <name>     # Use named index
 --intent "<text>"  # Disambiguation context (e.g. "web page load times")
 --path <glob>      # ko-qmd: only documents matching the glob (repeatable)
@@ -971,6 +972,29 @@ explicitly with `-c`.
 > **Note:** With multiple `-c` flags, results come from a global top-K pool and are
 > then filtered. If one collection dominates the rankings, matches from smaller
 > collections may not appear at the default limit — raise `-n` or use `--all`.
+
+### Reading `--explain` (ko-qmd)
+
+`qmd query <q> --explain` prints, under the fused score, one line per expansion
+sub-query that placed the document — with that sub-query's own rank, its RRF
+contribution, its backend score and the text it actually ran:
+
+```
+Explain: fts=[0.6700, 0.5100] vec=[0.4400]
+  RRF: total=0.0889 base=0.0389 bonus=0.0500 rank=1
+  Blend: 75%*1.0000 + 25%*0.8200 = 0.9550
+  Sub-query ranks (3 of the expansion's lists placed this document):
+    fts/original   #1  rrf=0.0328 backend=0.6700  한글 토큰화
+    vec/hyde       #2  rrf=0.0161 backend=0.4400  형태소 분석기는 어절을 나눌 때...
+    fts/lex        #9  rrf=0.0061 backend=0.5100  토큰화 형태소
+```
+
+Expansion turns one query into a dozen and reports one number. That number
+cannot distinguish "first in the hyde list and nowhere else" from "middling
+everywhere", and those two call for different fixes — the first says the
+expansion invented a good query, the second says the document is broadly
+relevant. Previously only the top three contributions were shown, collapsed
+onto one line without the sub-query text.
 
 ### `qmd grep` (ko-qmd)
 
