@@ -33,6 +33,7 @@ import { entryFromMcp, entryFromRest, logQuery, queryLogStatus } from "../query-
 import { createStoreIndexRefresher, type IndexRefresher } from "../refresh.js";
 import { buildDocumentFilter, describeFilter, type DocumentFilter } from "../filters.js";
 import { countFilteredDocuments } from "../store.js";
+import { compileGrepPattern, grepDocuments } from "../grep.js";
 
 // =============================================================================
 // Types for structured content
@@ -197,6 +198,16 @@ async function buildInstructions(store: QMDStore): Promise<string> {
   lines.push("  Semantic search: [{type:'vec', query:'how to handle errors gracefully'}]");
   lines.push("  Best results: [{type:'lex', query:'error'}, {type:'vec', query:'error handling best practices'}]");
   lines.push("  With intent: searches=[{type:'lex', query:'performance'}], intent='web page load times'");
+  lines.push("");
+  lines.push("  Narrow a search with `path` (globs against collection/path, `!` excludes), `since` and `until`");
+  lines.push("  (a span like '7d' or a date). They cut the corpus before ranking, so a narrow filter still");
+  lines.push("  returns its own best matches.");
+  lines.push("");
+  lines.push("Exact matching: use `grep` when `query` should have found something and did not.");
+  lines.push("  It matches document bodies by string or regex — no ranking — and returns every matching");
+  lines.push("  line with a line number that `get` takes: `file: 'notes/x.md:120:40'`. Reach for it when a");
+  lines.push("  term is an identifier, an error string or a config key, or when tokenization may never have");
+  lines.push("  produced the word the document contains (common with Korean text).");
 
   // --- Retrieval workflow ---
   lines.push("");
@@ -647,6 +658,86 @@ Intent-aware lex (C++ performance, not sports):
       }
 
       return { content };
+    })
+  );
+
+  // ---------------------------------------------------------------------------
+  // Tool: qmd_grep (Exact / regex match over indexed bodies) — ko-qmd
+  // ---------------------------------------------------------------------------
+
+  server.registerTool(
+    "grep",
+    {
+      title: "Grep Documents",
+      description: `Exact string and regular-expression matching over indexed document bodies. No ranking, no LLM — every line that matches, grouped by file, with line numbers.
+
+Use this when \`query\` should have found something and did not. Ranked search answers "what is this about"; grep answers "where does this string appear", and a term that tokenization never produced is invisible to the first and obvious to the second. It is also the way to find an identifier, an error string, a URL or a config key verbatim.
+
+Line numbers address \`get\`: a match on line 120 of \`notes/x.md\` is readable with \`file: "notes/x.md:120:40"\`.
+
+Smart case: a pattern containing an uppercase letter matches case-sensitively, otherwise either case. Hangul has no case and is unaffected. Set \`fixedString\` to search for a literal string containing regex characters.`,
+      annotations: { readOnlyHint: true, openWorldHint: false },
+      inputSchema: z.object({
+        pattern: z.string().describe(
+          "Regular expression, or a literal string when 'fixedString' is set. JavaScript regex syntax."
+        ),
+        collections: z.array(z.string()).optional().describe("Filter to collections (OR match)"),
+        path: z.array(z.string()).optional().describe(
+          "Only scan documents whose 'collection/path' matches one of these globs; '!' excludes."
+        ),
+        since: z.string().optional().describe("Only documents modified at or after this span ('7d') or date."),
+        until: z.string().optional().describe("Only documents modified at or before this span or date."),
+        limit: z.number().optional().default(20).describe("Max files to return (default: 20)"),
+        maxLinesPerFile: z.number().optional().default(20).describe("Max matching lines reported per file (default: 20)"),
+        caseSensitive: z.boolean().optional().describe("Override smart case."),
+        fixedString: z.boolean().optional().describe("Treat the pattern as a literal string, not a regex."),
+      }),
+    },
+    track(async ({ pattern, collections, path, since, until, limit, maxLinesPerFile, caseSensitive, fixedString }) => {
+      let compiled: RegExp;
+      let filter: DocumentFilter | undefined;
+      try {
+        compiled = compileGrepPattern(pattern, { caseSensitive, fixedString });
+        filter = buildDocumentFilter({ path, since, until });
+      } catch (error) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+          isError: true,
+        };
+      }
+
+      const effectiveCollections = collections ?? defaultCollectionNames;
+      await refreshBeforeQuery(store, effectiveCollections);
+
+      const result = grepDocuments(store.internal.db, compiled, {
+        collections: effectiveCollections.length > 0 ? effectiveCollections : undefined,
+        filter,
+        limit,
+        maxLinesPerFile,
+      });
+
+      const files = result.files.map(f => ({
+        docid: `#${f.docid}`,
+        file: f.displayPath,
+        title: f.title,
+        matchCount: f.matchCount,
+        lines: f.lines.map(l => ({ line: l.line, text: l.text })),
+      }));
+
+      const summary = files.length === 0
+        ? `No lines match /${pattern}/ in ${result.scanned} document${result.scanned === 1 ? "" : "s"}${filter ? ` matching ${describeFilter(filter)}` : ""}.`
+        : [
+            `${files.length} file${files.length === 1 ? "" : "s"} match /${pattern}/${result.truncated ? ` (stopped at the limit of ${limit})` : ""}:`,
+            ...files.flatMap(f => [
+              `${f.file} ${f.docid}${f.matchCount > f.lines.length ? ` (+${f.matchCount - f.lines.length} more)` : ""}`,
+              ...f.lines.map(l => `  ${l.line}: ${l.text.length > 300 ? `${l.text.slice(0, 300)}…` : l.text}`),
+            ]),
+          ].join("\n");
+
+      return {
+        content: [{ type: "text" as const, text: summary }],
+        structuredContent: { files, scanned: result.scanned, truncated: result.truncated },
+      };
     })
   );
 

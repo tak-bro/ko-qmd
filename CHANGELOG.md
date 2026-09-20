@@ -14,6 +14,19 @@
   global top-K. A span that does not parse is an error, and a filter that
   leaves nothing to search says so instead of looking like "no match".
 
+- `qmd grep <pattern>` matches document bodies exactly, by string or regular
+  expression, with no ranking and no LLM: every matching line, grouped by file,
+  with line numbers that `qmd get <file>:<n>:<count>` accepts. It is the escape
+  hatch for a query that finds nothing because tokenization never produced the
+  term the document contains — the failure this fork keeps hitting with Korean
+  text — and for finding an identifier or error string verbatim. It searches
+  exactly what the index holds and honours collection scoping, `--path`,
+  `--since` and `--until`. Smart case: an uppercase letter in the pattern makes
+  it case-sensitive, and Hangul has no case so Korean patterns are unaffected.
+  `-F` searches for a literal string. An MCP `grep` tool exposes the same thing
+  to agents, which is the reason it exists: a client whose only tools are
+  `query`, `get` and `multi_get` has no other way to match a string exactly.
+
 - The MCP `query` tool and the REST `/query` endpoint take the same `path`,
   `since` and `until` parameters, so an agent can scope a search to a folder or
   to recent changes without shelling out. A span that does not parse comes back

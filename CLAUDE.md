@@ -25,6 +25,7 @@ qmd embed                         # Generate vector embeddings (uses node-llama-
 qmd query <query>                 # Search with query expansion + reranking (recommended)
 qmd search <query>                # Full-text keyword search (BM25, no LLM)
 qmd vsearch <query>               # Vector similarity search (no reranking)
+qmd grep <pattern>                # Exact/regex match over indexed bodies (no ranking)
 qmd bench <fixture.json>          # Run search-quality benchmarks
 qmd mcp                           # Start MCP server (stdio transport)
 qmd mcp --http [--port N]         # Start MCP server (HTTP, default port 8181)

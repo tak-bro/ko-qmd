@@ -8,6 +8,7 @@ import { fileURLToPath } from "url";
 import { basename, dirname, join as pathJoin, relative as relativePath, resolve as pathResolve } from "path";
 import { parseArgs } from "util";
 import { buildDocumentFilter, describeFilter, type DocumentFilter } from "../filters.js";
+import { compileGrepPattern, grepDocuments, type GrepFileMatch } from "../grep.js";
 import { readFileSync, readdirSync, realpathSync, statSync, existsSync, unlinkSync, writeFileSync, openSync, closeSync, mkdirSync, lstatSync, rmSync, symlinkSync, readlinkSync, copyFileSync } from "fs";
 import { createInterface } from "readline/promises";
 import {
@@ -2879,6 +2880,81 @@ function search(query: string, opts: OutputOptions): void {
   outputResults(resultsWithContext, query, opts);
 }
 
+/**
+ * `qmd grep <pattern>` — exact and regex matching over indexed bodies.
+ *
+ * The escape hatch for a query that finds nothing because tokenization never produced the
+ * term the document contains. Line numbers address `qmd get <file>:<n>:<count>`.
+ */
+function grepCommand(pattern: string, opts: OutputOptions, values: Record<string, unknown>): void {
+  const caseSensitive = values["case-sensitive"] ? true : (values["ignore-case"] ? false : undefined);
+  let compiled: RegExp;
+  try {
+    compiled = compileGrepPattern(pattern, { caseSensitive, fixedString: !!values["fixed-strings"] });
+  } catch (error) {
+    console.error(`qmd: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
+
+  const db = getDb();
+  const collectionNames = resolveCollectionFilter(opts.collection, true);
+  const maxLinesRaw = values["max-lines"];
+  const result = grepDocuments(db, compiled, {
+    collections: collectionNames,
+    filter: opts.filter,
+    limit: opts.all ? 100000 : (opts.limit || 20),
+    maxLinesPerFile: maxLinesRaw ? Math.max(1, parseInt(String(maxLinesRaw), 10) || 20) : undefined,
+  });
+  closeDb();
+
+  if (opts.format === "json") {
+    console.log(JSON.stringify({
+      files: result.files.map(f => ({
+        docid: `#${f.docid}`,
+        file: opts.fullPath ? f.displayPath : f.filepath,
+        title: f.title,
+        matchCount: f.matchCount,
+        lines: f.lines,
+      })),
+      scanned: result.scanned,
+      truncated: result.truncated,
+    }, null, 2));
+    return;
+  }
+
+  if (opts.format === "files") {
+    for (const file of result.files) console.log(opts.fullPath ? file.displayPath : file.filepath);
+    return;
+  }
+
+  if (result.files.length === 0) {
+    const scope = opts.filter ? ` matching ${describeFilter(opts.filter)}` : "";
+    console.log(`No matches in ${result.scanned} document${result.scanned === 1 ? "" : "s"}${scope}.`);
+    return;
+  }
+
+  printGrepMatches(result.files, opts);
+  if (result.truncated) {
+    console.log("");
+    console.log(`${c.dim}Stopped at ${result.files.length} files — raise -n or use --all for more.${c.reset}`);
+  }
+}
+
+function printGrepMatches(files: readonly GrepFileMatch[], opts: OutputOptions): void {
+  for (const file of files) {
+    const shown = file.lines.length;
+    const more = file.matchCount - shown;
+    const suffix = more > 0 ? `${c.dim} (+${more} more)${c.reset}` : "";
+    console.log(`${c.cyan}${opts.fullPath ? file.displayPath : file.filepath}${c.reset} ${c.dim}#${file.docid}${c.reset}${suffix}`);
+    for (const { line, text } of file.lines) {
+      // Long lines are truncated for display only; the line number still addresses the file.
+      const body = text.length > 300 ? `${text.slice(0, 300)}…` : text;
+      console.log(`  ${c.dim}${String(line).padStart(5)}:${c.reset} ${body}`);
+    }
+    console.log("");
+  }
+}
+
 // Log query expansion as a tree to stderr (CLI progress feedback)
 function logExpansionTree(originalQuery: string, expanded: ExpandedQuery[]): void {
   const lines: string[] = [];
@@ -3127,6 +3203,10 @@ function parseCLI() {
       "no-gpu": { type: "boolean", default: false },
       intent: { type: "string" },
       path: { type: "string", multiple: true },  // narrow to path glob(s); `!` prefix excludes
+      "ignore-case": { type: "boolean", short: "i" },   // grep: force case-insensitive
+      "case-sensitive": { type: "boolean", short: "S" },// grep: force case-sensitive
+      "fixed-strings": { type: "boolean", short: "F" }, // grep: treat the pattern as literal
+      "max-lines": { type: "string" },                  // grep: max reported lines per file
       since: { type: "string" },                 // only documents modified at/after this
       until: { type: "string" },                 // only documents modified at/before this
       // Chunking options
@@ -3634,6 +3714,7 @@ function showHelp(): void {
   console.log("  qmd query 'lex:..\\nvec:...'   - Structured query document (you provide lex/vec/hyde lines)");
   console.log("  qmd search <query>            - Full-text BM25 keywords (no LLM)");
   console.log("  qmd vsearch <query>           - Vector similarity only");
+  console.log("  qmd grep <pattern>            - Exact/regex match over indexed bodies (no ranking)");
   console.log("  qmd get <file>[:from[:count]] - Show a document (line-numbered; #docid in header)");
   console.log("  qmd multi-get <pattern>       - Batch fetch via glob or comma-separated list");
   console.log("  qmd skills list/get/path      - List and retrieve bundled runtime skills");
@@ -3724,6 +3805,13 @@ function showHelp(): void {
   console.log("                                Matched against collection/path, as printed in results");
   console.log("  --since <when>             - Only documents modified at or after (7d, 3h, 2w, 2026-09-01)");
   console.log("  --until <when>             - Only documents modified at or before (same formats)");
+  console.log("");
+  console.log("Grep options:");
+  console.log("  -i, --ignore-case          - Match either case (default: smart case)");
+  console.log("  -S, --case-sensitive       - Match case exactly");
+  console.log("  -F, --fixed-strings        - Treat the pattern as a literal string, not a regex");
+  console.log("  --max-lines <num>          - Max reported lines per file (default 20)");
+  console.log("  -n <num>                   - Max files (default 20); --all for no cap");
   console.log("");
   console.log("Embed/query options:");
   console.log("  --chunk-strategy <auto|regex> - Chunking mode (default: regex; auto uses AST for code files)");
@@ -4751,6 +4839,14 @@ if (isMain) {
         process.exit(1);
       }
       search(cli.query, cli.opts);
+      break;
+
+    case "grep":
+      if (!cli.query) {
+        console.error("Usage: qmd grep [options] <pattern>");
+        process.exit(1);
+      }
+      grepCommand(cli.query, cli.opts, cli.values);
       break;
 
     case "vsearch":

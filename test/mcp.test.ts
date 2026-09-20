@@ -1099,7 +1099,7 @@ describe.skipIf(!!process.env.CI)("MCP HTTP Transport", () => {
     expect(headers.get("mcp-session-id")).toBeNull();
 
     const toolNames = json.result.tools.map((t: any) => t.name);
-    expect(toolNames).toEqual(["query", "get", "multi_get", "status"]);
+    expect(toolNames).toEqual(["query", "get", "multi_get", "grep", "status"]);
   });
 
   test("POST /mcp tools/call query returns results", async () => {
@@ -1272,7 +1272,7 @@ describe("MCP HTTP Transport — 2026-07-28 protocol", () => {
     expect(json.result.ttlMs).toBe(60_000);
     expect(json.result.cacheScope).toBe("private");
     const toolNames = json.result.tools.map((t: { name: string }) => t.name);
-    expect(toolNames).toEqual(["query", "get", "multi_get", "status"]);
+    expect(toolNames).toEqual(["query", "get", "multi_get", "grep", "status"]);
     const serverInfo = json.result._meta?.["io.modelcontextprotocol/serverInfo"];
     expect(serverInfo?.name).toBe("qmd");
   });
@@ -1870,5 +1870,107 @@ describe("REST /query takes path and time filters", () => {
     const result = await callQuery({ since: "7dd" });
     expect(result.isError).toBe(true);
     expect(result.content[0]!.text).toMatch(/not a time/);
+  });
+
+  // ---------------------------------------------------------------------------
+  // The grep tool — the same corpus, matched exactly instead of ranked.
+  // ---------------------------------------------------------------------------
+
+  const callGrep = async (args: Record<string, unknown>) => {
+    const res = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": VERSION,
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": "grep",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "grep",
+          arguments: { collections: ["docs"], ...args },
+          _meta: {
+            "io.modelcontextprotocol/protocolVersion": VERSION,
+            "io.modelcontextprotocol/clientInfo": { name: "test-client", version: "1.0.0" },
+            "io.modelcontextprotocol/clientCapabilities": {},
+          },
+        },
+      }),
+    });
+    const json = await res.json() as {
+      result?: {
+        isError?: boolean;
+        content: { text: string }[];
+        structuredContent?: { files: { file: string; docid: string; lines: { line: number; text: string }[] }[]; scanned: number; truncated: boolean };
+      };
+    };
+    return json.result!;
+  };
+
+  test("the grep tool returns matching lines with line numbers", async () => {
+    const result = await callGrep({ pattern: "zanzibar once" });
+    const files = result.structuredContent!.files;
+    expect(files.map(f => f.file)).toEqual(["docs/journals/note.md"]);
+    expect(files[0]!.lines).toEqual([{ line: 3, text: "zanzibar once" }]);
+  });
+
+  test("a grep line number is readable back through the get tool", async () => {
+    // The promise grep makes is that its numbers are usable. Check it across the two tools
+    // rather than inside grep's own counting.
+    const hit = (await callGrep({ pattern: "zanzibar once" })).structuredContent!.files[0]!;
+    const res = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": VERSION,
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": "get",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "get",
+          arguments: { file: `${hit.file}:${hit.lines[0]!.line}:1`, lineNumbers: false },
+          _meta: {
+            "io.modelcontextprotocol/protocolVersion": VERSION,
+            "io.modelcontextprotocol/clientInfo": { name: "test-client", version: "1.0.0" },
+            "io.modelcontextprotocol/clientCapabilities": {},
+          },
+        },
+      }),
+    });
+    // `get` answers with resource-typed content, so read the document text out of the
+    // whole result rather than assuming a plain-text entry.
+    const json = await res.json() as { result?: unknown };
+    expect(JSON.stringify(json.result)).toContain("zanzibar once");
+  });
+
+  test("the grep tool takes the same path filter", async () => {
+    const result = await callGrep({ pattern: "zanzibar", path: ["docs/journals/**"] });
+    expect(result.structuredContent!.files.map(f => f.file)).toEqual(["docs/journals/note.md"]);
+  });
+
+  test("no match reports how much was scanned, not a bare 'no results'", async () => {
+    const result = await callGrep({ pattern: "kilimanjaro" });
+    expect(result.structuredContent!.files).toEqual([]);
+    expect(result.content[0]!.text).toMatch(/in 251 documents/);
+  });
+
+  test("an invalid regex is a tool error", async () => {
+    const result = await callGrep({ pattern: "(unclosed" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toMatch(/not a regular expression/);
+  });
+
+  test("a literal search escapes regex characters", async () => {
+    const result = await callGrep({ pattern: "zanzibar.once", fixedString: true });
+    expect(result.structuredContent!.files).toEqual([]);
   });
 });

@@ -117,9 +117,16 @@ docids that `qmd get` accepts. If those two reasons stop being true, cut the ite
 Risk to design for: a user-supplied pattern compiled as a JS `RegExp` is a ReDoS surface,
 and a per-document time budget does not contain it — a catastrophic backtrack blocks the
 only thread, so no timer fires and the daemon stops answering every session on the machine.
-Contain it structurally: run the scan in a worker thread the caller can terminate, and cap
-pattern length. A per-document budget is still worth having, but as a fairness limit, not
-as the ReDoS answer.
+
+**Settled during implementation (supersedes the worker-thread plan above):** contain it by
+bounding the input instead of by being able to kill the scan. The scan runs line by line,
+and lines past 4KB are tested in overlapping slices, so the worst case is a 4KB string
+rather than a whole document — and the exponents that make a backtrack catastrophic need a
+long input to bite. Pattern length is capped at 1000 characters. A worker thread was
+rejected because the tsx development path and the `dist/` path resolve worker entry points
+differently, which is real cost for a second line of defence. Measured: `(a+)+$` against a
+50KB single line returns in under two seconds with the per-line bound, and does not return
+within 45 seconds without it (`test/grep.test.ts`, "a pathological pattern terminates").
 
 Do not load the corpus into one array. `rebuildFTSForCjkNormalization` already reads bodies
 in keyset-paginated batches (`WHERE id > ? ORDER BY id LIMIT ?`) for exactly this reason;

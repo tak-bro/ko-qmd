@@ -250,6 +250,13 @@ Point any MCP client at `http://localhost:8181/mcp` to connect.
 | `multi_get` | `maxBytes` | number | Skip files larger than N (default 10240) |
 | `multi_get` | `maxLines` | number | Limit lines per file |
 | `multi_get` | `lineNumbers` | boolean | Prefix lines with numbers (default **true**) |
+| `grep` | `pattern` | string | ko-qmd: regex, or a literal when `fixedString` is set. **Required.** |
+| `grep` | `collections` | string[] | Filter by collection names (OR) |
+| `grep` | `path` / `since` / `until` | — | Same as on `query` |
+| `grep` | `limit` | number | Max files (default 20) |
+| `grep` | `maxLinesPerFile` | number | Max reported lines per file (default 20) |
+| `grep` | `caseSensitive` | boolean | Override smart case |
+| `grep` | `fixedString` | boolean | Treat the pattern as a literal string |
 
 Unknown parameters are silently ignored (not rejected) — double-check names if
 results seem unscoped. The HTTP `/query` and `/search` endpoints return
@@ -964,6 +971,43 @@ explicitly with `-c`.
 > **Note:** With multiple `-c` flags, results come from a global top-K pool and are
 > then filtered. If one collection dominates the rankings, matches from smaller
 > collections may not appear at the default limit — raise `-n` or use `--all`.
+
+### `qmd grep` (ko-qmd)
+
+```sh
+qmd grep 'TODO'                          # smart case: lowercase matches either
+qmd grep 'TODO: (call|ship)'             # a regular expression
+qmd grep 'v2.8.3-ko' -F                  # a literal string, regex chars and all
+qmd grep '놓친 문자열' --path 'journals/**'
+```
+
+Exact string and regular-expression matching over indexed document bodies: no
+ranking, no LLM, every matching line grouped by file with line numbers that
+`qmd get <file>:<n>:<count>` accepts.
+
+This is the escape hatch for a query that finds nothing because tokenization
+never produced the term the document contains — the failure Korean text keeps
+hitting — and the way to find an identifier, error string or config key
+verbatim. Ranked search answers "what is this about"; grep answers "where does
+this string appear".
+
+It is not a replacement for ripgrep. At a terminal with a shell, ripgrep is
+usually the right tool and faster. `qmd grep` earns its place for the caller
+with no shell — an MCP client whose only tools are `query`, `get` and
+`multi_get` — and for the caller who wants one corpus definition: it searches
+exactly what the index holds, honours collection exclusion and the `--path` /
+`--since` / `--until` filters, and returns `qmd://` paths and docids the rest
+of qmd accepts.
+
+Smart case: a pattern containing an uppercase letter matches case-sensitively,
+otherwise either case. Hangul has no case, so Korean patterns are unaffected
+either way. `-i` and `-S` override it, `-F` treats the pattern as a literal
+string, `--max-lines` caps reported lines per file, and `-n` caps files.
+
+Patterns are capped at 1000 characters and matched line by line, with long
+lines tested in overlapping slices. That bound is what keeps a pathological
+pattern from hanging the daemon: a catastrophic backtrack blocks the only
+thread, so a timeout could never fire to stop it.
 
 ### Path and Time Filtering (ko-qmd)
 
