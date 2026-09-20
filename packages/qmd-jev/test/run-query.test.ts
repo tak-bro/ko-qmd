@@ -165,6 +165,29 @@ describe("runQuery — the Jev gate", () => {
 		expect(outcome.gate).toEqual({ scored: 2, dropped: 0, model: "jev-test" });
 	});
 
+	it("carries `judged` — every hit, kept and dropped, in fused order — even when only kept ones are shown", async () => {
+		const rows = [hit("z.md", 9.5), hit("a.md", 3.1), hit("junk.md", 8.0)];
+		const { store } = fakeStore(rows);
+		const { jev } = fakeJev({
+			"0": { type: "noul", noul: 0.1 },
+			"1": { type: "noul", noul: 0.9 },
+			"2": { type: "noul", noul: 0.2 },
+		});
+		const outcome = await runQuery(store, "q", { jev, allowed: ["notes"] });
+		expect(outcome.hits.map((h) => h.file)).toEqual(["qmd://notes/a.md"]);
+		expect(outcome.judged!.map((h) => ({ file: h.file, noul: h.noul, kept: h.kept }))).toEqual([
+			{ file: "qmd://notes/z.md", noul: 0.1, kept: false },
+			{ file: "qmd://notes/a.md", noul: 0.9, kept: true },
+			{ file: "qmd://notes/junk.md", noul: 0.2, kept: false },
+		]);
+	});
+
+	it("a plain outcome has no judged — the gate never ran", async () => {
+		const { store } = fakeStore([hit("a.md", 1)]);
+		const outcome = await runQuery(store, "q", {});
+		expect(outcome.judged).toBeUndefined();
+	});
+
 	it("retrieves the candidate slice, not the user's limit, and caps the answer to the limit", async () => {
 		const rows = Array.from({ length: CANDIDATE_LIMIT }, (_, i) => hit(`d${i}.md`, 1));
 		const { store, calls } = fakeStore(rows);

@@ -69,6 +69,12 @@ export interface QueryOutcome {
 	jevFailure?: Failure;
 	/** Present when Jev judged the hits. Membership only — the order is always qmd's fused order. */
 	gate?: GateStats;
+	/**
+	 * Every judged hit — kept and dropped — in fused order, present whenever
+	 * the gate ran. The display shows `hits`; this is the query log's input,
+	 * because a dropped hit's `noul` is exactly the calibration data.
+	 */
+	judged?: JevHit[];
 }
 
 const subQueries = (query: string): ExpandedQuery[] => [
@@ -137,5 +143,6 @@ export const runQuery = async (
 		hits: shown,
 		...(shown.length === 0 ? { emptyReason: "none-kept" as const } : {}),
 		gate: { scored: ranked.scored, dropped: ranked.dropped, model: ranked.model },
+		judged: ranked.judged,
 	};
 };

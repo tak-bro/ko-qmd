@@ -1,6 +1,6 @@
 /**
- * qmd-jev CLI. `doctor` and `query` run; `mcp` (slice 04) lands with its
- * slice — the usage text only advertises what runs.
+ * qmd-jev CLI. `doctor`, `query` and `mcp` run; the usage text only
+ * advertises what runs.
  */
 import { mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -10,6 +10,7 @@ import { createStore } from "ko-qmd";
 import { allowedCollections } from "./consent.js";
 import { createJev, keyFrom, MODEL, probeModel } from "./jev.js";
 import type { JevDeps } from "./jev.js";
+import { appendQueryLog, logEntry, logSinkFromEnv } from "./log.js";
 import { toText, toJson } from "./present.js";
 import { runQuery } from "./run-query.js";
 
@@ -18,6 +19,7 @@ const USAGE = `qmd-jev — Jev-ranked search over qmd collections (pre-release)
 usage:
   qmd-jev query [options] <query>   search: Jev-ranked and gated, falling back to qmd's fused order when Jev is off
   qmd-jev doctor                    is Jev configured, and does the pinned model still answer?
+  qmd-jev mcp                       MCP stdio server exposing the same query tool
 
 query options:
   -c, --collection <name>   restrict the search (repeatable)
@@ -30,6 +32,7 @@ env:
   QMD_JEV_COLLECTIONS   comma-separated collections Jev may be told about; unset = off
   TYPESAFE_API_KEY      else ~/.config/typesafe/key
   QMD_JEV_TIMEOUT_MS    per-call deadline (default 2000)
+  QMD_JEV_LOG           append one JSON line per query: model, route, per-hit noul and kept
 `;
 
 const realDeps = (): JevDeps => ({
@@ -119,7 +122,7 @@ export const parseQueryArgs = (argv: string[]): QueryArgs | null => {
  * ko-qmd's src/. Same precedence as the SDK: INDEX_PATH, then
  * XDG_CACHE_HOME or ~/.cache, then qmd/index.sqlite.
  */
-const defaultIndexDbPath = (): string => {
+export const defaultIndexDbPath = (): string => {
 	if (process.env.INDEX_PATH) return process.env.INDEX_PATH;
 	const cache = process.env.XDG_CACHE_HOME || join(homedir(), ".cache");
 	const dir = join(cache, "qmd");
@@ -152,6 +155,8 @@ export const main = async (argv: string[]): Promise<number> => {
 			}
 			const notice = jev.claimTripNotice();
 			if (notice !== null) console.error(notice);
+			const log = logSinkFromEnv(process.env);
+			if (log) appendQueryLog(log, logEntry(args.query, outcome));
 			if (args.format === "json") console.log(JSON.stringify(toJson(outcome), null, 2));
 			else console.log(toText(outcome, args.explain));
 			return 0;
@@ -161,6 +166,11 @@ export const main = async (argv: string[]): Promise<number> => {
 	}
 	if (cmd === "doctor") {
 		for (const line of await doctorLines(realDeps())) console.log(line);
+		return 0;
+	}
+	if (cmd === "mcp") {
+		const { startQueryServer } = await import("./mcp.js");
+		await startQueryServer(realDeps(), defaultIndexDbPath());
 		return 0;
 	}
 	if (cmd === "help" || cmd === "--help" || cmd === "-h") {

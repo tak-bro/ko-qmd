@@ -12,8 +12,17 @@ qmd's own fused order. Jev down, no key, nothing listed: the same answer without
 line on stderr. `qmd-jev doctor` reports the configuration and whether the pinned model still
 answers.
 
-**Pre-release workspace package.** Not published to npm; `query`, `doctor` and `mcp` (slice 04)
-are its commands.
+`qmd-jev mcp` serves the same query as one MCP tool over stdio, on the same SDK transport as
+`qmd mcp` — a client configured for `qmd mcp` can point at this binary unchanged. The tool
+returns the presented text as content and the hit array as `structuredContent.hits`, carrying
+`gate` stats and, when Jev failed, a `jevFailure` status or category. It never returns a tool
+error because Jev is down. `QMD_JEV_LOG`, when set, appends one JSON line per query from either
+front door: model, route (`jev`/`qmd`), gate counts, and every judged hit's `noul` and `kept` —
+the record a threshold re-calibration reads. The key cannot enter a log line: entries are built
+from results, not from configuration.
+
+**Pre-release workspace package.** Not published to npm; `query`, `doctor`, `mcp` are its
+commands.
 
 ## What the gate does today — read this first
 
@@ -67,7 +76,7 @@ count.
 | `QMD_JEV_COLLECTIONS` | unset = off | comma-separated collection names Jev may be told about |
 | `TYPESAFE_API_KEY` | — | else the file `~/.config/typesafe/key` (`chmod 600`) |
 | `QMD_JEV_TIMEOUT_MS` | `2000` | per-call deadline; a non-positive or non-numeric value falls back |
-| `QMD_JEV_LOG` | unset | query log path (not yet built) |
+| `QMD_JEV_LOG` | unset | append one JSON line per query (model, route, per-hit `noul`, `kept`); best-effort — a write failure never fails a query |
 
 ## The key
 
