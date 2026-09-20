@@ -27,6 +27,7 @@ const outcome = (over: Partial<QueryOutcome> = {}): QueryOutcome => ({
 	...(over.jevFailure !== undefined ? { jevFailure: over.jevFailure } : {}),
 	...(over.gate !== undefined ? { gate: over.gate } : {}),
 	...(over.judged !== undefined ? { judged: over.judged } : {}),
+	...(over.retrieval !== undefined ? { retrieval: over.retrieval } : {}),
 });
 
 describe("logEntry — what one line records", () => {
@@ -55,6 +56,12 @@ describe("logEntry — what one line records", () => {
 		expect(entry.route).toBe("qmd");
 		expect(entry.failure).toBe("timeout");
 		expect(entry.model).toBeUndefined();
+	});
+
+	it("records the chosen retrieval route when --route jev chose one", () => {
+		const entry = logEntry("q", outcome({ retrieval: "lex" }));
+		expect(entry.retrieval).toBe("lex");
+		expect(logEntry("q", outcome({})).retrieval).toBeUndefined();
 	});
 
 	it("a plain (gate off) query records route qmd with bare hits — no noul, no kept", () => {

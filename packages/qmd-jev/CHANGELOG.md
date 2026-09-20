@@ -7,6 +7,14 @@ this package ships nothing in qmd, so its changes live here.
 
 ### Changes
 
+- `--route jev` asks one Jev `choice` question about the query alone — exact
+  terms (lex), meaning (vec), or both (full) — and searches that way only;
+  a lex or vec pick also skips local expansion. Silence, a wrong answer
+  type, or an unknown choice falls back to `full`. Measured: Jev picks a
+  correct route (top-3 identical to full where results existed) but a
+  slower query — 482 vs 321 ms/query, the route ask costing more than the
+  dropped sub-query saves — so the default stays `full` (README
+  "Measured"). The chosen route lands in `QMD_JEV_LOG` as `retrieval`.
 - `qmd-jev mcp` serves one `query` tool over stdio, on the same SDK
   transport as `qmd mcp`. The tool shares `runQuery` with the CLI — gate,
   consent and fail-open behaviour cannot fork between the two front doors —

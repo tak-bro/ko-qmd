@@ -14,6 +14,7 @@ import { dirname } from "node:path";
 import type { Env } from "./consent.js";
 import type { Failure } from "./jev.js";
 import type { JevHit } from "./present.js";
+import type { RetrievalRoute } from "./route.js";
 import type { QueryOutcome } from "./run-query.js";
 
 /** How the answer was produced: `jev` = gated by Jev, `qmd` = qmd's fused order (gate off, nothing consented, or Jev silent). */
@@ -29,6 +30,8 @@ export interface QueryLogEntry {
 	dropped?: number;
 	/** Jev was asked and did not answer — status or category, never a message. */
 	failure?: Failure;
+	/** The route `--route jev` chose (or fell back to) — only when routing was requested. */
+	retrieval?: RetrievalRoute;
 	hits: { file: string; docid: string; noul?: number; kept?: boolean }[];
 }
 
@@ -41,6 +44,7 @@ export const logEntry = (query: string, outcome: QueryOutcome): QueryLogEntry =>
 		route: outcome.gate ? "jev" : "qmd",
 		...(outcome.gate ? { model: outcome.gate.model, scored: outcome.gate.scored, dropped: outcome.gate.dropped } : {}),
 		...(outcome.jevFailure !== undefined ? { failure: outcome.jevFailure } : {}),
+		...(outcome.retrieval !== undefined ? { retrieval: outcome.retrieval } : {}),
 		hits: judged.map((h: JevHit) => ({
 			file: h.file,
 			docid: h.docid,

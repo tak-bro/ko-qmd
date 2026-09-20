@@ -38,6 +38,7 @@ export interface QueryToolInput {
 	limit?: number;
 	explain?: boolean;
 	expand?: boolean;
+	route?: "full" | "jev";
 }
 
 /** The tool result: human text plus the structured hit array MCP clients read. (A `type`, not an `interface` — the SDK's callback result carries an index signature.) */
@@ -48,6 +49,7 @@ export type QueryToolResult = {
 		emptyReason?: EmptyReason;
 		jevFailure?: number | "timeout" | "network" | "parse";
 		gate?: GateStats;
+		retrieval?: "lex" | "vec" | "full";
 	};
 }
 
@@ -58,6 +60,7 @@ export const handleQuery = async (deps: QueryToolDeps, input: QueryToolInput): P
 		limit: input.limit,
 		expand: input.expand,
 		explain: input.explain,
+		route: input.route,
 		jev: deps.jev,
 		allowed: deps.allowed,
 	});
@@ -67,7 +70,7 @@ export const handleQuery = async (deps: QueryToolDeps, input: QueryToolInput): P
 	const notice = deps.jev.claimTripNotice();
 	if (notice !== null) deps.notify(notice);
 	if (deps.log) appendQueryLog(deps.log, logEntry(input.query, outcome));
-	const { hits, emptyReason, jevFailure, gate } = outcome;
+	const { hits, emptyReason, jevFailure, gate, retrieval } = outcome;
 	return {
 		content: [{ type: "text", text: toText(outcome, input.explain === true) }],
 		structuredContent: {
@@ -75,6 +78,7 @@ export const handleQuery = async (deps: QueryToolDeps, input: QueryToolInput): P
 			...(emptyReason !== undefined ? { emptyReason } : {}),
 			...(jevFailure !== undefined ? { jevFailure } : {}),
 			...(gate !== undefined ? { gate } : {}),
+			...(retrieval !== undefined ? { retrieval } : {}),
 		},
 	};
 };
@@ -98,6 +102,7 @@ export const createQueryServer = (deps: QueryToolDeps): McpServer => {
 				limit: z.number().int().positive().optional().describe("Max results (default 10)"),
 				explain: z.boolean().optional().describe("Include dropped hits with their relevance score, for calibration"),
 				expand: z.boolean().optional().describe("Use qmd's own LLM query expansion (slower; see the package README)"),
+				route: z.enum(["full", "jev"]).optional().describe("jev: one choice question about the query picks lex / vec / full retrieval (default full)"),
 			},
 		},
 		async (input: QueryToolInput) => handleQuery(deps, input),

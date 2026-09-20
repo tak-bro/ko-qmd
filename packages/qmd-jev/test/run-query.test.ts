@@ -368,6 +368,65 @@ describe("present — one result shape for CLI and MCP", () => {
 	});
 });
 
+describe("runQuery — retrieval route (--route jev)", () => {
+	it("a lex choice searches lex only — and skips local expansion even with --expand", async () => {
+		const { store, calls } = fakeStore([]);
+		const { jev, requests } = fakeJev({ route: { type: "choice", choice: "lex", confidence: 0.9 } });
+		await runQuery(store, "connection pool", { jev, allowed: ["notes"], route: "jev", expand: true });
+		expect(calls[0]!.queries).toEqual([{ type: "lex", query: "connection pool" }]);
+		expect(calls[0]!.query).toBeUndefined(); // expansion skipped
+		expect(requests[0]!.state).toEqual({ query: "connection pool" }); // the route ask carried the query alone
+	});
+
+	it("a vec choice searches vec only", async () => {
+		const { store, calls } = fakeStore([]);
+		const { jev } = fakeJev({ route: { type: "choice", choice: "vec", confidence: 0.9 } });
+		await runQuery(store, "q", { jev, allowed: ["notes"], route: "jev" });
+		expect(calls[0]!.queries).toEqual([{ type: "vec", query: "q" }]);
+	});
+
+	it("a full choice keeps today's composition — and expansion when asked for", async () => {
+		const plain = fakeStore([]);
+		const { jev: j1 } = fakeJev({ route: { type: "choice", choice: "full", confidence: 0.9 } });
+		await runQuery(plain.store, "q", { jev: j1, allowed: ["notes"], route: "jev" });
+		expect(plain.calls[0]!.queries).toEqual([
+			{ type: "lex", query: "q" },
+			{ type: "vec", query: "q" },
+		]);
+		const expanded = fakeStore([]);
+		const { jev: j2 } = fakeJev({ route: { type: "choice", choice: "full", confidence: 0.9 } });
+		await runQuery(expanded.store, "q", { jev: j2, allowed: ["notes"], route: "jev", expand: true });
+		expect(expanded.calls[0]!.query).toBe("q");
+	});
+
+	it("silence falls back to full — the answer still ships", async () => {
+		const { store, calls } = fakeStore([]);
+		const { jev } = fakeJev(null);
+		const outcome = await runQuery(store, "q", { jev, allowed: ["notes"], route: "jev" });
+		expect(calls[0]!.queries).toHaveLength(2);
+		expect(outcome.retrieval).toBe("full");
+	});
+
+	it("records the chosen route on the outcome; no route option, no field", async () => {
+		const routed = fakeStore([]);
+		const { jev: j1 } = fakeJev({ route: { type: "choice", choice: "lex", confidence: 0.9 } });
+		const outcome = await runQuery(routed.store, "q", { jev: j1, allowed: ["notes"], route: "jev" });
+		expect(outcome.retrieval).toBe("lex");
+
+		const unrouted = fakeStore([]);
+		const plain = await runQuery(unrouted.store, "q", {});
+		expect(plain.retrieval).toBeUndefined();
+	});
+
+	it("route jev without a ready client: no route ask, full composition", async () => {
+		const { store, calls } = fakeStore([]);
+		const { jev, requests } = fakeJev({ route: { type: "choice", choice: "lex", confidence: 0.9 } }, { ready: false });
+		await runQuery(store, "q", { jev, allowed: ["notes"], route: "jev" });
+		expect(requests).toHaveLength(0);
+		expect(calls[0]!.queries).toHaveLength(2);
+	});
+});
+
 describe("parseQueryArgs", () => {
 	it("takes a query, repeatable -c, --format json, -n", () => {
 		expect(parseQueryArgs(["query", "hello world", "-c", "notes", "-c", "journals", "--format", "json", "-n", "3"])).toEqual({
@@ -377,6 +436,7 @@ describe("parseQueryArgs", () => {
 			limit: 3,
 			expand: false,
 			explain: false,
+			route: "full",
 		});
 	});
 
@@ -388,6 +448,7 @@ describe("parseQueryArgs", () => {
 			limit: undefined,
 			expand: false,
 			explain: false,
+			route: "full",
 		});
 	});
 
@@ -399,7 +460,15 @@ describe("parseQueryArgs", () => {
 			limit: undefined,
 			expand: true,
 			explain: true,
+			route: "full",
 		});
+	});
+
+	it("takes --route jev (and an explicit --route full), and rejects anything else", () => {
+		expect(parseQueryArgs(["query", "q", "--route", "jev"])!.route).toBe("jev");
+		expect(parseQueryArgs(["query", "q", "--route", "full"])!.route).toBe("full");
+		expect(parseQueryArgs(["query", "q", "--route", "hybrid"])).toBeNull();
+		expect(parseQueryArgs(["query", "q", "--route"])).toBeNull();
 	});
 
 	it("rejects an unknown format, a missing query, and a bad limit", () => {

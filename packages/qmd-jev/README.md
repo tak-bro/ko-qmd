@@ -8,7 +8,10 @@ whether each hit is actually about the query. It consumes qmd through the publis
 `qmd-jev query` retrieves locally through the SDK, then — when a key is present and the
 collection is listed in `QMD_JEV_COLLECTIONS` — asks Jev one question per hit: is this chunk
 about the query? Hits scoring below the threshold are dropped; everything else is returned in
-qmd's own fused order. Jev down, no key, nothing listed: the same answer without the gate, one
+qmd's own fused order. `--route jev` asks one extra question about the query alone — exact
+terms, meaning, or both — and searches that way only (`full`, today's composition, is the
+default; a lex or vec pick also skips local expansion). Jev down, no key, nothing listed: the
+same answer without the gate, one
 line on stderr. `qmd-jev doctor` reports the configuration and whether the pinned model still
 answers.
 
@@ -60,6 +63,7 @@ puts in a Jev request may be kept.** Every path below states what it sends; no o
 | `doctor`, with key | one request: an **empty** state and one liveness question. No collection content. | |
 | `query`, nothing consented | nothing — no key, no listed collection, or no listed hits ⇒ the request is never built | `QMD_JEV_COLLECTIONS` |
 | `query`, Jev on | hit excerpts of **listed collections only**, capped at 1500 characters per hit | `QMD_JEV_COLLECTIONS` |
+| `query --route jev` | the **query text itself**, as one choice question — no collection content (none has been retrieved yet) | the `--route jev` flag |
 
 Consent is per collection, because the collection is qmd's unit of content. A collection not
 listed in `QMD_JEV_COLLECTIONS` is never described to Jev — its hits are still searched and
@@ -67,7 +71,7 @@ returned, they just never leave the machine. An allowlist is chosen over a denyl
 allowlist fails closed on the next collection nobody listed.
 
 Indexing, `embed` and `update` never call Jev. A query is one Jev request regardless of hit
-count.
+count — two with `--route jev` (route, then the gate).
 
 ## Env
 
@@ -103,6 +107,7 @@ re-measure on the new version, then raise the pin here and in `src/jev.ts`.
 | Question shape | free `noul`, anchored 4-point, and discrete 4-level all spread <= ~0.1 on prose | the free `noul` sentence ships; the other two were not better |
 | Batch size 8 vs 40 candidates | spread unchanged (~0.03) but demotion mostly disappears (3/4 probes keep #1) | not built — README "Next thing to try" |
 | `--expand` (qmd's LLM expansion) vs in-package sub-queries, same 10 queries, Jev on | **387 ms/query vs 494 ms/query** (first expand query pays the local model load: 1307 ms) | default stays in-package; `--expand` is opt-in |
+| `--route jev` vs default full, 6 queries × 3 runs, Jev on | **482 ms/query vs 321 ms/query** — the route ask costs more than a dropped sub-query saves. Jev picked vec for the 4 prose queries, lex for the 2 symbol/API queries; where results existed, top-3 matched full exactly; the one lex pick that was faster overall (266 ms, `EmbeddingCache`) was exact-symbol | **default stays `full`** — route picks a *correct* route but not a *faster* query; keep for recall-sensitive or egress-tolerant use, not speed |
 | State size at 40 × 1500-char chunks | ~76K chars of the ~128K-char (32K token) budget | `candidateLimit` 40 is safe |
 
 ## Failure behaviour

@@ -25,6 +25,7 @@ query options:
   -c, --collection <name>   restrict the search (repeatable)
   -n, --limit <num>         max results (default 10)
   --expand                  use qmd's own LLM query expansion (default: in-package sub-queries — faster; see README)
+  --route <jev|full>        jev: one choice question about the query picks lex / vec / full (default full)
   --explain                 show every judged hit with its noul and kept/dropped mark
   --format <cli|json>       output format (default cli)
 
@@ -82,12 +83,13 @@ export interface QueryArgs {
 	limit?: number;
 	expand: boolean;
 	explain: boolean;
+	route: "full" | "jev";
 }
 
 /** Pure argv parser for `query` — the CLI seam tests hit instead of a store. `null` = usage error. */
 export const parseQueryArgs = (argv: string[]): QueryArgs | null => {
 	const args = argv.slice(1); // drop the command word
-	const parsed: QueryArgs = { query: "", format: "cli", expand: false, explain: false };
+	const parsed: QueryArgs = { query: "", format: "cli", expand: false, explain: false, route: "full" };
 	for (let i = 0; i < args.length; i += 1) {
 		const a = args[i]!;
 		if (a === "-c" || a === "--collection") {
@@ -102,6 +104,10 @@ export const parseQueryArgs = (argv: string[]): QueryArgs | null => {
 			parsed.expand = true;
 		} else if (a === "--explain") {
 			parsed.explain = true;
+		} else if (a === "--route") {
+			const r = args[++i];
+			if (r !== "jev" && r !== "full") return null;
+			parsed.route = r;
 		} else if (a === "--format") {
 			const f = args[++i];
 			if (f !== "cli" && f !== "json") return null;
@@ -147,6 +153,7 @@ export const main = async (argv: string[]): Promise<number> => {
 				limit: args.limit,
 				expand: args.expand,
 				explain: args.explain,
+				route: args.route,
 				jev,
 				allowed: allowedCollections(process.env),
 			});
