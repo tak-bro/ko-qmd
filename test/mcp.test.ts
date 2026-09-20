@@ -1629,7 +1629,11 @@ describe("REST /query, MCP query and the query log", () => {
     });
   });
 
-  test("a plain MCP query is logged as one auto-expanded search", async () => {
+  // A plain `query` is expanded before it searches, and expansion is an LLM operation, which
+  // `CI=true` refuses outright ("LLM operations are disabled in CI"). The tool then answers
+  // with an error and logs nothing, so this can only be checked where a model can run. Every
+  // sibling here passes `searches`, which needs no expansion and does run in CI.
+  test.skipIf(!!process.env.CI)("a plain MCP query is logged as one auto-expanded search", async () => {
     process.env.QMD_QUERY_LOG = "1";
     await callQueryTool({ query: "readme", collections: ["docs"], limit: 5, rerank: false });
     await flushQueryLog();
