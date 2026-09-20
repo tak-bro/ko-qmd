@@ -14,6 +14,13 @@
   global top-K. A span that does not parse is an error, and a filter that
   leaves nothing to search says so instead of looking like "no match".
 
+- The MCP `query` tool and the REST `/query` endpoint take the same `path`,
+  `since` and `until` parameters, so an agent can scope a search to a folder or
+  to recent changes without shelling out. A span that does not parse comes back
+  as an error rather than an unfiltered search, and an empty result under a
+  filter reports how many documents the filter left — an agent reading a bare
+  "No results" would otherwise conclude the corpus has nothing on the topic.
+
 - The HTTP and stdio MCP daemon keeps the text index current on its own. Before
   each search it checks the collections that search covers — at most once every
   30 seconds each — and re-indexes the ones whose files changed, so a note

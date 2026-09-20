@@ -239,6 +239,9 @@ Point any MCP client at `http://localhost:8181/mcp` to connect.
 | `query` | `minScore` | number | Minimum relevance 0–1 (default 0) |
 | `query` | `candidateLimit` | number | Max candidates to rerank (default 40) |
 | `query` | `rerank` | boolean | Run LLM reranking (default **true**); set false for RRF-only |
+| `query` | `path` | string[] | ko-qmd: globs against `collection/path`; `!` prefix excludes |
+| `query` | `since` | string | ko-qmd: span (`7d`) or date — documents modified at or after |
+| `query` | `until` | string | ko-qmd: same formats — documents modified at or before |
 | `get` | `file` | string | Path, docid (`#abc123`), or `path:from:count` (e.g. `#abc123:120:40`) |
 | `get` | `fromLine` | number | Start line (1-indexed); overrides the `:from` suffix |
 | `get` | `maxLines` | number | Limit returned lines |
@@ -251,6 +254,15 @@ Point any MCP client at `http://localhost:8181/mcp` to connect.
 Unknown parameters are silently ignored (not rejected) — double-check names if
 results seem unscoped. The HTTP `/query` and `/search` endpoints return
 `qmd://collection/path` URIs in the `file` field, matching the CLI and MCP output.
+
+`path`, `since` and `until` are the MCP side of the CLI's filtering flags —
+see [Path and Time Filtering](#path-and-time-filtering-ko-qmd) for their
+semantics. They narrow the corpus before ranking, so a narrow filter returns
+its own best matches rather than whatever survived the global top-K. A `since`
+or `until` that does not parse is an error (a tool error on MCP, HTTP 400 on
+`/query`) rather than a dropped filter, and an empty result under a filter
+reports how much corpus the filter left so an agent can tell "nothing matched"
+from "nothing to match against". The REST endpoints accept the same three.
 
 ### SDK / Library Usage
 

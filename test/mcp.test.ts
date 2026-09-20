@@ -1720,3 +1720,155 @@ describe("REST /query refreshes the text index first", () => {
     expect(json.results.map(r => r.file)).toEqual(["qmd://docs/new.md"]);
   });
 });
+
+// =============================================================================
+// Path and time filters over MCP (src/filters.ts)
+// =============================================================================
+
+describe("REST /query takes path and time filters", () => {
+  let handle: HttpServerHandle | undefined;
+  let baseUrl: string;
+  let root: string;
+  let docsDir: string;
+  const origIndexPath = process.env.INDEX_PATH;
+  const origConfigDir = process.env.QMD_CONFIG_DIR;
+
+  beforeAll(async () => {
+    root = mkdtempSync(join(tmpdir(), "qmd-mcp-filter-"));
+    docsDir = join(root, "docs");
+    mkdirSync(join(docsDir, "journals"), { recursive: true });
+    mkdirSync(join(docsDir, "archive"), { recursive: true });
+    // Enough decoys to fill the retrieval pool, so a filter applied to the results instead of
+    // to the corpus would return nothing for the journal note.
+    for (let i = 0; i < 250; i++) {
+      writeFileSyncNode(join(docsDir, "archive", `d${i}.md`), `# D${i}\n\nzanzibar zanzibar zanzibar\n`);
+    }
+    writeFileSyncNode(join(docsDir, "journals", "note.md"), "# Note\n\nzanzibar once\n");
+
+    const dbPath = join(root, "index.sqlite");
+    const config: CollectionConfig = { collections: { docs: { path: docsDir, pattern: "**/*.md" } } };
+    const configDir = join(root, "config");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSyncNode(join(configDir, "index.yml"), YAML.stringify(config));
+    process.env.INDEX_PATH = dbPath;
+    process.env.QMD_CONFIG_DIR = configDir;
+    const seed = await createStore({ dbPath, config });
+    await seed.update();
+    await seed.close();
+    handle = await startMcpHttpServer(0, { quiet: true, dbPath });
+    baseUrl = `http://localhost:${handle.port}`;
+  });
+
+  afterAll(async () => {
+    if (handle) await handle.stop();
+    _resetProductionModeForTesting();
+    if (origIndexPath !== undefined) process.env.INDEX_PATH = origIndexPath;
+    else delete process.env.INDEX_PATH;
+    if (origConfigDir !== undefined) process.env.QMD_CONFIG_DIR = origConfigDir;
+    else delete process.env.QMD_CONFIG_DIR;
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const post = async (body: Record<string, unknown>) => {
+    const res = await fetch(`${baseUrl}/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ searches: [{ type: "lex", query: "zanzibar" }], collections: ["docs"], limit: 10, rerank: false, ...body }),
+    });
+    return { status: res.status, json: await res.json() as { results?: { file: string }[]; error?: string } };
+  };
+
+  test("without a filter the decoys fill the results", async () => {
+    const { json } = await post({});
+    expect(json.results).toHaveLength(10);
+    expect(json.results!.every(r => r.file.includes("/archive/"))).toBe(true);
+  });
+
+  test("a path filter returns the document it asked for", async () => {
+    const { json } = await post({ path: ["docs/journals/**"] });
+    expect(json.results!.map(r => r.file)).toEqual(["qmd://docs/journals/note.md"]);
+  });
+
+  test("an exclude beats an include", async () => {
+    const { json } = await post({ path: ["docs/**", "!docs/archive/**"] });
+    expect(json.results!.map(r => r.file)).toEqual(["qmd://docs/journals/note.md"]);
+  });
+
+  test("`until` in the past leaves nothing", async () => {
+    const { json } = await post({ until: "2000-01-01" });
+    expect(json.results).toEqual([]);
+  });
+
+  test("`since` as a span keeps what was just indexed", async () => {
+    const { json } = await post({ since: "1d", path: ["docs/journals/**"] });
+    expect(json.results!.map(r => r.file)).toEqual(["qmd://docs/journals/note.md"]);
+  });
+
+  test("an unparseable span is a 400, not a silently unfiltered search", async () => {
+    const { status, json } = await post({ since: "7dd" });
+    expect(status).toBe(400);
+    expect(json.error).toMatch(/not a time/);
+    expect(json.results).toBeUndefined();
+  });
+
+  // The MCP tool is the surface agents actually call; REST is the sibling endpoint.
+  const VERSION = "2026-07-28";
+  const callQuery = async (args: Record<string, unknown>) => {
+    const res = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": VERSION,
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": "query",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "query",
+          arguments: { searches: [{ type: "lex", query: "zanzibar" }], collections: ["docs"], limit: 10, rerank: false, ...args },
+          _meta: {
+            "io.modelcontextprotocol/protocolVersion": VERSION,
+            "io.modelcontextprotocol/clientInfo": { name: "test-client", version: "1.0.0" },
+            "io.modelcontextprotocol/clientCapabilities": {},
+          },
+        },
+      }),
+    });
+    const json = await res.json() as {
+      result?: { isError?: boolean; content: { text: string }[]; structuredContent?: { results: { file: string }[] } };
+    };
+    return json.result!;
+  };
+
+  test("the MCP query tool takes the same path filter", async () => {
+    const result = await callQuery({ path: ["docs/journals/**"] });
+    expect(result.structuredContent!.results.map(r => r.file)).toEqual(["docs/journals/note.md"]);
+  });
+
+  test("the MCP query tool takes the same time filter", async () => {
+    const result = await callQuery({ until: "2000-01-01" });
+    expect(result.structuredContent!.results).toEqual([]);
+  });
+
+  test("an empty filtered result says the filter emptied the corpus", async () => {
+    // An agent reading a bare "No results" concludes the corpus has nothing on the topic.
+    const result = await callQuery({ path: ["docs/nowhere/**"] });
+    expect(result.structuredContent!.results).toEqual([]);
+    expect(result.content[0]!.text).toMatch(/matched 0 of 251 documents/);
+  });
+
+  test("an empty result under a filter that kept documents says that instead", async () => {
+    const result = await callQuery({ searches: [{ type: "lex", query: "kilimanjaro" }], path: ["docs/journals/**"] });
+    expect(result.content[0]!.text).toMatch(/No results in the 1 of 251 documents/);
+  });
+
+  test("an unparseable span is a tool error, not an unfiltered search", async () => {
+    const result = await callQuery({ since: "7dd" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toMatch(/not a time/);
+  });
+});

@@ -31,6 +31,8 @@ import { enableProductionMode } from "../store.js";
 import { checkRequestOrigin, resolveOriginGuard } from "./origin-guard.js";
 import { entryFromMcp, entryFromRest, logQuery, queryLogStatus } from "../query-log.js";
 import { createStoreIndexRefresher, type IndexRefresher } from "../refresh.js";
+import { buildDocumentFilter, describeFilter, type DocumentFilter } from "../filters.js";
+import { countFilteredDocuments } from "../store.js";
 
 // =============================================================================
 // Types for structured content
@@ -137,6 +139,22 @@ async function refreshBeforeQuery(store: QMDStore, collections: readonly string[
  * server/discover (2026-07-28) — gives the LLM immediate context about what's
  * searchable without a tool call.
  */
+/**
+ * What an empty result means when a filter was in play. Without this an agent reads "No
+ * results" and concludes the corpus has nothing on the topic, when the filter may have left
+ * nothing to search in the first place.
+ */
+function describeEmptyFilteredSearch(
+  store: QMDStore,
+  filter: DocumentFilter,
+  collections: readonly string[],
+): string {
+  const { kept, total } = countFilteredDocuments(store.internal.db, filter, collections);
+  return kept === 0
+    ? `No results — ${describeFilter(filter)} matched 0 of ${total} documents. Widen or drop the filter.`
+    : `No results in the ${kept} of ${total} documents matching ${describeFilter(filter)}.`;
+}
+
 async function buildInstructions(store: QMDStore): Promise<string> {
   const status = await store.getStatus();
   const globalCtx = await store.getGlobalContext();
@@ -365,6 +383,19 @@ Intent-aware lex (C++ performance, not sports):
           "Maximum candidates to rerank (default: 40, lower = faster but may miss results)"
         ),
         collections: z.array(z.string()).optional().describe("Filter to collections (OR match)"),
+        path: z.array(z.string()).optional().describe(
+          "Only search documents whose 'collection/path' matches one of these globs — the same " +
+          "path strings results report. Prefix a glob with '!' to exclude it; an exclude beats " +
+          "an include. A bare directory means everything under it. Example: " +
+          "['journals/**', '!journals/2024/**']"
+        ),
+        since: z.string().optional().describe(
+          "Only documents modified at or after this point: a span back from now ('30m', '3h', " +
+          "'7d', '2w', '6mo', '1y') or a date ('2026-09-01', or a full ISO timestamp)."
+        ),
+        until: z.string().optional().describe(
+          "Only documents modified at or before this point. Same formats as 'since'."
+        ),
         intent: z.string().optional().describe(
           "Background context to disambiguate the query. Example: query='performance', intent='web page load times and Core Web Vitals'. Does not search on its own."
         ),
@@ -373,7 +404,7 @@ Intent-aware lex (C++ performance, not sports):
         ),
       }),
     },
-    track(async ({ query, searches, limit, minScore, candidateLimit, collections, intent, rerank }) => {
+    track(async ({ query, searches, limit, minScore, candidateLimit, collections, path, since, until, intent, rerank }) => {
       const startedAt = Date.now();
       // Require exactly one of `query` (plain text, auto-expanded) or `searches` (typed sub-queries).
       if (!query && (!searches || searches.length === 0)) {
@@ -385,6 +416,18 @@ Intent-aware lex (C++ performance, not sports):
       if (query && searches && searches.length > 0) {
         return {
           content: [{ type: "text" as const, text: "Error: 'query' and 'searches' are mutually exclusive; provide only one" }],
+          isError: true,
+        };
+      }
+
+      // A filter that does not parse is an error the caller can fix, not a silently dropped
+      // narrowing that returns a full-corpus answer looking exactly like a narrow one.
+      let filter: DocumentFilter | undefined;
+      try {
+        filter = buildDocumentFilter({ path, since, until });
+      } catch (error) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
           isError: true,
         };
       }
@@ -408,6 +451,7 @@ Intent-aware lex (C++ performance, not sports):
         candidateLimit,
         rerank,
         intent,
+        filter,
       });
 
       // Use the plain query, or the first lex/vec sub-query, for snippet extraction
@@ -445,7 +489,12 @@ Intent-aware lex (C++ performance, not sports):
       }
 
       return {
-        content: [{ type: "text", text: formatSearchSummary(filtered, primaryQuery) }],
+        content: [{
+          type: "text",
+          text: filtered.length === 0 && filter
+            ? describeEmptyFilteredSearch(store, filter, effectiveCollections)
+            : formatSearchSummary(filtered, primaryQuery),
+        }],
         structuredContent: { results: filtered },
       };
     })
@@ -1058,6 +1107,19 @@ export async function startMcpHttpServer(
         // Use default collections if none specified
         const effectiveCollections = Array.isArray(params.collections) ? params.collections.map(String) : defaultCollectionNames;
 
+        let restFilter: DocumentFilter | undefined;
+        try {
+          restFilter = buildDocumentFilter({
+            path: Array.isArray(params.path) ? params.path.map(String) : undefined,
+            since: typeof params.since === "string" ? params.since : undefined,
+            until: typeof params.until === "string" ? params.until : undefined,
+          });
+        } catch (error) {
+          nodeRes.writeHead(400, { "Content-Type": "application/json" });
+          nodeRes.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+          return;
+        }
+
         await refreshBeforeQuery(store, effectiveCollections);
 
         const results = await store.search({
@@ -1068,6 +1130,7 @@ export async function startMcpHttpServer(
           candidateLimit: typeof params.candidateLimit === "number" ? params.candidateLimit : undefined,
           intent: typeof params.intent === "string" ? params.intent : undefined,
           rerank: typeof params.rerank === "boolean" ? params.rerank : undefined,
+          filter: restFilter,
         });
 
         // Use first lex or vec query for snippet extraction
