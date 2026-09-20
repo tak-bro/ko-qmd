@@ -9,8 +9,17 @@
   published SDK, with `qmd-jev doctor` as its first command. Private, not
   published; `qmd` itself and the root package's publish contents are unchanged.
 - `qmd-jev query` runs SDK retrieval (in-package lex+vec sub-queries, reranker
-  off) and answers in qmd's own fused order — the fail-open path Jev ranking
-  will fall back onto. No Jev call yet; `--format json` is the hit array.
+  off) and asks Jev one relevance question per hit, dropping what scores
+  below 0.3 — a safety net, not a filter: on the measured markdown corpus
+  every candidate scored >= 0.56, so nothing drops today, and kept hits stay
+  in qmd's fused order because sorting by the measured 0.02–0.05 spread
+  demoted the right document in 7/10 queries and improved it in none
+  (measured, not guessed — see the package README). `--explain` prints every
+  judged hit with its noul and kept/dropped mark for re-calibration;
+  `--expand` opts back into qmd's own LLM expansion (measured slower: 494 vs
+  387 ms/query, so the in-package sub-queries stay the default). Jev down,
+  no key, nothing listed: the same answer in qmd's own fused order, one line
+  on stderr. `--format json` is the hit array.
 - `search`, `vsearch` and `query` take `--path`, `--since` and `--until`, so a
   search can be narrowed to part of a collection or to what changed recently.
   `--path` matches globs against `collection/path` and is repeatable, with a

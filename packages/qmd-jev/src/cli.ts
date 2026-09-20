@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createStore } from "ko-qmd";
 import { allowedCollections } from "./consent.js";
-import { keyFrom, MODEL, probeModel } from "./jev.js";
+import { createJev, keyFrom, MODEL, probeModel } from "./jev.js";
 import type { JevDeps } from "./jev.js";
 import { toText, toJson } from "./present.js";
 import { runQuery } from "./run-query.js";
@@ -16,12 +16,14 @@ import { runQuery } from "./run-query.js";
 const USAGE = `qmd-jev — Jev-ranked search over qmd collections (pre-release)
 
 usage:
-  qmd-jev query [options] <query>   search: SDK retrieval, qmd's fused order (Jev ranking lands next)
+  qmd-jev query [options] <query>   search: Jev-ranked and gated, falling back to qmd's fused order when Jev is off
   qmd-jev doctor                    is Jev configured, and does the pinned model still answer?
 
 query options:
   -c, --collection <name>   restrict the search (repeatable)
   -n, --limit <num>         max results (default 10)
+  --expand                  use qmd's own LLM query expansion (default: in-package sub-queries — faster; see README)
+  --explain                 show every judged hit with its noul and kept/dropped mark
   --format <cli|json>       output format (default cli)
 
 env:
@@ -75,12 +77,14 @@ export interface QueryArgs {
 	collections?: string[];
 	format: "cli" | "json";
 	limit?: number;
+	expand: boolean;
+	explain: boolean;
 }
 
 /** Pure argv parser for `query` — the CLI seam tests hit instead of a store. `null` = usage error. */
 export const parseQueryArgs = (argv: string[]): QueryArgs | null => {
 	const args = argv.slice(1); // drop the command word
-	const parsed: QueryArgs = { query: "", format: "cli" };
+	const parsed: QueryArgs = { query: "", format: "cli", expand: false, explain: false };
 	for (let i = 0; i < args.length; i += 1) {
 		const a = args[i]!;
 		if (a === "-c" || a === "--collection") {
@@ -91,6 +95,10 @@ export const parseQueryArgs = (argv: string[]): QueryArgs | null => {
 			const n = Number(args[++i]);
 			if (!Number.isInteger(n) || n <= 0) return null;
 			parsed.limit = n;
+		} else if (a === "--expand") {
+			parsed.expand = true;
+		} else if (a === "--explain") {
+			parsed.explain = true;
 		} else if (a === "--format") {
 			const f = args[++i];
 			if (f !== "cli" && f !== "json") return null;
@@ -129,13 +137,23 @@ export const main = async (argv: string[]): Promise<number> => {
 			return 2;
 		}
 		const store = await createStore({ dbPath: defaultIndexDbPath() });
+		const jev = createJev(realDeps());
 		try {
 			const outcome = await runQuery(store, args.query, {
 				collections: args.collections,
 				limit: args.limit,
+				expand: args.expand,
+				explain: args.explain,
+				jev,
+				allowed: allowedCollections(process.env),
 			});
+			if (outcome.jevFailure !== undefined) {
+				console.error(`jev: no answer (${outcome.jevFailure}) — results are in qmd's order, unranked`);
+			}
+			const notice = jev.claimTripNotice();
+			if (notice !== null) console.error(notice);
 			if (args.format === "json") console.log(JSON.stringify(toJson(outcome), null, 2));
-			else console.log(toText(outcome));
+			else console.log(toText(outcome, args.explain));
 			return 0;
 		} finally {
 			await store.close();

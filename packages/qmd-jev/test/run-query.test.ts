@@ -1,15 +1,16 @@
 /**
- * runQuery — retrieval composition and the fail-open path, before Jev is
- * wired into it (slice 02: the fallback exists before the thing that falls
- * back). The store is a parameter, never constructed here, so these tests
- * need no index, no root build, and no network.
+ * runQuery — retrieval composition and the fail-open path, with the Jev
+ * gate wired in (slice 03). The store and the Jev client are parameters,
+ * never constructed here, so these tests need no index, no root build, and
+ * no network.
  */
 import { describe, expect, it } from "bun:test";
 import type { HybridQueryResult, SearchOptions } from "ko-qmd";
 import { parseQueryArgs } from "../src/cli.js";
-import { runQuery } from "../src/run-query.js";
-import type { QueryOutcome, RetrievalStore } from "../src/run-query.js";
-import { EMPTY_NONE_FOUND, EMPTY_NONE_KEPT, toJson, toText } from "../src/present.js";
+import { CANDIDATE_LIMIT, runQuery } from "../src/run-query.js";
+import type { JevHit, QueryOutcome, RetrievalStore } from "../src/run-query.js";
+import type { Ask, Answers, JevClient, Json, Questions } from "../src/jev.js";
+import { EMPTY_NONE_FOUND, EMPTY_NONE_KEPT, toText, toJson } from "../src/present.js";
 
 /** A store that records the options it was searched with and replays fixed hits in fused order. */
 const fakeStore = (hits: HybridQueryResult[]): { store: RetrievalStore; calls: SearchOptions[] } => {
@@ -34,6 +35,25 @@ const hit = (file: string, score: number): HybridQueryResult => ({
 	context: null,
 	docid: file.slice(0, 6),
 });
+
+const hitIn = (collection: string, file: string, score: number): HybridQueryResult => ({
+	...hit(file, score),
+	file: `qmd://${collection}/${file}`,
+});
+
+/** A Jev client with fixed answers; records every request it is asked to build. */
+const fakeJev = (
+	answers: Answers | null,
+	{ ready = true, lastFailure = null as JevClient["lastFailure"] }: { ready?: boolean; lastFailure?: JevClient["lastFailure"] } = {},
+): { jev: JevClient; requests: { state: Json; questions: Questions }[] } => {
+	const requests: { state: Json; questions: Questions }[] = [];
+	const ask: Ask = async (state, questions) => {
+		requests.push({ state, questions });
+		if (answers === null) return null;
+		return { answers, model: "jev-test" };
+	};
+	return { jev: { ask, ready: () => ready, claimTripNotice: () => null, lastFailure: () => lastFailure }, requests };
+};
 
 describe("runQuery — retrieval composition", () => {
 	it("searches with the in-package sub-queries, rerank off, fused candidates", async () => {
@@ -61,6 +81,23 @@ describe("runQuery — retrieval composition", () => {
 	});
 });
 
+describe("runQuery — --expand opts back into qmd's own expansion", () => {
+	it("default: the in-package sub-queries, no expansion model in the path", async () => {
+		const { store, calls } = fakeStore([]);
+		await runQuery(store, "connection pool", {});
+		expect(calls[0]!.queries).toBeDefined();
+		expect(calls[0]!.query).toBeUndefined();
+	});
+
+	it("--expand: the raw query string, rerank still off", async () => {
+		const { store, calls } = fakeStore([]);
+		await runQuery(store, "connection pool", { expand: true });
+		expect(calls[0]!.query).toBe("connection pool");
+		expect(calls[0]!.queries).toBeUndefined();
+		expect(calls[0]!.rerank).toBe(false);
+	});
+});
+
 describe("runQuery — the fail-open path is qmd's own fused order", () => {
 	it("returns the store's rows in exactly the order and score the fusion produced", async () => {
 		// Deliberately not monotonic: if anything re-sorted by score, this order would break.
@@ -85,10 +122,10 @@ describe("runQuery — the fail-open path is qmd's own fused order", () => {
 		expect(row.snippet).toContain("body of only.md");
 	});
 
-	it("no Jev call is involved: the outcome says which order it is in, and it is fused", async () => {
+	it("no Jev call is involved: no gate stats on the outcome", async () => {
 		const { store } = fakeStore([hit("a.md", 1)]);
 		const outcome = await runQuery(store, "q", {});
-		expect(outcome.order).toBe("fused");
+		expect(outcome.gate).toBeUndefined();
 	});
 
 	it("an empty retrieval is 'none found', not 'none kept'", async () => {
@@ -99,7 +136,163 @@ describe("runQuery — the fail-open path is qmd's own fused order", () => {
 	});
 });
 
+describe("runQuery — the Jev gate", () => {
+	const keepAll = (rows: HybridQueryResult[]): Answers =>
+		Object.fromEntries(rows.map((_, i) => [String(i), { type: "noul", noul: 0.9 }]));
+
+	it("gates by Jev: the off-topic are gone and the kept stay in qmd's fused order", async () => {
+		const rows = [hit("z.md", 9.5), hit("a.md", 3.1), hit("m.md", 4.2), hit("junk.md", 8.0)];
+		const { store } = fakeStore(rows);
+		const { jev } = fakeJev({
+			// Fused order was z,a,m,junk; Jev drops junk and z, keeps a and m in place.
+			"0": { type: "noul", noul: 0.1 },
+			"1": { type: "noul", noul: 0.95 },
+			"2": { type: "noul", noul: 0.7 },
+			"3": { type: "noul", noul: 0.2 },
+		});
+		const outcome = await runQuery(store, "q", { jev, allowed: ["notes"] });
+		expect(outcome.hits.map((h) => h.file)).toEqual(["qmd://notes/a.md", "qmd://notes/m.md"]);
+		expect(outcome.gate).toEqual({ scored: 4, dropped: 2, model: "jev-test" });
+		expect(outcome.jevFailure).toBeUndefined();
+	});
+
+	it("the gate agreeing with everything changes nothing: the fused rows, plus the gate stats", async () => {
+		const rows = [hit("z.md", 9.5), hit("a.md", 3.1)];
+		const { store } = fakeStore(rows);
+		const { jev } = fakeJev(keepAll(rows));
+		const outcome = await runQuery(store, "q", { jev, allowed: ["notes"] });
+		expect(outcome.hits.map((h) => h.score)).toEqual([9.5, 3.1]);
+		expect(outcome.gate).toEqual({ scored: 2, dropped: 0, model: "jev-test" });
+	});
+
+	it("retrieves the candidate slice, not the user's limit, and caps the answer to the limit", async () => {
+		const rows = Array.from({ length: CANDIDATE_LIMIT }, (_, i) => hit(`d${i}.md`, 1));
+		const { store, calls } = fakeStore(rows);
+		const { jev } = fakeJev(keepAll(rows));
+		const outcome = await runQuery(store, "q", { jev, allowed: ["notes"], limit: 10 });
+		expect(calls[0]!.limit).toBe(CANDIDATE_LIMIT);
+		expect(outcome.hits).toHaveLength(10);
+	});
+
+	it("ask → null: slice 02's answer — the fused rows, capped — plus the failure as status or category", async () => {
+		const rows = [hit("z-last.md", 9.5), hit("a-first.md", 3.1)];
+		const { store } = fakeStore(rows);
+		const { jev } = fakeJev(null, { lastFailure: "timeout" });
+		const outcome = await runQuery(store, "q", { jev, allowed: ["notes"] });
+		expect(outcome.hits.map((h) => h.file)).toEqual(["qmd://notes/z-last.md", "qmd://notes/a-first.md"]);
+		expect(outcome.jevFailure).toBe("timeout");
+		expect(outcome.gate).toBeUndefined();
+	});
+
+	it("a query spanning a listed and an unlisted collection sends only the listed one's hits", async () => {
+		const rows = [hitIn("notes", "kept.md", 2), hitIn("secret", "withheld.md", 9), hitIn("notes", "kept2.md", 1)];
+		const { store } = fakeStore(rows);
+		const { jev, requests } = fakeJev({
+			// ids follow the listed slice only: 0=kept.md, 1=kept2.md
+			"0": { type: "noul", noul: 0.8 },
+			"1": { type: "noul", noul: 0.6 },
+		});
+		const outcome = await runQuery(store, "q", { jev, allowed: ["notes"] });
+		const state = requests[0]!.state as { chunks: Record<string, { file: string }> };
+		expect(Object.values(state.chunks).map((c) => c.file)).toEqual([
+			"qmd://notes/kept.md",
+			"qmd://notes/kept2.md",
+		]);
+		expect(outcome.hits.map((h) => h.file)).not.toContain("qmd://secret/withheld.md");
+		expect(outcome.gate).toEqual({ scored: 2, dropped: 0, model: "jev-test" });
+	});
+
+	it("nothing consented (no allowlist) = no request built and slice 02's answer", async () => {
+		const rows = [hit("a.md", 1)];
+		const { store, calls } = fakeStore(rows);
+		const { jev, requests } = fakeJev(keepAll(rows));
+		const outcome = await runQuery(store, "q", { jev });
+		expect(requests).toHaveLength(0);
+		expect(outcome.gate).toBeUndefined();
+		expect(outcome.hits.map((h) => h.file)).toEqual(["qmd://notes/a.md"]);
+		expect(calls[0]!.limit).toBe(10);
+	});
+
+	it("client not ready (no key, allowlist off, breaker open) = no request built", async () => {
+		const { store } = fakeStore([hit("a.md", 1)]);
+		const { jev, requests } = fakeJev({}, { ready: false });
+		const outcome = await runQuery(store, "q", { jev, allowed: ["notes"] });
+		expect(requests).toHaveLength(0);
+		expect(outcome.gate).toBeUndefined();
+	});
+
+	it("an empty retrieval is none-found before Jev is ever asked", async () => {
+		const { store } = fakeStore([]);
+		const { jev, requests } = fakeJev({});
+		const outcome = await runQuery(store, "q", { jev, allowed: ["notes"] });
+		expect(requests).toHaveLength(0);
+		expect(outcome.emptyReason).toBe("none-found");
+		expect(outcome.gate).toBeUndefined();
+	});
+
+	it("every hit judged off-topic: the honest empty — none-kept, json [], never a corpus claim", async () => {
+		const rows = [hit("a.md", 2), hit("b.md", 1)];
+		const { store } = fakeStore(rows);
+		const { jev } = fakeJev({ "0": { type: "noul", noul: 0.1 }, "1": { type: "noul", noul: 0.05 } });
+		const outcome = await runQuery(store, "q", { jev, allowed: ["notes"] });
+		expect(outcome.hits).toEqual([]);
+		expect(outcome.emptyReason).toBe("none-kept");
+		expect(toText(outcome)).toContain(EMPTY_NONE_KEPT);
+		expect(toJson(outcome)).toEqual([]);
+	});
+
+	it("--explain: every judged hit, kept or dropped, with noul and verdict, in fused order", async () => {
+		const rows = [hit("z.md", 9.5), hit("a.md", 3.1), hit("m.md", 4.2)];
+		const { store } = fakeStore(rows);
+		const { jev } = fakeJev({
+			"0": { type: "noul", noul: 0.1 },
+			"1": { type: "noul", noul: 0.9 },
+			// m: unanswered → kept
+		});
+		const outcome = await runQuery(store, "q", { jev, allowed: ["notes"], explain: true });
+		expect(outcome.hits.map((h) => ({ file: h.file, noul: h.noul, kept: h.kept }))).toEqual([
+			{ file: "qmd://notes/z.md", noul: 0.1, kept: false },
+			{ file: "qmd://notes/a.md", noul: 0.9, kept: true },
+			{ file: "qmd://notes/m.md", noul: undefined, kept: true },
+		]);
+		// all dropped-but-explained: the rows are the point, not the empty sentence
+		expect(outcome.emptyReason).toBeUndefined();
+	});
+
+	it("a partial answer set keeps the unscored hits in their fused positions", async () => {
+		const rows = [hit("z.md", 9.5), hit("a.md", 3.1), hit("m.md", 4.2)];
+		const { store } = fakeStore(rows);
+		const { jev } = fakeJev({
+			// only z scored (kept); a below threshold (dropped); m unanswered (kept, fused position)
+			"0": { type: "noul", noul: 0.9 },
+			"1": { type: "noul", noul: 0.1 },
+		});
+		const outcome = await runQuery(store, "q", { jev, allowed: ["notes"] });
+		expect(outcome.hits.map((h) => h.file)).toEqual(["qmd://notes/z.md", "qmd://notes/m.md"]);
+	});
+
+	it("carries the best chunk, capped, for the Jev state — display still renders the snippet", async () => {
+		const { store } = fakeStore([{ ...hit("a.md", 1), bestChunk: "c".repeat(2000) }]);
+		const outcome = await runQuery(store, "q", {});
+		const row: JevHit = outcome.hits[0]!;
+		expect(row.chunk).toHaveLength(1500);
+		expect(row.snippet).toContain("body of a.md");
+	});
+});
+
 describe("present — one result shape for CLI and MCP", () => {
+	/** A display-shaped row, as toJevHit builds it — not a store row. */
+	const jevRow = (file: string): JevHit => ({
+		docid: file.slice(0, 6),
+		file: `qmd://notes/${file}`,
+		title: file,
+		score: 2,
+		context: null,
+		line: 1,
+		snippet: `body of ${file}`,
+		chunk: `body of ${file}`,
+	});
+
 	const outcomeOf = async (hits: HybridQueryResult[]): Promise<QueryOutcome> => {
 		const { store } = fakeStore(hits);
 		return runQuery(store, "q", {});
@@ -126,6 +319,30 @@ describe("present — one result shape for CLI and MCP", () => {
 		expect(text).toMatch(/2\.5.*qmd:\/\/notes\/a\.md/s);
 		expect(text).toContain("body of a.md");
 	});
+
+	it("explain text marks kept and dropped with the noul, under a gate header", () => {
+		const text = toText(
+			{
+				hits: [
+					{ ...jevRow("a.md"), noul: 0.9, kept: true },
+					{ ...jevRow("b.md"), noul: 0.1, kept: false },
+				],
+				gate: { scored: 2, dropped: 1, model: "jev-1.13.0" },
+			},
+			true,
+		);
+		expect(text).toContain("jev jev-1.13.0: 2 scored, 1 dropped at threshold 0.3");
+		expect(text).toMatch(/0\.90\s+kept\s+qmd:\/\/notes\/a\.md/);
+		expect(text).toMatch(/0\.10\s+dropped\s+qmd:\/\/notes\/b\.md/);
+	});
+
+	it("explain leaves an unanswered hit's noul blank and marks it kept", () => {
+		const text = toText(
+			{ hits: [{ ...jevRow("m.md"), kept: true }], gate: { scored: 0, dropped: 0, model: "jev-1.13.0" } },
+			true,
+		);
+		expect(text).toMatch(/—\s+kept\s+qmd:\/\/notes\/m\.md/);
+	});
 });
 
 describe("parseQueryArgs", () => {
@@ -135,6 +352,8 @@ describe("parseQueryArgs", () => {
 			collections: ["notes", "journals"],
 			format: "json",
 			limit: 3,
+			expand: false,
+			explain: false,
 		});
 	});
 
@@ -144,6 +363,19 @@ describe("parseQueryArgs", () => {
 			collections: undefined,
 			format: "cli",
 			limit: undefined,
+			expand: false,
+			explain: false,
+		});
+	});
+
+	it("takes --expand and --explain", () => {
+		expect(parseQueryArgs(["query", "q", "--expand", "--explain"])).toEqual({
+			query: "q",
+			collections: undefined,
+			format: "cli",
+			limit: undefined,
+			expand: true,
+			explain: true,
 		});
 	});
 

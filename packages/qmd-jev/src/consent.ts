@@ -10,6 +10,10 @@
 
 export type Env = Record<string, string | undefined>;
 
+/** The collection name in a hit's `file` (`qmd://collection/path`); empty when the path is not a collection URI. */
+export const collectionOf = (file: string): string =>
+	file.startsWith("qmd://") ? (file.slice("qmd://".length).split("/")[0] ?? "") : "";
+
 /** The collections Jev may be told about: comma-separated names, unset or empty = none. */
 export const allowedCollections = (env: Env): string[] => {
 	const listed = (env.QMD_JEV_COLLECTIONS ?? "")
