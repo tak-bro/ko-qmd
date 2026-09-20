@@ -1,0 +1,27 @@
+#!/usr/bin/env node
+// Launcher for qmd-jev. Runs the compiled dist/cli.js with node when the
+// package has been built; falls back to bun on the TypeScript entry in a dev
+// checkout that has not built yet. Cross-platform for the same reason the
+// root bin/qmd is Node, not /bin/sh.
+import { spawnSync } from "node:child_process";
+import { existsSync, realpathSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Resolve symlinks so a linked install finds the package directory, not the bin directory.
+const self = realpathSync(fileURLToPath(import.meta.url));
+const pkgDir = resolve(dirname(self), "..");
+const compiled = resolve(pkgDir, "dist", "cli.js");
+const source = resolve(pkgDir, "src", "cli.ts");
+const args = process.argv.slice(2);
+
+if (existsSync(compiled)) {
+	const run = spawnSync(process.execPath, [compiled, ...args], { stdio: "inherit" });
+	process.exit(run.status ?? 1);
+}
+if (existsSync(source)) {
+	const run = spawnSync("bun", [source, ...args], { stdio: "inherit" });
+	process.exit(run.status ?? 1);
+}
+console.error("qmd-jev: nothing to run — build the package (bun run --cwd packages/qmd-jev build)");
+process.exit(1);

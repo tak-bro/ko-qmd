@@ -4,6 +4,10 @@
 
 ### Changes
 
+- The repo is now a workspace (`workspaces: ["packages/*"]`) and gains its first
+  member, `packages/qmd-jev` — Jev-ranked search over qmd collections via the
+  published SDK, with `qmd-jev doctor` as its first command. Private, not
+  published; `qmd` itself and the root package's publish contents are unchanged.
 - `search`, `vsearch` and `query` take `--path`, `--since` and `--until`, so a
   search can be narrowed to part of a collection or to what changed recently.
   `--path` matches globs against `collection/path` and is repeatable, with a

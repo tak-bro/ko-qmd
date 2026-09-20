@@ -1,0 +1,28 @@
+{
+  "name": "qmd-jev",
+  "version": "0.1.0",
+  "description": "Jev-ranked search over qmd collections — CLI and MCP server",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "qmd-jev": "bin/qmd-jev"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "lint": "tsc -p tsconfig.json",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.0.0",
+    "ko-qmd": "file:../..",
+    "zod": "4.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "license": "MIT"
+}
