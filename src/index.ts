@@ -65,6 +65,7 @@ import {
   type EmbedResult,
   type ChunkStrategy,
 } from "./store.js";
+import type { DocumentFilter } from "./filters.js";
 import {
   LlamaCpp,
 } from "./llm.js";
@@ -115,6 +116,8 @@ export type { InternalStore };
 // Re-export utility functions and types used by frontends
 export { extractSnippet, addLineNumbers, DEFAULT_MULTI_GET_MAX_BYTES };
 export type { ChunkStrategy } from "./store.js";
+export type { DocumentFilter } from "./filters.js";
+export { buildDocumentFilter, describeFilter, parseTimeSpec } from "./filters.js";
 
 // Re-export getDefaultDbPath for CLI/MCP that need the default database location
 export { getDefaultDbPath } from "./store.js";
@@ -171,6 +174,12 @@ export interface SearchOptions {
   explain?: boolean;
   /** Chunk strategy: "auto" (default, uses AST for code files) or "regex" (legacy) */
   chunkStrategy?: ChunkStrategy;
+  /**
+   * Narrow the corpus before anything is ranked: path globs against
+   * `collection/path`, and a `modified_at` range. Build one with
+   * `buildDocumentFilter` so `--since 7d` and a bad span both behave.
+   */
+  filter?: DocumentFilter;
 }
 
 /**
@@ -179,6 +188,7 @@ export interface SearchOptions {
 export interface LexSearchOptions {
   limit?: number;
   collection?: string | string[];
+  filter?: DocumentFilter;
 }
 
 /**
@@ -187,6 +197,7 @@ export interface LexSearchOptions {
 export interface VectorSearchOptions {
   limit?: number;
   collection?: string | string[];
+  filter?: DocumentFilter;
 }
 
 /**
@@ -417,6 +428,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
           candidateLimit: opts.candidateLimit,
           skipRerank,
           chunkStrategy: opts.chunkStrategy,
+          filter: opts.filter,
         });
       }
 
@@ -430,10 +442,11 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
         candidateLimit: opts.candidateLimit,
         skipRerank,
         chunkStrategy: opts.chunkStrategy,
+        filter: opts.filter,
       });
     },
-    searchLex: async (q, opts) => internal.searchFTS(q, opts?.limit, opts?.collection),
-    searchVector: async (q, opts) => internal.searchVec(q, llm.embedModelName, opts?.limit, opts?.collection),
+    searchLex: async (q, opts) => internal.searchFTS(q, opts?.limit, opts?.collection, opts?.filter),
+    searchVector: async (q, opts) => internal.searchVec(q, llm.embedModelName, opts?.limit, opts?.collection, undefined, undefined, opts?.filter),
     expandQuery: async (q) => internal.expandQuery(q),
     get: async (pathOrDocid, opts) => internal.findDocument(pathOrDocid, opts),
     getDocumentBody: async (pathOrDocid, opts) => {

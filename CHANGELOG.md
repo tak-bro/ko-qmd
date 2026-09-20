@@ -4,6 +4,16 @@
 
 ### Changes
 
+- `search`, `vsearch` and `query` take `--path`, `--since` and `--until`, so a
+  search can be narrowed to part of a collection or to what changed recently.
+  `--path` matches globs against `collection/path` and is repeatable, with a
+  `!` prefix to exclude; `--since` / `--until` take a span (`7d`) or a date.
+  The filter narrows the corpus rather than the result list — excluded
+  documents are gone before ranking, on the vector path as well as BM25, so a
+  narrow filter returns its own best matches instead of whatever survived the
+  global top-K. A span that does not parse is an error, and a filter that
+  leaves nothing to search says so instead of looking like "no match".
+
 - The HTTP and stdio MCP daemon keeps the text index current on its own. Before
   each search it checks the collections that search covers — at most once every
   30 seconds each — and re-indexes the ones whose files changed, so a note

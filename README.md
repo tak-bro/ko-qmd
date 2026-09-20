@@ -909,6 +909,9 @@ and `deep-search` (→ `query`).
 --explain          # Include retrieval score traces (query, JSON/CLI output)
 --index <name>     # Use named index
 --intent "<text>"  # Disambiguation context (e.g. "web page load times")
+--path <glob>      # ko-qmd: only documents matching the glob (repeatable)
+--since <when>     # ko-qmd: only documents modified at or after this point
+--until <when>     # ko-qmd: only documents modified at or before this point
 --no-rerank        # Skip LLM reranking (RRF scores only; faster on CPU)
 -C, --candidate-limit <n>  # Max candidates to rerank (default: 40)
 --full-path        # Emit on-disk filesystem paths instead of qmd:// URIs
@@ -949,6 +952,44 @@ explicitly with `-c`.
 > **Note:** With multiple `-c` flags, results come from a global top-K pool and are
 > then filtered. If one collection dominates the rankings, matches from smaller
 > collections may not appear at the default limit — raise `-n` or use `--all`.
+
+### Path and Time Filtering (ko-qmd)
+
+`--path`, `--since` and `--until` narrow the corpus a search runs against, on
+`search`, `vsearch` and `query` alike. They are not a filter over the results:
+the documents they exclude are gone before anything is ranked, so a narrow
+filter returns its own best matches rather than whatever survived the global
+top-K.
+
+```sh
+qmd query "retry policy" --since 7d                  # touched in the last week
+qmd query "retry policy" --since 2026-09-01          # or an explicit date
+qmd search "auth" --path 'notes/journals/**'         # only under this path
+qmd search "auth" --path 'notes/**' --path '!notes/archive/**'
+```
+
+`--path` matches globs against `collection/path` — the same string results
+print — and is repeatable. A `!` prefix excludes, and an exclude beats an
+include. A bare directory (`--path notes/journals`) means everything under it.
+
+`--since` / `--until` take either a span back from now (`30m`, `3h`, `7d`,
+`2w`, `6mo`, `1y`) or a date (`2026-09-01`, or a full ISO timestamp). A bare
+date starts at that local day. Anything else is an error rather than a silently
+ignored filter, because a search that quietly dropped your filter returns a
+full-corpus answer that looks exactly like a narrow one.
+
+They compare against the index's `modified_at`, which is when the document was
+last indexed with changed content — not the file's mtime. The daemon's index
+refresh keeps those within 30 seconds of each other; for CLI searches, `--since`
+is only as current as your last `qmd update`.
+
+When a filter leaves nothing to search, the empty result says so rather than
+looking like "no match":
+
+```
+No results found — path 'notes/nowhere/**' matched 0 of 232 documents.
+No results found in the 4 of 232 documents matching since 2026-09-13T12:00:00.000Z.
+```
 
 ### Output Format
 

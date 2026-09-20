@@ -7,6 +7,7 @@ import { embedLockPathForDb, tryAcquireEmbedLock, EMBED_LOCK_BUSY_MESSAGE } from
 import { fileURLToPath } from "url";
 import { basename, dirname, join as pathJoin, relative as relativePath, resolve as pathResolve } from "path";
 import { parseArgs } from "util";
+import { buildDocumentFilter, describeFilter, type DocumentFilter } from "../filters.js";
 import { readFileSync, readdirSync, realpathSync, statSync, existsSync, unlinkSync, writeFileSync, openSync, closeSync, mkdirSync, lstatSync, rmSync, symlinkSync, readlinkSync, copyFileSync } from "fs";
 import { createInterface } from "readline/promises";
 import {
@@ -17,6 +18,7 @@ import {
   resolve,
   enableProductionMode,
   searchFTS,
+  countFilteredDocuments,
   extractSnippet,
   getContextForFile,
   getContextForPath,
@@ -2313,6 +2315,25 @@ function normalizeBM25(score: number): number {
   return 1 / (1 + Math.exp(-(absScore - 5) / 3));
 }
 
+/**
+ * `--path` / `--since` / `--until` into a filter, or nothing when none were given.
+ *
+ * A bad span exits here rather than searching the whole corpus: a filter that silently
+ * means "no filter" hands back a full-corpus answer that looks exactly like a narrow one.
+ */
+function parseDocumentFilter(values: Record<string, unknown>): DocumentFilter | undefined {
+  try {
+    return buildDocumentFilter({
+      path: values.path as string[] | undefined,
+      since: values.since as string | undefined,
+      until: values.until as string | undefined,
+    });
+  } catch (error) {
+    console.error(`qmd: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
+}
+
 type OutputOptions = {
   format: OutputFormat;
   full: boolean;
@@ -2328,6 +2349,7 @@ type OutputOptions = {
   skipRerank?: boolean;  // Skip LLM reranking, use RRF scores only
   chunkStrategy?: ChunkStrategy;  // "auto" (default) or "regex"
   fullPath?: boolean;    // Show realpath instead of qmd:// URI (relative to $PWD when subpath)
+  filter?: DocumentFilter;  // --path / --since / --until
 };
 
 // Highlight query terms in text (skip short words < 3 chars)
@@ -2365,6 +2387,24 @@ function shortPath(dirpath: string): string {
 }
 
 type EmptySearchReason = "no_results" | "min_score";
+
+/**
+ * An empty list cannot say whether the words matched nothing or the filter left nothing to
+ * match against. When a filter is in play, count what survived it and say so.
+ */
+function reportEmptyFilteredSearch(db: Database, opts: OutputOptions, collectionNames: string[]): void {
+  if (!opts.filter || opts.format === "json" || opts.format === "csv" || opts.format === "xml"
+      || opts.format === "md" || opts.format === "files") {
+    printEmptySearchResults(opts.format);
+    return;
+  }
+  const { kept, total } = countFilteredDocuments(db, opts.filter, collectionSearchFilter(collectionNames));
+  if (kept === 0) {
+    console.log(`No results found — ${describeFilter(opts.filter)} matched 0 of ${total} documents.`);
+    return;
+  }
+  console.log(`No results found in the ${kept} of ${total} documents matching ${describeFilter(opts.filter)}.`);
+}
 
 // Emit format-safe empty output for search commands.
 function printEmptySearchResults(format: OutputFormat, reason: EmptySearchReason = "no_results"): void {
@@ -2816,7 +2856,7 @@ function search(query: string, opts: OutputOptions): void {
 
   // Use large limit for --all, otherwise fetch more than needed and let outputResults filter
   const fetchLimit = opts.all ? 100000 : Math.max(50, opts.limit * 2);
-  const results = searchFTS(db, query, fetchLimit, collectionSearchFilter(collectionNames));
+  const results = searchFTS(db, query, fetchLimit, collectionSearchFilter(collectionNames), opts.filter);
 
   // Add context to results
   const resultsWithContext = results.map(r => ({
@@ -2830,12 +2870,12 @@ function search(query: string, opts: OutputOptions): void {
     docid: r.docid,
   }));
 
-  closeDb();
-
   if (resultsWithContext.length === 0) {
-    printEmptySearchResults(opts.format);
+    reportEmptyFilteredSearch(db, opts, collectionNames);
+    closeDb();
     return;
   }
+  closeDb();
   outputResults(resultsWithContext, query, opts);
 }
 
@@ -2869,6 +2909,7 @@ async function vectorSearch(query: string, opts: OutputOptions, _model: string =
       limit: opts.all ? 500 : (opts.limit || 10),
       minScore: opts.minScore || 0.3,
       intent: opts.intent,
+      filter: opts.filter,
       hooks: {
         onExpand: (original, expanded) => {
           logExpansionTree(original, expanded);
@@ -2877,12 +2918,12 @@ async function vectorSearch(query: string, opts: OutputOptions, _model: string =
       },
     });
 
-    closeDb();
-
     if (results.length === 0) {
-      printEmptySearchResults(opts.format);
+      reportEmptyFilteredSearch(store.db, opts, collectionNames);
+      closeDb();
       return;
     }
+    closeDb();
 
     outputResults(results.map(r => ({
       file: r.file,
@@ -2939,6 +2980,7 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
         explain: !!opts.explain,
         intent,
         chunkStrategy: opts.chunkStrategy,
+        filter: opts.filter,
         hooks: {
           onEmbedStart: (count) => {
             process.stderr.write(`${c.dim}Embedding ${count} ${count === 1 ? 'query' : 'queries'}...${c.reset}`);
@@ -2967,6 +3009,7 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
         explain: !!opts.explain,
         intent,
         chunkStrategy: opts.chunkStrategy,
+        filter: opts.filter,
         hooks: {
           onStrongSignal: (score) => {
             process.stderr.write(`${c.dim}Strong BM25 signal (${score.toFixed(2)}) — skipping expansion${c.reset}\n`);
@@ -2997,12 +3040,12 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
       });
     }
 
-    closeDb();
-
     if (results.length === 0) {
-      printEmptySearchResults(opts.format);
+      reportEmptyFilteredSearch(store.db, opts, collectionNames);
+      closeDb();
       return;
     }
+    closeDb();
 
     // Use first lex/vec query for output context, or original query
     const structuredQueries = parsed?.searches;
@@ -3083,6 +3126,9 @@ function parseCLI() {
       "no-rerank": { type: "boolean", default: false },
       "no-gpu": { type: "boolean", default: false },
       intent: { type: "string" },
+      path: { type: "string", multiple: true },  // narrow to path glob(s); `!` prefix excludes
+      since: { type: "string" },                 // only documents modified at/after this
+      until: { type: "string" },                 // only documents modified at/before this
       // Chunking options
       "chunk-strategy": { type: "string" },  // "regex" (default) or "auto" (AST for code files)
       // MCP HTTP transport options
@@ -3156,6 +3202,7 @@ function parseCLI() {
     intent: values.intent as string | undefined,
     chunkStrategy: parseChunkStrategy(values["chunk-strategy"]),
     fullPath: !!values["full-path"],
+    filter: parseDocumentFilter(values),
   };
 
   return {
@@ -3673,6 +3720,10 @@ function showHelp(): void {
   console.log("  --explain                  - Include retrieval score traces (query, CLI/--format json)");
   console.log("  --format <kind>            - Output format: cli (default) | json | csv | md | xml | files");
   console.log("  -c, --collection <name>    - Filter by one or more collections");
+  console.log("  --path <glob>              - Only documents matching the glob; repeatable, '!' excludes");
+  console.log("                                Matched against collection/path, as printed in results");
+  console.log("  --since <when>             - Only documents modified at or after (7d, 3h, 2w, 2026-09-01)");
+  console.log("  --until <when>             - Only documents modified at or before (same formats)");
   console.log("");
   console.log("Embed/query options:");
   console.log("  --chunk-strategy <auto|regex> - Chunking mode (default: regex; auto uses AST for code files)");
