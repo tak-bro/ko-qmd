@@ -161,6 +161,19 @@ The HTTP server exposes two endpoints:
 - `POST /query` (alias `/search`) — structured search without the MCP protocol
 - `GET /health` — liveness check with uptime
 
+##### Index refresh (ko-qmd)
+
+Before each search, the daemon checks the collections that search covers and
+re-indexes the ones that changed on disk, so a note written a minute ago is
+findable without running `qmd update`. Each collection is checked at most once
+every 30 seconds. The refresh updates the text index only: a new or edited note
+is found by keyword search right away and by vector search after the next
+`qmd embed`. It never runs a collection's `update:` command, never clears the
+LLM cache, and leaves a collection alone when its folder has vanished or turned
+up empty — an unmounted drive is not a reason to drop its documents. Collections
+outside the project of a project-local `.qmd` config are never refreshed.
+CLI searches do not refresh; run `qmd update` there.
+
 ##### Query log (ko-qmd)
 
 Start the daemon with `QMD_QUERY_LOG=1` (`true`/`yes` also work; anything else

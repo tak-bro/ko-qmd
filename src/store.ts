@@ -1607,6 +1607,36 @@ export type ReindexResult = {
 };
 
 /**
+ * The files a collection is made of, relative to its root: the glob, minus dependency and
+ * build directories, minus the collection's own ignore patterns, minus anything hidden.
+ * One definition, because the daemon's refresh has to see exactly the set that
+ * reindexCollection indexes or it would decide staleness about different files.
+ */
+export async function listCollectionFiles(
+  collectionPath: string,
+  globPattern: string,
+  ignorePatterns?: string[],
+): Promise<string[]> {
+  const excludeDirs = ["node_modules", ".git", ".cache", "vendor", "dist", "build"];
+  const allIgnore = [
+    ...excludeDirs.map(d => `**/${d}/**`),
+    ...(ignorePatterns || []),
+  ];
+  const allFiles: string[] = await fastGlob(splitGlobMask(globPattern), {
+    cwd: collectionPath,
+    onlyFiles: true,
+    followSymbolicLinks: false,
+    dot: false,
+    ignore: allIgnore,
+  });
+  // Filter hidden files/folders
+  return allFiles.filter(file => {
+    const parts = file.split("/");
+    return !parts.some(part => part.startsWith("."));
+  });
+}
+
+/**
  * Re-index a single collection by scanning the filesystem and updating the database.
  * Pure function — no console output, no db lifecycle management.
  */
@@ -1622,24 +1652,7 @@ export async function reindexCollection(
 ): Promise<ReindexResult> {
   const db = store.db;
   const now = new Date().toISOString();
-  const excludeDirs = ["node_modules", ".git", ".cache", "vendor", "dist", "build"];
-
-  const allIgnore = [
-    ...excludeDirs.map(d => `**/${d}/**`),
-    ...(options?.ignorePatterns || []),
-  ];
-  const allFiles: string[] = await fastGlob(splitGlobMask(globPattern), {
-    cwd: collectionPath,
-    onlyFiles: true,
-    followSymbolicLinks: false,
-    dot: false,
-    ignore: allIgnore,
-  });
-  // Filter hidden files/folders
-  const files = allFiles.filter(file => {
-    const parts = file.split("/");
-    return !parts.some(part => part.startsWith("."));
-  });
+  const files = await listCollectionFiles(collectionPath, globPattern, options?.ignorePatterns);
 
   const total = files.length;
   let indexed = 0, updated = 0, unchanged = 0, processed = 0;

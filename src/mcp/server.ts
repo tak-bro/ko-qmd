@@ -30,6 +30,7 @@ import { getConfigPath } from "../collections.js";
 import { enableProductionMode } from "../store.js";
 import { checkRequestOrigin, resolveOriginGuard } from "./origin-guard.js";
 import { entryFromMcp, entryFromRest, logQuery, queryLogStatus } from "../query-log.js";
+import { createStoreIndexRefresher, type IndexRefresher } from "../refresh.js";
 
 // =============================================================================
 // Types for structured content
@@ -98,6 +99,37 @@ function getPackageVersion(): string {
 // =============================================================================
 // MCP Server
 // =============================================================================
+
+/**
+ * One refresher per store, kept for the life of the daemon: its cooldown and its memory of
+ * its own last pass are what stop every query from walking the collection again.
+ */
+const refreshers = new WeakMap<QMDStore, IndexRefresher>();
+
+/**
+ * Bring the text index up to date for the collections a query is about to search. Never
+ * throws — a failed refresh is logged and the query runs against the index as it was.
+ */
+async function refreshBeforeQuery(store: QMDStore, collections: readonly string[]): Promise<void> {
+  let refresher = refreshers.get(store);
+  if (!refresher) {
+    refresher = createStoreIndexRefresher(store, {
+      configPath: getConfigPath(),
+      onError: (collection, error) => {
+        console.error(`qmd: index refresh for '${collection}' failed: ${error instanceof Error ? error.message : String(error)}`);
+      },
+    });
+    refreshers.set(store, refresher);
+  }
+  try {
+    const targets = collections.length > 0
+      ? collections
+      : (await store.listCollections()).map(c => c.name);
+    await refresher.refreshIfStale(targets);
+  } catch (error) {
+    console.error(`qmd: index refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
 
 /**
  * Build dynamic server instructions from actual index state.
@@ -365,6 +397,8 @@ Intent-aware lex (C++ performance, not sports):
       const searchOptions = query
         ? { query }
         : { queries: (searches ?? []).map(s => ({ type: s.type, query: s.query })) };
+
+      await refreshBeforeQuery(store, effectiveCollections);
 
       const results = await store.search({
         ...searchOptions,
@@ -1023,6 +1057,8 @@ export async function startMcpHttpServer(
 
         // Use default collections if none specified
         const effectiveCollections = Array.isArray(params.collections) ? params.collections.map(String) : defaultCollectionNames;
+
+        await refreshBeforeQuery(store, effectiveCollections);
 
         const results = await store.search({
           queries,

@@ -4,6 +4,15 @@
 
 ### Changes
 
+- The HTTP and stdio MCP daemon keeps the text index current on its own. Before
+  each search it checks the collections that search covers — at most once every
+  30 seconds each — and re-indexes the ones whose files changed, so a note
+  written while the daemon runs is findable on the next query without `qmd
+  update`. It updates keyword search only; vectors still wait for `qmd embed`.
+  It does not run a collection's `update:` hook, does not clear the LLM cache
+  the way `qmd update` does, and does not touch a collection whose folder has
+  vanished or emptied, since reindexing would deactivate every document in it.
+
 - The daemon's query log now covers the MCP `query` tool, not just the REST
   endpoints. A search an agent runs through MCP over HTTP lands in the same
   `queries-YYYY-MM.jsonl` with `via: "mcp"`, the same result path spelling and

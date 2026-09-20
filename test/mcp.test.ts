@@ -1659,3 +1659,64 @@ describe("REST /query, MCP query and the query log", () => {
     expect(queryLogStatus().lastError).not.toBeNull();   // the write was attempted and failed
   });
 });
+
+// =============================================================================
+// Daemon index refresh (src/refresh.ts)
+// =============================================================================
+
+import { mkdirSync, utimesSync } from "node:fs";
+import { createStore } from "../src/index.js";
+
+describe("REST /query refreshes the text index first", () => {
+  let handle: HttpServerHandle | undefined;
+  let baseUrl: string;
+  let root: string;
+  let docsDir: string;
+  const origIndexPath = process.env.INDEX_PATH;
+  const origConfigDir = process.env.QMD_CONFIG_DIR;
+
+  beforeAll(async () => {
+    root = mkdtempSync(join(tmpdir(), "qmd-mcp-refresh-"));
+    docsDir = join(root, "docs");
+    mkdirSync(docsDir, { recursive: true });
+    writeFileSyncNode(join(docsDir, "old.md"), "# Old\n\nnothing to see\n");
+    const dbPath = join(root, "index.sqlite");
+    const config: CollectionConfig = { collections: { docs: { path: docsDir, pattern: "**/*.md" } } };
+    const configDir = join(root, "config");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSyncNode(join(configDir, "index.yml"), YAML.stringify(config));
+    process.env.INDEX_PATH = dbPath;
+    process.env.QMD_CONFIG_DIR = configDir;
+    // Index once, as `qmd update` would have, then close so the daemon owns the file.
+    const seed = await createStore({ dbPath, config });
+    await seed.update();
+    await seed.close();
+    handle = await startMcpHttpServer(0, { quiet: true, dbPath });
+    baseUrl = `http://localhost:${handle.port}`;
+  });
+
+  afterAll(async () => {
+    if (handle) await handle.stop();
+    _resetProductionModeForTesting();
+    if (origIndexPath !== undefined) process.env.INDEX_PATH = origIndexPath;
+    else delete process.env.INDEX_PATH;
+    if (origConfigDir !== undefined) process.env.QMD_CONFIG_DIR = origConfigDir;
+    else delete process.env.QMD_CONFIG_DIR;
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("a note written while the daemon runs is found without `qmd update`", async () => {
+    const note = join(docsDir, "new.md");
+    writeFileSyncNode(note, "# New\n\nzanzibar lives here\n");
+    const future = new Date(Date.now() + 5_000);
+    utimesSync(note, future, future);
+
+    const res = await fetch(`${baseUrl}/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ searches: [{ type: "lex", query: "zanzibar" }], collections: ["docs"], limit: 5, rerank: false }),
+    });
+    const json = await res.json() as { results: { file: string }[] };
+    expect(json.results.map(r => r.file)).toEqual(["qmd://docs/new.md"]);
+  });
+});
