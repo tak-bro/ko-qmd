@@ -8,6 +8,9 @@
   member, `packages/qmd-jev` — Jev-ranked search over qmd collections via the
   published SDK, with `qmd-jev doctor` as its first command. Private, not
   published; `qmd` itself and the root package's publish contents are unchanged.
+- `qmd-jev query` runs SDK retrieval (in-package lex+vec sub-queries, reranker
+  off) and answers in qmd's own fused order — the fail-open path Jev ranking
+  will fall back onto. No Jev call yet; `--format json` is the hit array.
 - `search`, `vsearch` and `query` take `--path`, `--since` and `--until`, so a
   search can be narrowed to part of a collection or to what changed recently.
   `--path` matches globs against `collection/path` and is repeatable, with a

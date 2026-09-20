@@ -5,8 +5,9 @@ judgements qmd otherwise spends a local GPU model on: which retrieval route a qu
 whether each hit is actually about the query. It consumes qmd through the published SDK
 (`createStore`), so the `qmd` tool itself is untouched.
 
-**Pre-release workspace package.** Not published to npm; `qmd-jev doctor` is the first working
-command. `query` and `mcp` land with their slices.
+**Pre-release workspace package.** Not published to npm; `qmd-jev doctor` and
+`qmd-jev query` run — query currently answers in qmd's own fused order, with no
+Jev call. Jev ranking and `mcp` land with their slices.
 
 ## What leaves the machine, and when
 
@@ -17,7 +18,8 @@ puts in a Jev request may be kept.** Every path below states what it sends; no o
 |---|---|---|
 | `doctor`, no key | nothing — zero requests | a key |
 | `doctor`, with key | one request: an **empty** state and one liveness question. No collection content. | |
-| `query` (slice 03) | hit excerpts of **listed collections only**, capped at 1500 characters per hit with the cut marked | `QMD_JEV_COLLECTIONS` |
+| `query`, today | nothing — retrieval runs locally; `QMD_JEV_COLLECTIONS` gates only what Jev is told | — |
+| `query`, Jev ranking (next slice) | hit excerpts of **listed collections only**, capped at 1500 characters per hit with the cut marked | `QMD_JEV_COLLECTIONS` |
 
 Consent is per collection, because the collection is qmd's unit of content. A collection not
 listed in `QMD_JEV_COLLECTIONS` is never described to Jev — its hits are still searched and
