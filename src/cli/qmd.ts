@@ -7,6 +7,8 @@ import { embedLockPathForDb, tryAcquireEmbedLock, EMBED_LOCK_BUSY_MESSAGE } from
 import { fileURLToPath } from "url";
 import { basename, dirname, join as pathJoin, relative as relativePath, resolve as pathResolve } from "path";
 import { parseArgs } from "util";
+import { buildDocumentFilter, describeFilter, type DocumentFilter } from "../filters.js";
+import { compileGrepPattern, grepDocuments, type GrepFileMatch } from "../grep.js";
 import { readFileSync, readdirSync, realpathSync, statSync, existsSync, unlinkSync, writeFileSync, openSync, closeSync, mkdirSync, lstatSync, rmSync, symlinkSync, readlinkSync, copyFileSync } from "fs";
 import { createInterface } from "readline/promises";
 import {
@@ -17,6 +19,7 @@ import {
   resolve,
   enableProductionMode,
   searchFTS,
+  countFilteredDocuments,
   extractSnippet,
   getContextForFile,
   getContextForPath,
@@ -69,6 +72,7 @@ import {
   addLineNumbers,
   type ExpandedQuery,
   type HybridQueryExplain,
+  type RRFContributionTrace,
   DEFAULT_EMBED_MODEL,
   DEFAULT_EMBED_MAX_BATCH_BYTES,
   DEFAULT_EMBED_MAX_DOCS_PER_BATCH,
@@ -2313,6 +2317,25 @@ function normalizeBM25(score: number): number {
   return 1 / (1 + Math.exp(-(absScore - 5) / 3));
 }
 
+/**
+ * `--path` / `--since` / `--until` into a filter, or nothing when none were given.
+ *
+ * A bad span exits here rather than searching the whole corpus: a filter that silently
+ * means "no filter" hands back a full-corpus answer that looks exactly like a narrow one.
+ */
+function parseDocumentFilter(values: Record<string, unknown>): DocumentFilter | undefined {
+  try {
+    return buildDocumentFilter({
+      path: values.path as string[] | undefined,
+      since: values.since as string | undefined,
+      until: values.until as string | undefined,
+    });
+  } catch (error) {
+    console.error(`qmd: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
+}
+
 type OutputOptions = {
   format: OutputFormat;
   full: boolean;
@@ -2328,7 +2351,39 @@ type OutputOptions = {
   skipRerank?: boolean;  // Skip LLM reranking, use RRF scores only
   chunkStrategy?: ChunkStrategy;  // "auto" (default) or "regex"
   fullPath?: boolean;    // Show realpath instead of qmd:// URI (relative to $PWD when subpath)
+  filter?: DocumentFilter;  // --path / --since / --until
 };
+
+/**
+ * Which sub-query found this document, and where did it place in that sub-query's own list?
+ *
+ * Expansion turns one query into a dozen, fuses their lists and reports one number. A single
+ * fused rank cannot say whether a result placed first in the hyde list and nowhere else, or
+ * middling everywhere — and those call for different fixes. Each expansion gets a line, with
+ * the sub-query text it ran, so the fused score can be read back to the query that earned it.
+ */
+export function explainGroupLines(contributions: readonly RRFContributionTrace[]): string[] {
+  if (contributions.length === 0) return [];
+  const ordered = contributions.slice().sort((a, b) => b.rrfContribution - a.rrfContribution);
+  const lines = [`  Sub-query ranks (${ordered.length} of the expansion's lists placed this document):`];
+  for (const contribution of ordered) {
+    const preview = contribution.query.replace(/\s+/g, " ").trim();
+    const shown = preview.length > 56 ? `${preview.slice(0, 53)}...` : preview;
+    const label = `${contribution.source}/${contribution.queryType}`.padEnd(12);
+    const rank = `#${contribution.rank}`.padStart(4);
+    lines.push(
+      `    ${label} ${rank}  rrf=${formatExplainNumber(contribution.rrfContribution)}` +
+      ` backend=${formatExplainNumber(contribution.backendScore)}${shown ? `  ${shown}` : ""}`,
+    );
+  }
+  return lines;
+}
+
+function printExplainGroups(contributions: readonly RRFContributionTrace[]): void {
+  for (const line of explainGroupLines(contributions)) {
+    console.log(`${c.dim}${line}${c.reset}`);
+  }
+}
 
 // Highlight query terms in text (skip short words < 3 chars)
 function highlightTerms(text: string, query: string): string {
@@ -2365,6 +2420,24 @@ function shortPath(dirpath: string): string {
 }
 
 type EmptySearchReason = "no_results" | "min_score";
+
+/**
+ * An empty list cannot say whether the words matched nothing or the filter left nothing to
+ * match against. When a filter is in play, count what survived it and say so.
+ */
+function reportEmptyFilteredSearch(db: Database, opts: OutputOptions, collectionNames: string[]): void {
+  if (!opts.filter || opts.format === "json" || opts.format === "csv" || opts.format === "xml"
+      || opts.format === "md" || opts.format === "files") {
+    printEmptySearchResults(opts.format);
+    return;
+  }
+  const { kept, total } = countFilteredDocuments(db, opts.filter, collectionSearchFilter(collectionNames));
+  if (kept === 0) {
+    console.log(`No results found — ${describeFilter(opts.filter)} matched 0 of ${total} documents.`);
+    return;
+  }
+  console.log(`No results found in the ${kept} of ${total} documents matching ${describeFilter(opts.filter)}.`);
+}
 
 // Emit format-safe empty output for search commands.
 function printEmptySearchResults(format: OutputFormat, reason: EmptySearchReason = "no_results"): void {
@@ -2609,19 +2682,10 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
         const vecScores = explain.vectorScores.length > 0
           ? explain.vectorScores.map(formatExplainNumber).join(", ")
           : "none";
-        const contribSummary = explain.rrf.contributions
-          .slice()
-          .sort((a, b) => b.rrfContribution - a.rrfContribution)
-          .slice(0, 3)
-          .map(c => `${c.source}/${c.queryType}#${c.rank}:${formatExplainNumber(c.rrfContribution)}`)
-          .join(" | ");
-
         console.log(`${c.dim}Explain: fts=[${ftsScores}] vec=[${vecScores}]${c.reset}`);
         console.log(`${c.dim}  RRF: total=${formatExplainNumber(explain.rrf.totalScore)} base=${formatExplainNumber(explain.rrf.baseScore)} bonus=${formatExplainNumber(explain.rrf.topRankBonus)} rank=${explain.rrf.rank}${c.reset}`);
         console.log(`${c.dim}  Blend: ${Math.round(explain.rrf.weight * 100)}%*${formatExplainNumber(explain.rrf.positionScore)} + ${Math.round((1 - explain.rrf.weight) * 100)}%*${formatExplainNumber(explain.rerankScore)} = ${formatExplainNumber(explain.blendedScore)}${c.reset}`);
-        if (contribSummary.length > 0) {
-          console.log(`${c.dim}  Top RRF contributions: ${contribSummary}${c.reset}`);
-        }
+        printExplainGroups(explain.rrf.contributions);
       }
       console.log();
 
@@ -2816,7 +2880,7 @@ function search(query: string, opts: OutputOptions): void {
 
   // Use large limit for --all, otherwise fetch more than needed and let outputResults filter
   const fetchLimit = opts.all ? 100000 : Math.max(50, opts.limit * 2);
-  const results = searchFTS(db, query, fetchLimit, collectionSearchFilter(collectionNames));
+  const results = searchFTS(db, query, fetchLimit, collectionSearchFilter(collectionNames), opts.filter);
 
   // Add context to results
   const resultsWithContext = results.map(r => ({
@@ -2830,13 +2894,88 @@ function search(query: string, opts: OutputOptions): void {
     docid: r.docid,
   }));
 
-  closeDb();
-
   if (resultsWithContext.length === 0) {
-    printEmptySearchResults(opts.format);
+    reportEmptyFilteredSearch(db, opts, collectionNames);
+    closeDb();
     return;
   }
+  closeDb();
   outputResults(resultsWithContext, query, opts);
+}
+
+/**
+ * `qmd grep <pattern>` — exact and regex matching over indexed bodies.
+ *
+ * The escape hatch for a query that finds nothing because tokenization never produced the
+ * term the document contains. Line numbers address `qmd get <file>:<n>:<count>`.
+ */
+function grepCommand(pattern: string, opts: OutputOptions, values: Record<string, unknown>): void {
+  const caseSensitive = values["case-sensitive"] ? true : (values["ignore-case"] ? false : undefined);
+  let compiled: RegExp;
+  try {
+    compiled = compileGrepPattern(pattern, { caseSensitive, fixedString: !!values["fixed-strings"] });
+  } catch (error) {
+    console.error(`qmd: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
+
+  const db = getDb();
+  const collectionNames = resolveCollectionFilter(opts.collection, true);
+  const maxLinesRaw = values["max-lines"];
+  const result = grepDocuments(db, compiled, {
+    collections: collectionNames,
+    filter: opts.filter,
+    limit: opts.all ? 100000 : (opts.limit || 20),
+    maxLinesPerFile: maxLinesRaw ? Math.max(1, parseInt(String(maxLinesRaw), 10) || 20) : undefined,
+  });
+  closeDb();
+
+  if (opts.format === "json") {
+    console.log(JSON.stringify({
+      files: result.files.map(f => ({
+        docid: `#${f.docid}`,
+        file: opts.fullPath ? f.displayPath : f.filepath,
+        title: f.title,
+        matchCount: f.matchCount,
+        lines: f.lines,
+      })),
+      scanned: result.scanned,
+      truncated: result.truncated,
+    }, null, 2));
+    return;
+  }
+
+  if (opts.format === "files") {
+    for (const file of result.files) console.log(opts.fullPath ? file.displayPath : file.filepath);
+    return;
+  }
+
+  if (result.files.length === 0) {
+    const scope = opts.filter ? ` matching ${describeFilter(opts.filter)}` : "";
+    console.log(`No matches in ${result.scanned} document${result.scanned === 1 ? "" : "s"}${scope}.`);
+    return;
+  }
+
+  printGrepMatches(result.files, opts);
+  if (result.truncated) {
+    console.log("");
+    console.log(`${c.dim}Stopped at ${result.files.length} files — raise -n or use --all for more.${c.reset}`);
+  }
+}
+
+function printGrepMatches(files: readonly GrepFileMatch[], opts: OutputOptions): void {
+  for (const file of files) {
+    const shown = file.lines.length;
+    const more = file.matchCount - shown;
+    const suffix = more > 0 ? `${c.dim} (+${more} more)${c.reset}` : "";
+    console.log(`${c.cyan}${opts.fullPath ? file.displayPath : file.filepath}${c.reset} ${c.dim}#${file.docid}${c.reset}${suffix}`);
+    for (const { line, text } of file.lines) {
+      // Long lines are truncated for display only; the line number still addresses the file.
+      const body = text.length > 300 ? `${text.slice(0, 300)}…` : text;
+      console.log(`  ${c.dim}${String(line).padStart(5)}:${c.reset} ${body}`);
+    }
+    console.log("");
+  }
 }
 
 // Log query expansion as a tree to stderr (CLI progress feedback)
@@ -2869,6 +3008,7 @@ async function vectorSearch(query: string, opts: OutputOptions, _model: string =
       limit: opts.all ? 500 : (opts.limit || 10),
       minScore: opts.minScore || 0.3,
       intent: opts.intent,
+      filter: opts.filter,
       hooks: {
         onExpand: (original, expanded) => {
           logExpansionTree(original, expanded);
@@ -2877,12 +3017,12 @@ async function vectorSearch(query: string, opts: OutputOptions, _model: string =
       },
     });
 
-    closeDb();
-
     if (results.length === 0) {
-      printEmptySearchResults(opts.format);
+      reportEmptyFilteredSearch(store.db, opts, collectionNames);
+      closeDb();
       return;
     }
+    closeDb();
 
     outputResults(results.map(r => ({
       file: r.file,
@@ -2939,6 +3079,7 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
         explain: !!opts.explain,
         intent,
         chunkStrategy: opts.chunkStrategy,
+        filter: opts.filter,
         hooks: {
           onEmbedStart: (count) => {
             process.stderr.write(`${c.dim}Embedding ${count} ${count === 1 ? 'query' : 'queries'}...${c.reset}`);
@@ -2967,6 +3108,7 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
         explain: !!opts.explain,
         intent,
         chunkStrategy: opts.chunkStrategy,
+        filter: opts.filter,
         hooks: {
           onStrongSignal: (score) => {
             process.stderr.write(`${c.dim}Strong BM25 signal (${score.toFixed(2)}) — skipping expansion${c.reset}\n`);
@@ -2997,12 +3139,12 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
       });
     }
 
-    closeDb();
-
     if (results.length === 0) {
-      printEmptySearchResults(opts.format);
+      reportEmptyFilteredSearch(store.db, opts, collectionNames);
+      closeDb();
       return;
     }
+    closeDb();
 
     // Use first lex/vec query for output context, or original query
     const structuredQueries = parsed?.searches;
@@ -3083,6 +3225,13 @@ function parseCLI() {
       "no-rerank": { type: "boolean", default: false },
       "no-gpu": { type: "boolean", default: false },
       intent: { type: "string" },
+      path: { type: "string", multiple: true },  // narrow to path glob(s); `!` prefix excludes
+      "ignore-case": { type: "boolean", short: "i" },   // grep: force case-insensitive
+      "case-sensitive": { type: "boolean", short: "S" },// grep: force case-sensitive
+      "fixed-strings": { type: "boolean", short: "F" }, // grep: treat the pattern as literal
+      "max-lines": { type: "string" },                  // grep: max reported lines per file
+      since: { type: "string" },                 // only documents modified at/after this
+      until: { type: "string" },                 // only documents modified at/before this
       // Chunking options
       "chunk-strategy": { type: "string" },  // "regex" (default) or "auto" (AST for code files)
       // MCP HTTP transport options
@@ -3156,6 +3305,7 @@ function parseCLI() {
     intent: values.intent as string | undefined,
     chunkStrategy: parseChunkStrategy(values["chunk-strategy"]),
     fullPath: !!values["full-path"],
+    filter: parseDocumentFilter(values),
   };
 
   return {
@@ -3587,6 +3737,7 @@ function showHelp(): void {
   console.log("  qmd query 'lex:..\\nvec:...'   - Structured query document (you provide lex/vec/hyde lines)");
   console.log("  qmd search <query>            - Full-text BM25 keywords (no LLM)");
   console.log("  qmd vsearch <query>           - Vector similarity only");
+  console.log("  qmd grep <pattern>            - Exact/regex match over indexed bodies (no ranking)");
   console.log("  qmd get <file>[:from[:count]] - Show a document (line-numbered; #docid in header)");
   console.log("  qmd multi-get <pattern>       - Batch fetch via glob or comma-separated list");
   console.log("  qmd skills list/get/path      - List and retrieve bundled runtime skills");
@@ -3673,6 +3824,17 @@ function showHelp(): void {
   console.log("  --explain                  - Include retrieval score traces (query, CLI/--format json)");
   console.log("  --format <kind>            - Output format: cli (default) | json | csv | md | xml | files");
   console.log("  -c, --collection <name>    - Filter by one or more collections");
+  console.log("  --path <glob>              - Only documents matching the glob; repeatable, '!' excludes");
+  console.log("                                Matched against collection/path, as printed in results");
+  console.log("  --since <when>             - Only documents modified at or after (7d, 3h, 2w, 2026-09-01)");
+  console.log("  --until <when>             - Only documents modified at or before (same formats)");
+  console.log("");
+  console.log("Grep options:");
+  console.log("  -i, --ignore-case          - Match either case (default: smart case)");
+  console.log("  -S, --case-sensitive       - Match case exactly");
+  console.log("  -F, --fixed-strings        - Treat the pattern as a literal string, not a regex");
+  console.log("  --max-lines <num>          - Max reported lines per file (default 20)");
+  console.log("  -n <num>                   - Max files (default 20); --all for no cap");
   console.log("");
   console.log("Embed/query options:");
   console.log("  --chunk-strategy <auto|regex> - Chunking mode (default: regex; auto uses AST for code files)");
@@ -4700,6 +4862,14 @@ if (isMain) {
         process.exit(1);
       }
       search(cli.query, cli.opts);
+      break;
+
+    case "grep":
+      if (!cli.query) {
+        console.error("Usage: qmd grep [options] <pattern>");
+        process.exit(1);
+      }
+      grepCommand(cli.query, cli.opts, cli.values);
       break;
 
     case "vsearch":

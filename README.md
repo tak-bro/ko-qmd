@@ -161,6 +161,19 @@ The HTTP server exposes two endpoints:
 - `POST /query` (alias `/search`) — structured search without the MCP protocol
 - `GET /health` — liveness check with uptime
 
+##### Index refresh (ko-qmd)
+
+Before each search, the daemon checks the collections that search covers and
+re-indexes the ones that changed on disk, so a note written a minute ago is
+findable without running `qmd update`. Each collection is checked at most once
+every 30 seconds. The refresh updates the text index only: a new or edited note
+is found by keyword search right away and by vector search after the next
+`qmd embed`. It never runs a collection's `update:` command, never clears the
+LLM cache, and leaves a collection alone when its folder has vanished or turned
+up empty — an unmounted drive is not a reason to drop its documents. Collections
+outside the project of a project-local `.qmd` config are never refreshed.
+CLI searches do not refresh; run `qmd update` there.
+
 ##### Query log (ko-qmd)
 
 Start the daemon with `QMD_QUERY_LOG=1` (`true`/`yes` also work; anything else
@@ -226,6 +239,9 @@ Point any MCP client at `http://localhost:8181/mcp` to connect.
 | `query` | `minScore` | number | Minimum relevance 0–1 (default 0) |
 | `query` | `candidateLimit` | number | Max candidates to rerank (default 40) |
 | `query` | `rerank` | boolean | Run LLM reranking (default **true**); set false for RRF-only |
+| `query` | `path` | string[] | ko-qmd: globs against `collection/path`; `!` prefix excludes |
+| `query` | `since` | string | ko-qmd: span (`7d`) or date — documents modified at or after |
+| `query` | `until` | string | ko-qmd: same formats — documents modified at or before |
 | `get` | `file` | string | Path, docid (`#abc123`), or `path:from:count` (e.g. `#abc123:120:40`) |
 | `get` | `fromLine` | number | Start line (1-indexed); overrides the `:from` suffix |
 | `get` | `maxLines` | number | Limit returned lines |
@@ -234,10 +250,26 @@ Point any MCP client at `http://localhost:8181/mcp` to connect.
 | `multi_get` | `maxBytes` | number | Skip files larger than N (default 10240) |
 | `multi_get` | `maxLines` | number | Limit lines per file |
 | `multi_get` | `lineNumbers` | boolean | Prefix lines with numbers (default **true**) |
+| `grep` | `pattern` | string | ko-qmd: regex, or a literal when `fixedString` is set. **Required.** |
+| `grep` | `collections` | string[] | Filter by collection names (OR) |
+| `grep` | `path` / `since` / `until` | — | Same as on `query` |
+| `grep` | `limit` | number | Max files (default 20) |
+| `grep` | `maxLinesPerFile` | number | Max reported lines per file (default 20) |
+| `grep` | `caseSensitive` | boolean | Override smart case |
+| `grep` | `fixedString` | boolean | Treat the pattern as a literal string |
 
 Unknown parameters are silently ignored (not rejected) — double-check names if
 results seem unscoped. The HTTP `/query` and `/search` endpoints return
 `qmd://collection/path` URIs in the `file` field, matching the CLI and MCP output.
+
+`path`, `since` and `until` are the MCP side of the CLI's filtering flags —
+see [Path and Time Filtering](#path-and-time-filtering-ko-qmd) for their
+semantics. They narrow the corpus before ranking, so a narrow filter returns
+its own best matches rather than whatever survived the global top-K. A `since`
+or `until` that does not parse is an error (a tool error on MCP, HTTP 400 on
+`/query`) rather than a dropped filter, and an empty result under a filter
+reports how much corpus the filter left so an agent can tell "nothing matched"
+from "nothing to match against". The REST endpoints accept the same three.
 
 ### SDK / Library Usage
 
@@ -894,8 +926,12 @@ and `deep-search` (→ `query`).
 --full             # Show full document content
 --line-numbers     # Add line numbers to output
 --explain          # Include retrieval score traces (query, JSON/CLI output)
+                   # ko-qmd: also lists each sub-query's own rank for the result
 --index <name>     # Use named index
 --intent "<text>"  # Disambiguation context (e.g. "web page load times")
+--path <glob>      # ko-qmd: only documents matching the glob (repeatable)
+--since <when>     # ko-qmd: only documents modified at or after this point
+--until <when>     # ko-qmd: only documents modified at or before this point
 --no-rerank        # Skip LLM reranking (RRF scores only; faster on CPU)
 -C, --candidate-limit <n>  # Max candidates to rerank (default: 40)
 --full-path        # Emit on-disk filesystem paths instead of qmd:// URIs
@@ -936,6 +972,104 @@ explicitly with `-c`.
 > **Note:** With multiple `-c` flags, results come from a global top-K pool and are
 > then filtered. If one collection dominates the rankings, matches from smaller
 > collections may not appear at the default limit — raise `-n` or use `--all`.
+
+### Reading `--explain` (ko-qmd)
+
+`qmd query <q> --explain` prints, under the fused score, one line per expansion
+sub-query that placed the document — with that sub-query's own rank, its RRF
+contribution, its backend score and the text it actually ran:
+
+```
+Explain: fts=[0.6700, 0.5100] vec=[0.4400]
+  RRF: total=0.0889 base=0.0389 bonus=0.0500 rank=1
+  Blend: 75%*1.0000 + 25%*0.8200 = 0.9550
+  Sub-query ranks (3 of the expansion's lists placed this document):
+    fts/original   #1  rrf=0.0328 backend=0.6700  한글 토큰화
+    vec/hyde       #2  rrf=0.0161 backend=0.4400  형태소 분석기는 어절을 나눌 때...
+    fts/lex        #9  rrf=0.0061 backend=0.5100  토큰화 형태소
+```
+
+Expansion turns one query into a dozen and reports one number. That number
+cannot distinguish "first in the hyde list and nowhere else" from "middling
+everywhere", and those two call for different fixes — the first says the
+expansion invented a good query, the second says the document is broadly
+relevant. Previously only the top three contributions were shown, collapsed
+onto one line without the sub-query text.
+
+### `qmd grep` (ko-qmd)
+
+```sh
+qmd grep 'TODO'                          # smart case: lowercase matches either
+qmd grep 'TODO: (call|ship)'             # a regular expression
+qmd grep 'v2.8.3-ko' -F                  # a literal string, regex chars and all
+qmd grep '놓친 문자열' --path 'journals/**'
+```
+
+Exact string and regular-expression matching over indexed document bodies: no
+ranking, no LLM, every matching line grouped by file with line numbers that
+`qmd get <file>:<n>:<count>` accepts.
+
+This is the escape hatch for a query that finds nothing because tokenization
+never produced the term the document contains — the failure Korean text keeps
+hitting — and the way to find an identifier, error string or config key
+verbatim. Ranked search answers "what is this about"; grep answers "where does
+this string appear".
+
+It is not a replacement for ripgrep. At a terminal with a shell, ripgrep is
+usually the right tool and faster. `qmd grep` earns its place for the caller
+with no shell — an MCP client whose only tools are `query`, `get` and
+`multi_get` — and for the caller who wants one corpus definition: it searches
+exactly what the index holds, honours collection exclusion and the `--path` /
+`--since` / `--until` filters, and returns `qmd://` paths and docids the rest
+of qmd accepts.
+
+Smart case: a pattern containing an uppercase letter matches case-sensitively,
+otherwise either case. Hangul has no case, so Korean patterns are unaffected
+either way. `-i` and `-S` override it, `-F` treats the pattern as a literal
+string, `--max-lines` caps reported lines per file, and `-n` caps files.
+
+Patterns are capped at 1000 characters and matched line by line, with long
+lines tested in overlapping slices. That bound is what keeps a pathological
+pattern from hanging the daemon: a catastrophic backtrack blocks the only
+thread, so a timeout could never fire to stop it.
+
+### Path and Time Filtering (ko-qmd)
+
+`--path`, `--since` and `--until` narrow the corpus a search runs against, on
+`search`, `vsearch` and `query` alike. They are not a filter over the results:
+the documents they exclude are gone before anything is ranked, so a narrow
+filter returns its own best matches rather than whatever survived the global
+top-K.
+
+```sh
+qmd query "retry policy" --since 7d                  # touched in the last week
+qmd query "retry policy" --since 2026-09-01          # or an explicit date
+qmd search "auth" --path 'notes/journals/**'         # only under this path
+qmd search "auth" --path 'notes/**' --path '!notes/archive/**'
+```
+
+`--path` matches globs against `collection/path` — the same string results
+print — and is repeatable. A `!` prefix excludes, and an exclude beats an
+include. A bare directory (`--path notes/journals`) means everything under it.
+
+`--since` / `--until` take either a span back from now (`30m`, `3h`, `7d`,
+`2w`, `6mo`, `1y`) or a date (`2026-09-01`, or a full ISO timestamp). A bare
+date starts at that local day. Anything else is an error rather than a silently
+ignored filter, because a search that quietly dropped your filter returns a
+full-corpus answer that looks exactly like a narrow one.
+
+They compare against the index's `modified_at`, which is when the document was
+last indexed with changed content — not the file's mtime. The daemon's index
+refresh keeps those within 30 seconds of each other; for CLI searches, `--since`
+is only as current as your last `qmd update`.
+
+When a filter leaves nothing to search, the empty result says so rather than
+looking like "no match":
+
+```
+No results found — path 'notes/nowhere/**' matched 0 of 232 documents.
+No results found in the 4 of 232 documents matching since 2026-09-13T12:00:00.000Z.
+```
 
 ### Output Format
 

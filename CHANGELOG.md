@@ -4,6 +4,52 @@
 
 ### Changes
 
+- `search`, `vsearch` and `query` take `--path`, `--since` and `--until`, so a
+  search can be narrowed to part of a collection or to what changed recently.
+  `--path` matches globs against `collection/path` and is repeatable, with a
+  `!` prefix to exclude; `--since` / `--until` take a span (`7d`) or a date.
+  The filter narrows the corpus rather than the result list — excluded
+  documents are gone before ranking, on the vector path as well as BM25, so a
+  narrow filter returns its own best matches instead of whatever survived the
+  global top-K. A span that does not parse is an error, and a filter that
+  leaves nothing to search says so instead of looking like "no match".
+
+- `qmd query --explain` now lists every expansion sub-query that placed the
+  document, with that sub-query's own rank, contribution, backend score and the
+  text it ran. It previously showed the top three contributions collapsed onto
+  one line without the query text, which could not distinguish a document that
+  ranked first in one sub-query and nowhere else from one that ranked middling
+  everywhere — two situations that call for different fixes.
+
+- `qmd grep <pattern>` matches document bodies exactly, by string or regular
+  expression, with no ranking and no LLM: every matching line, grouped by file,
+  with line numbers that `qmd get <file>:<n>:<count>` accepts. It is the escape
+  hatch for a query that finds nothing because tokenization never produced the
+  term the document contains — the failure this fork keeps hitting with Korean
+  text — and for finding an identifier or error string verbatim. It searches
+  exactly what the index holds and honours collection scoping, `--path`,
+  `--since` and `--until`. Smart case: an uppercase letter in the pattern makes
+  it case-sensitive, and Hangul has no case so Korean patterns are unaffected.
+  `-F` searches for a literal string. An MCP `grep` tool exposes the same thing
+  to agents, which is the reason it exists: a client whose only tools are
+  `query`, `get` and `multi_get` has no other way to match a string exactly.
+
+- The MCP `query` tool and the REST `/query` endpoint take the same `path`,
+  `since` and `until` parameters, so an agent can scope a search to a folder or
+  to recent changes without shelling out. A span that does not parse comes back
+  as an error rather than an unfiltered search, and an empty result under a
+  filter reports how many documents the filter left — an agent reading a bare
+  "No results" would otherwise conclude the corpus has nothing on the topic.
+
+- The HTTP and stdio MCP daemon keeps the text index current on its own. Before
+  each search it checks the collections that search covers — at most once every
+  30 seconds each — and re-indexes the ones whose files changed, so a note
+  written while the daemon runs is findable on the next query without `qmd
+  update`. It updates keyword search only; vectors still wait for `qmd embed`.
+  It does not run a collection's `update:` hook, does not clear the LLM cache
+  the way `qmd update` does, and does not touch a collection whose folder has
+  vanished or emptied, since reindexing would deactivate every document in it.
+
 - The daemon's query log now covers the MCP `query` tool, not just the REST
   endpoints. A search an agent runs through MCP over HTTP lands in the same
   `queries-YYYY-MM.jsonl` with `via: "mcp"`, the same result path spelling and

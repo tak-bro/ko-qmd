@@ -30,6 +30,10 @@ import { getConfigPath } from "../collections.js";
 import { enableProductionMode } from "../store.js";
 import { checkRequestOrigin, resolveOriginGuard } from "./origin-guard.js";
 import { entryFromMcp, entryFromRest, logQuery, queryLogStatus } from "../query-log.js";
+import { createStoreIndexRefresher, type IndexRefresher } from "../refresh.js";
+import { buildDocumentFilter, describeFilter, type DocumentFilter } from "../filters.js";
+import { countFilteredDocuments } from "../store.js";
+import { compileGrepPattern, grepDocuments } from "../grep.js";
 
 // =============================================================================
 // Types for structured content
@@ -100,11 +104,58 @@ function getPackageVersion(): string {
 // =============================================================================
 
 /**
+ * One refresher per store, kept for the life of the daemon: its cooldown and its memory of
+ * its own last pass are what stop every query from walking the collection again.
+ */
+const refreshers = new WeakMap<QMDStore, IndexRefresher>();
+
+/**
+ * Bring the text index up to date for the collections a query is about to search. Never
+ * throws — a failed refresh is logged and the query runs against the index as it was.
+ */
+async function refreshBeforeQuery(store: QMDStore, collections: readonly string[]): Promise<void> {
+  let refresher = refreshers.get(store);
+  if (!refresher) {
+    refresher = createStoreIndexRefresher(store, {
+      configPath: getConfigPath(),
+      onError: (collection, error) => {
+        console.error(`qmd: index refresh for '${collection}' failed: ${error instanceof Error ? error.message : String(error)}`);
+      },
+    });
+    refreshers.set(store, refresher);
+  }
+  try {
+    const targets = collections.length > 0
+      ? collections
+      : (await store.listCollections()).map(c => c.name);
+    await refresher.refreshIfStale(targets);
+  } catch (error) {
+    console.error(`qmd: index refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/**
  * Build dynamic server instructions from actual index state.
  * Injected into the LLM's system prompt via MCP initialize (2025-era) and
  * server/discover (2026-07-28) — gives the LLM immediate context about what's
  * searchable without a tool call.
  */
+/**
+ * What an empty result means when a filter was in play. Without this an agent reads "No
+ * results" and concludes the corpus has nothing on the topic, when the filter may have left
+ * nothing to search in the first place.
+ */
+function describeEmptyFilteredSearch(
+  store: QMDStore,
+  filter: DocumentFilter,
+  collections: readonly string[],
+): string {
+  const { kept, total } = countFilteredDocuments(store.internal.db, filter, collections);
+  return kept === 0
+    ? `No results — ${describeFilter(filter)} matched 0 of ${total} documents. Widen or drop the filter.`
+    : `No results in the ${kept} of ${total} documents matching ${describeFilter(filter)}.`;
+}
+
 async function buildInstructions(store: QMDStore): Promise<string> {
   const status = await store.getStatus();
   const globalCtx = await store.getGlobalContext();
@@ -147,6 +198,16 @@ async function buildInstructions(store: QMDStore): Promise<string> {
   lines.push("  Semantic search: [{type:'vec', query:'how to handle errors gracefully'}]");
   lines.push("  Best results: [{type:'lex', query:'error'}, {type:'vec', query:'error handling best practices'}]");
   lines.push("  With intent: searches=[{type:'lex', query:'performance'}], intent='web page load times'");
+  lines.push("");
+  lines.push("  Narrow a search with `path` (globs against collection/path, `!` excludes), `since` and `until`");
+  lines.push("  (a span like '7d' or a date). They cut the corpus before ranking, so a narrow filter still");
+  lines.push("  returns its own best matches.");
+  lines.push("");
+  lines.push("Exact matching: use `grep` when `query` should have found something and did not.");
+  lines.push("  It matches document bodies by string or regex — no ranking — and returns every matching");
+  lines.push("  line with a line number that `get` takes: `file: 'notes/x.md:120:40'`. Reach for it when a");
+  lines.push("  term is an identifier, an error string or a config key, or when tokenization may never have");
+  lines.push("  produced the word the document contains (common with Korean text).");
 
   // --- Retrieval workflow ---
   lines.push("");
@@ -333,6 +394,19 @@ Intent-aware lex (C++ performance, not sports):
           "Maximum candidates to rerank (default: 40, lower = faster but may miss results)"
         ),
         collections: z.array(z.string()).optional().describe("Filter to collections (OR match)"),
+        path: z.array(z.string()).optional().describe(
+          "Only search documents whose 'collection/path' matches one of these globs — the same " +
+          "path strings results report. Prefix a glob with '!' to exclude it; an exclude beats " +
+          "an include. A bare directory means everything under it. Example: " +
+          "['journals/**', '!journals/2024/**']"
+        ),
+        since: z.string().optional().describe(
+          "Only documents modified at or after this point: a span back from now ('30m', '3h', " +
+          "'7d', '2w', '6mo', '1y') or a date ('2026-09-01', or a full ISO timestamp)."
+        ),
+        until: z.string().optional().describe(
+          "Only documents modified at or before this point. Same formats as 'since'."
+        ),
         intent: z.string().optional().describe(
           "Background context to disambiguate the query. Example: query='performance', intent='web page load times and Core Web Vitals'. Does not search on its own."
         ),
@@ -341,7 +415,7 @@ Intent-aware lex (C++ performance, not sports):
         ),
       }),
     },
-    track(async ({ query, searches, limit, minScore, candidateLimit, collections, intent, rerank }) => {
+    track(async ({ query, searches, limit, minScore, candidateLimit, collections, path, since, until, intent, rerank }) => {
       const startedAt = Date.now();
       // Require exactly one of `query` (plain text, auto-expanded) or `searches` (typed sub-queries).
       if (!query && (!searches || searches.length === 0)) {
@@ -357,6 +431,18 @@ Intent-aware lex (C++ performance, not sports):
         };
       }
 
+      // A filter that does not parse is an error the caller can fix, not a silently dropped
+      // narrowing that returns a full-corpus answer looking exactly like a narrow one.
+      let filter: DocumentFilter | undefined;
+      try {
+        filter = buildDocumentFilter({ path, since, until });
+      } catch (error) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+          isError: true,
+        };
+      }
+
       // Use default collections if none specified
       const effectiveCollections = collections ?? defaultCollectionNames;
 
@@ -366,6 +452,8 @@ Intent-aware lex (C++ performance, not sports):
         ? { query }
         : { queries: (searches ?? []).map(s => ({ type: s.type, query: s.query })) };
 
+      await refreshBeforeQuery(store, effectiveCollections);
+
       const results = await store.search({
         ...searchOptions,
         collections: effectiveCollections.length > 0 ? effectiveCollections : undefined,
@@ -374,6 +462,7 @@ Intent-aware lex (C++ performance, not sports):
         candidateLimit,
         rerank,
         intent,
+        filter,
       });
 
       // Use the plain query, or the first lex/vec sub-query, for snippet extraction
@@ -411,7 +500,12 @@ Intent-aware lex (C++ performance, not sports):
       }
 
       return {
-        content: [{ type: "text", text: formatSearchSummary(filtered, primaryQuery) }],
+        content: [{
+          type: "text",
+          text: filtered.length === 0 && filter
+            ? describeEmptyFilteredSearch(store, filter, effectiveCollections)
+            : formatSearchSummary(filtered, primaryQuery),
+        }],
         structuredContent: { results: filtered },
       };
     })
@@ -564,6 +658,86 @@ Intent-aware lex (C++ performance, not sports):
       }
 
       return { content };
+    })
+  );
+
+  // ---------------------------------------------------------------------------
+  // Tool: qmd_grep (Exact / regex match over indexed bodies) — ko-qmd
+  // ---------------------------------------------------------------------------
+
+  server.registerTool(
+    "grep",
+    {
+      title: "Grep Documents",
+      description: `Exact string and regular-expression matching over indexed document bodies. No ranking, no LLM — every line that matches, grouped by file, with line numbers.
+
+Use this when \`query\` should have found something and did not. Ranked search answers "what is this about"; grep answers "where does this string appear", and a term that tokenization never produced is invisible to the first and obvious to the second. It is also the way to find an identifier, an error string, a URL or a config key verbatim.
+
+Line numbers address \`get\`: a match on line 120 of \`notes/x.md\` is readable with \`file: "notes/x.md:120:40"\`.
+
+Smart case: a pattern containing an uppercase letter matches case-sensitively, otherwise either case. Hangul has no case and is unaffected. Set \`fixedString\` to search for a literal string containing regex characters.`,
+      annotations: { readOnlyHint: true, openWorldHint: false },
+      inputSchema: z.object({
+        pattern: z.string().describe(
+          "Regular expression, or a literal string when 'fixedString' is set. JavaScript regex syntax."
+        ),
+        collections: z.array(z.string()).optional().describe("Filter to collections (OR match)"),
+        path: z.array(z.string()).optional().describe(
+          "Only scan documents whose 'collection/path' matches one of these globs; '!' excludes."
+        ),
+        since: z.string().optional().describe("Only documents modified at or after this span ('7d') or date."),
+        until: z.string().optional().describe("Only documents modified at or before this span or date."),
+        limit: z.number().optional().default(20).describe("Max files to return (default: 20)"),
+        maxLinesPerFile: z.number().optional().default(20).describe("Max matching lines reported per file (default: 20)"),
+        caseSensitive: z.boolean().optional().describe("Override smart case."),
+        fixedString: z.boolean().optional().describe("Treat the pattern as a literal string, not a regex."),
+      }),
+    },
+    track(async ({ pattern, collections, path, since, until, limit, maxLinesPerFile, caseSensitive, fixedString }) => {
+      let compiled: RegExp;
+      let filter: DocumentFilter | undefined;
+      try {
+        compiled = compileGrepPattern(pattern, { caseSensitive, fixedString });
+        filter = buildDocumentFilter({ path, since, until });
+      } catch (error) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
+          isError: true,
+        };
+      }
+
+      const effectiveCollections = collections ?? defaultCollectionNames;
+      await refreshBeforeQuery(store, effectiveCollections);
+
+      const result = grepDocuments(store.internal.db, compiled, {
+        collections: effectiveCollections.length > 0 ? effectiveCollections : undefined,
+        filter,
+        limit,
+        maxLinesPerFile,
+      });
+
+      const files = result.files.map(f => ({
+        docid: `#${f.docid}`,
+        file: f.displayPath,
+        title: f.title,
+        matchCount: f.matchCount,
+        lines: f.lines.map(l => ({ line: l.line, text: l.text })),
+      }));
+
+      const summary = files.length === 0
+        ? `No lines match /${pattern}/ in ${result.scanned} document${result.scanned === 1 ? "" : "s"}${filter ? ` matching ${describeFilter(filter)}` : ""}.`
+        : [
+            `${files.length} file${files.length === 1 ? "" : "s"} match /${pattern}/${result.truncated ? ` (stopped at the limit of ${limit})` : ""}:`,
+            ...files.flatMap(f => [
+              `${f.file} ${f.docid}${f.matchCount > f.lines.length ? ` (+${f.matchCount - f.lines.length} more)` : ""}`,
+              ...f.lines.map(l => `  ${l.line}: ${l.text.length > 300 ? `${l.text.slice(0, 300)}…` : l.text}`),
+            ]),
+          ].join("\n");
+
+      return {
+        content: [{ type: "text" as const, text: summary }],
+        structuredContent: { files, scanned: result.scanned, truncated: result.truncated },
+      };
     })
   );
 
@@ -1024,6 +1198,21 @@ export async function startMcpHttpServer(
         // Use default collections if none specified
         const effectiveCollections = Array.isArray(params.collections) ? params.collections.map(String) : defaultCollectionNames;
 
+        let restFilter: DocumentFilter | undefined;
+        try {
+          restFilter = buildDocumentFilter({
+            path: Array.isArray(params.path) ? params.path.map(String) : undefined,
+            since: typeof params.since === "string" ? params.since : undefined,
+            until: typeof params.until === "string" ? params.until : undefined,
+          });
+        } catch (error) {
+          nodeRes.writeHead(400, { "Content-Type": "application/json" });
+          nodeRes.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+          return;
+        }
+
+        await refreshBeforeQuery(store, effectiveCollections);
+
         const results = await store.search({
           queries,
           collections: effectiveCollections.length > 0 ? effectiveCollections : undefined,
@@ -1032,6 +1221,7 @@ export async function startMcpHttpServer(
           candidateLimit: typeof params.candidateLimit === "number" ? params.candidateLimit : undefined,
           intent: typeof params.intent === "string" ? params.intent : undefined,
           rerank: typeof params.rerank === "boolean" ? params.rerank : undefined,
+          filter: restFilter,
         });
 
         // Use first lex or vec query for snippet extraction

@@ -14,6 +14,7 @@
 import { openDatabase, loadSqliteVec } from "./db.js";
 import type { Database } from "./db.js";
 import picomatch from "picomatch";
+import { isNarrowing, matchesPaths, type DocumentFilter } from "./filters.js";
 import { createHash } from "crypto";
 import { readFileSync, realpathSync, statSync, mkdirSync } from "node:fs";
 // Note: node:path resolve is not imported — we export our own cross-platform resolve()
@@ -1538,8 +1539,8 @@ export type Store = {
   toVirtualPath: (absolutePath: string) => string | null;
 
   // Search
-  searchFTS: (query: string, limit?: number, collectionName?: string | readonly string[]) => SearchResult[];
-  searchVec: (query: string, model: string, limit?: number, collectionName?: string | readonly string[], session?: ILLMSession, precomputedEmbedding?: number[]) => Promise<SearchResult[]>;
+  searchFTS: (query: string, limit?: number, collectionName?: string | readonly string[], filter?: DocumentFilter) => SearchResult[];
+  searchVec: (query: string, model: string, limit?: number, collectionName?: string | readonly string[], session?: ILLMSession, precomputedEmbedding?: number[], filter?: DocumentFilter) => Promise<SearchResult[]>;
 
   // Query expansion & reranking
   expandQuery: (query: string, model?: string) => Promise<ExpandedQuery[]>;
@@ -1607,6 +1608,36 @@ export type ReindexResult = {
 };
 
 /**
+ * The files a collection is made of, relative to its root: the glob, minus dependency and
+ * build directories, minus the collection's own ignore patterns, minus anything hidden.
+ * One definition, because the daemon's refresh has to see exactly the set that
+ * reindexCollection indexes or it would decide staleness about different files.
+ */
+export async function listCollectionFiles(
+  collectionPath: string,
+  globPattern: string,
+  ignorePatterns?: string[],
+): Promise<string[]> {
+  const excludeDirs = ["node_modules", ".git", ".cache", "vendor", "dist", "build"];
+  const allIgnore = [
+    ...excludeDirs.map(d => `**/${d}/**`),
+    ...(ignorePatterns || []),
+  ];
+  const allFiles: string[] = await fastGlob(splitGlobMask(globPattern), {
+    cwd: collectionPath,
+    onlyFiles: true,
+    followSymbolicLinks: false,
+    dot: false,
+    ignore: allIgnore,
+  });
+  // Filter hidden files/folders
+  return allFiles.filter(file => {
+    const parts = file.split("/");
+    return !parts.some(part => part.startsWith("."));
+  });
+}
+
+/**
  * Re-index a single collection by scanning the filesystem and updating the database.
  * Pure function — no console output, no db lifecycle management.
  */
@@ -1622,24 +1653,7 @@ export async function reindexCollection(
 ): Promise<ReindexResult> {
   const db = store.db;
   const now = new Date().toISOString();
-  const excludeDirs = ["node_modules", ".git", ".cache", "vendor", "dist", "build"];
-
-  const allIgnore = [
-    ...excludeDirs.map(d => `**/${d}/**`),
-    ...(options?.ignorePatterns || []),
-  ];
-  const allFiles: string[] = await fastGlob(splitGlobMask(globPattern), {
-    cwd: collectionPath,
-    onlyFiles: true,
-    followSymbolicLinks: false,
-    dot: false,
-    ignore: allIgnore,
-  });
-  // Filter hidden files/folders
-  const files = allFiles.filter(file => {
-    const parts = file.split("/");
-    return !parts.some(part => part.startsWith("."));
-  });
+  const files = await listCollectionFiles(collectionPath, globPattern, options?.ignorePatterns);
 
   const total = files.length;
   let indexed = 0, updated = 0, unchanged = 0, processed = 0;
@@ -2279,8 +2293,8 @@ export function createStore(dbPath?: string): Store {
     toVirtualPath: (absolutePath: string) => toVirtualPath(db, absolutePath),
 
     // Search
-    searchFTS: (query: string, limit?: number, collectionName?: string | readonly string[]) => searchFTS(db, query, limit, collectionName),
-    searchVec: (query: string, model: string, limit?: number, collectionName?: string | readonly string[], session?: ILLMSession, precomputedEmbedding?: number[]) => searchVec(db, query, model, limit, collectionName, session, precomputedEmbedding, getLlm(store)),
+    searchFTS: (query: string, limit?: number, collectionName?: string | readonly string[], filter?: DocumentFilter) => searchFTS(db, query, limit, collectionName, filter),
+    searchVec: (query: string, model: string, limit?: number, collectionName?: string | readonly string[], session?: ILLMSession, precomputedEmbedding?: number[], filter?: DocumentFilter) => searchVec(db, query, model, limit, collectionName, session, precomputedEmbedding, getLlm(store), filter),
 
     // Query expansion & reranking
     expandQuery: (query: string, model?: string) => expandQuery(query, model ?? store.llm?.generateModelName ?? DEFAULT_QUERY_MODEL, db, store.llm),
@@ -4090,14 +4104,53 @@ function mergeSearchResultsByScore(lists: SearchResult[][], limit: number): Sear
  */
 const MIN_RETRIEVAL_BREADTH = 20;
 
-export function searchFTS(db: Database, query: string, limit: number = 20, collectionName?: string | readonly string[]): SearchResult[] {
+/**
+ * Candidate ceiling for a filtered FTS scan. High enough that a real query's whole match set
+ * gets through — which is what stops a narrow filter from starving — and low enough that a
+ * query matching most of a large index still terminates.
+ */
+const FILTERED_FTS_SCAN_MAX = 50_000;
+
+/** Bound list size when fetching document bodies — SQLite caps bound parameters. */
+const CONTENT_HASH_IN_CHUNK = 400;
+
+/**
+ * How many active documents the filter leaves standing, and how many there were.
+ *
+ * An empty result list cannot tell a user whether nothing matched their words or whether
+ * their filter removed the corpus first. Callers ask this only when they got nothing back,
+ * so the scan costs nothing on the path that found something.
+ */
+export function countFilteredDocuments(
+  db: Database,
+  filter: DocumentFilter,
+  collectionName?: string | readonly string[],
+): { kept: number; total: number } {
+  const names = scopedCollectionNames(collectionName);
+  const params: string[] = [];
+  let sql = `SELECT collection || '/' || path AS display_path, modified_at FROM documents WHERE active = 1`;
+  if (names && names.length > 0) {
+    sql += ` AND collection IN (${names.map(() => "?").join(",")})`;
+    params.push(...names.map(String));
+  }
+  const rows = db.prepare(sql).all(...params) as { display_path: string; modified_at: string | null }[];
+  const kept = rows.filter(row => {
+    if (filter.sinceIso && !(row.modified_at && row.modified_at >= filter.sinceIso)) return false;
+    if (filter.untilIso && !(row.modified_at && row.modified_at <= filter.untilIso)) return false;
+    return matchesPaths(row.display_path, filter);
+  }).length;
+  return { kept, total: rows.length };
+}
+
+export function searchFTS(db: Database, query: string, limit: number = 20, collectionName?: string | readonly string[], filter?: DocumentFilter): SearchResult[] {
   const names = scopedCollectionNames(collectionName);
   // Search each requested collection before merging/truncating so a large
   // unrelated collection cannot occupy global top-k and starve the rest (#775).
   if (names && names.length > 1) {
-    return mergeSearchResultsByScore(names.map(name => searchFTS(db, query, limit, name)), limit);
+    return mergeSearchResultsByScore(names.map(name => searchFTS(db, query, limit, name, filter)), limit);
   }
   const collectionFilter = names?.[0];
+  const filtered = isNarrowing(filter);
 
   const ftsQuery = buildFTS5Query(query);
   if (!ftsQuery) return [];
@@ -4114,7 +4167,14 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
     // since some will be filtered out. Without a collection filter we can
     // fetch exactly the requested limit.
     const breadth = Math.max(limit, MIN_RETRIEVAL_BREADTH);
-    const ftsLimit = collectionFilter ? breadth * 10 : breadth;
+    // A document filter has to narrow the corpus, not the answer. Taking the top `ftsLimit`
+    // and *then* dropping what the filter excludes is the starvation #791/#803 already cost
+    // us: ask for `journals/**` and the top 200 global hits may hold none of it. So when a
+    // filter is in play every FTS match is a candidate, capped only against a pathological
+    // query, and the ORDER BY / LIMIT below picks the winners from the filtered set.
+    const ftsLimit = filtered
+      ? FILTERED_FTS_SCAN_MAX
+      : (collectionFilter ? breadth * 10 : breadth);
 
     let sql = `
       WITH fts_matches AS (
@@ -4128,12 +4188,11 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
         'qmd://' || d.collection || '/' || d.path as filepath,
         d.collection || '/' || d.path as display_path,
         d.title,
-        content.doc as body,
         d.hash,
+        d.modified_at,
         fm.bm25_score
       FROM fts_matches fm
       JOIN documents d ON d.id = fm.rowid
-      JOIN content ON content.hash = d.hash
       WHERE d.active = 1
     `;
 
@@ -4142,11 +4201,47 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
       params.push(String(collectionFilter));
     }
 
-    // bm25 lower is better; sort ascending.
-    sql += ` ORDER BY fm.bm25_score ASC LIMIT ?`;
-    params.push(limit);
+    if (filter?.sinceIso) {
+      sql += ` AND d.modified_at >= ?`;
+      params.push(filter.sinceIso);
+    }
+    if (filter?.untilIso) {
+      sql += ` AND d.modified_at <= ?`;
+      params.push(filter.untilIso);
+    }
 
-    const rows = db.prepare(sql).all(...params) as { filepath: string; display_path: string; title: string; body: string; hash: string; bm25_score: number }[];
+    // bm25 lower is better; sort ascending. Path globs are matched below rather than here:
+    // `Database` spans better-sqlite3 and bun:sqlite, and neither shares a way to register
+    // the picomatch predicate as a SQL function. Dropping the inner LIMIT above is what
+    // keeps this from being a post-filter on a truncated pool.
+    const matchingPaths = (filter?.paths?.length ?? 0) > 0;
+    sql += ` ORDER BY fm.bm25_score ASC`;
+    if (!matchingPaths) {
+      sql += ` LIMIT ?`;
+      params.push(limit);
+    }
+
+    type CandidateRow = { filepath: string; display_path: string; title: string; hash: string; modified_at: string; bm25_score: number };
+    const candidates = db.prepare(sql).all(...params) as CandidateRow[];
+    const rows = matchingPaths
+      ? candidates.filter(row => matchesPaths(row.display_path, filter)).slice(0, limit)
+      : candidates;
+    if (rows.length === 0) return [];
+
+    // Bodies come second, for the winners only. The candidate pass above can be the whole
+    // match set when a path filter is on, and `content.doc` for every one of those is text
+    // we would read and discard.
+    // Chunked because `--all` asks for a six-figure limit and SQLite caps bound parameters.
+    const wantedHashes = [...new Set(rows.map(r => r.hash))];
+    const bodyByHash = new Map<string, string>();
+    for (let i = 0; i < wantedHashes.length; i += CONTENT_HASH_IN_CHUNK) {
+      const chunk = wantedHashes.slice(i, i + CONTENT_HASH_IN_CHUNK);
+      const bodyRows = db.prepare(
+        `SELECT hash, doc FROM content WHERE hash IN (${chunk.map(() => "?").join(",")})`,
+      ).all(...chunk) as { hash: string; doc: string }[];
+      for (const r of bodyRows) bodyByHash.set(r.hash, r.doc);
+    }
+
     return rows.map(row => {
       const collectionName = row.filepath.split('//')[1]?.split('/')[0] || "";
       // Convert bm25 (negative, lower is better) into a stable [0..1) score where higher is better.
@@ -4154,6 +4249,7 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
       // |x| / (1 + |x|) maps: strong(-10)→0.91, medium(-2)→0.67, weak(-0.5)→0.33, none(0)→0.
       // Monotonic and query-independent — no per-query normalization needed.
       const score = Math.abs(row.bm25_score) / (1 + Math.abs(row.bm25_score));
+      const body = bodyByHash.get(row.hash) ?? "";
       return {
         filepath: row.filepath,
         displayPath: row.display_path,
@@ -4161,9 +4257,9 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
         hash: row.hash,
         docid: getDocid(row.hash),
         collectionName,
-        modifiedAt: "",  // Not available in FTS query
-        bodyLength: row.body.length,
-        body: row.body,
+        modifiedAt: row.modified_at ?? "",
+        bodyLength: body.length,
+        body,
         context: getContextForFile(db, row.filepath),
         score,
         source: "fts" as const,
@@ -4243,7 +4339,7 @@ function annVecScan(
   `).all(new Float32Array(embedding), vecK) as { hash_seq: string; distance: number }[];
 }
 
-export async function searchVec(db: Database, query: string, model: string, limit: number = 20, collectionName?: string | readonly string[], session?: ILLMSession, precomputedEmbedding?: number[], llm?: LlamaCpp): Promise<SearchResult[]> {
+export async function searchVec(db: Database, query: string, model: string, limit: number = 20, collectionName?: string | readonly string[], session?: ILLMSession, precomputedEmbedding?: number[], llm?: LlamaCpp, filter?: DocumentFilter): Promise<SearchResult[]> {
   const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
   if (!tableExists) return [];
 
@@ -4253,11 +4349,12 @@ export async function searchVec(db: Database, query: string, model: string, limi
   const names = scopedCollectionNames(collectionName);
   if (names && names.length > 1) {
     const lists = await Promise.all(
-      names.map(name => searchVec(db, query, model, limit, name, session, embedding, llm)),
+      names.map(name => searchVec(db, query, model, limit, name, session, embedding, llm, filter)),
     );
     return mergeSearchResultsByScore(lists, limit);
   }
   const collectionFilter = names?.[0];
+  const filtered = isNarrowing(filter);
   const breadth = Math.max(limit, MIN_RETRIEVAL_BREADTH);
 
   // IMPORTANT: We use a two-step query approach here because sqlite-vec virtual tables
@@ -4273,24 +4370,48 @@ export async function searchVec(db: Database, query: string, model: string, limi
   // enough either — sqlite-vec caps k at 4096. For a collection filter we
   // therefore exact-scan that collection's vectors when the set is small
   // enough, and only then fall back to capped ANN + post-filter.
+  //
+  // A document filter is the same shape of problem as a collection filter and gets the same
+  // answer: resolve it to the hash_seq set up front and scan exactly that. Applying it to
+  // ANN output instead would starve a narrow filter of every result.
   let vecResults: { hash_seq: string; distance: number }[];
 
-  if (collectionFilter) {
-    const collectionHashSeqs = withLazyContentVectorMigration(db, () =>
-      db.prepare(`
-        SELECT cv.hash || '_' || cv.seq AS hash_seq
+  if (collectionFilter || filtered) {
+    const scopeParams: string[] = [];
+    let scopeSql = `
+        SELECT cv.hash || '_' || cv.seq AS hash_seq, d.collection || '/' || d.path AS display_path
         FROM content_vectors cv
         JOIN documents d ON d.hash = cv.hash AND d.active = 1
-        WHERE d.collection = ?
-      `).all(collectionFilter) as { hash_seq: string }[],
-    ).map((r) => r.hash_seq);
+        WHERE 1 = 1
+    `;
+    if (collectionFilter) {
+      scopeSql += ` AND d.collection = ?`;
+      scopeParams.push(String(collectionFilter));
+    }
+    if (filter?.sinceIso) {
+      scopeSql += ` AND d.modified_at >= ?`;
+      scopeParams.push(filter.sinceIso);
+    }
+    if (filter?.untilIso) {
+      scopeSql += ` AND d.modified_at <= ?`;
+      scopeParams.push(filter.untilIso);
+    }
+
+    const scopeRows = withLazyContentVectorMigration(db, () =>
+      db.prepare(scopeSql).all(...scopeParams) as { hash_seq: string; display_path: string }[],
+    );
+    const collectionHashSeqs = scopeRows
+      .filter(r => matchesPaths(r.display_path, filter))
+      .map(r => r.hash_seq);
 
     if (collectionHashSeqs.length === 0) return [];
 
     if (collectionHashSeqs.length <= COLLECTION_VEC_EXACT_SCAN_MAX) {
       vecResults = exactVecScanByHashSeq(db, embedding, collectionHashSeqs, breadth);
     } else {
-      // Large collection: ANN with over-fetch, hard-capped at sqlite-vec's max k.
+      // Past the exact-scan ceiling: ANN with over-fetch, hard-capped at sqlite-vec's max k.
+      // The document predicate is re-applied below, so a filter this broad still answers —
+      // it is only a filter narrower than the ANN pool that could come back short here.
       vecResults = annVecScan(db, embedding, breadth * 30);
     }
   } else {
@@ -4325,6 +4446,14 @@ export async function searchVec(db: Database, query: string, model: string, limi
     docSql += ` AND d.collection = ?`;
     params.push(collectionFilter);
   }
+  if (filter?.sinceIso) {
+    docSql += ` AND d.modified_at >= ?`;
+    params.push(filter.sinceIso);
+  }
+  if (filter?.untilIso) {
+    docSql += ` AND d.modified_at <= ?`;
+    params.push(filter.untilIso);
+  }
 
   const docRows = withLazyContentVectorMigration(db, () => db.prepare(docSql).all(...params) as {
     hash_seq: string; hash: string; pos: number; filepath: string;
@@ -4334,6 +4463,7 @@ export async function searchVec(db: Database, query: string, model: string, limi
   // Combine with distances and dedupe by filepath
   const seen = new Map<string, { row: typeof docRows[0]; bestDist: number }>();
   for (const row of docRows) {
+    if (!matchesPaths(row.display_path, filter)) continue;
     const distance = distanceMap.get(row.hash_seq) ?? 1;
     const existing = seen.get(row.filepath);
     if (!existing || distance < existing.bestDist) {
@@ -5450,6 +5580,7 @@ export interface HybridQueryOptions {
   intent?: string;          // domain intent hint for disambiguation
   skipRerank?: boolean;     // skip LLM reranking, use only RRF scores
   chunkStrategy?: ChunkStrategy;
+  filter?: DocumentFilter;  // narrow the corpus by path glob and modified_at
   hooks?: SearchHooks;
 }
 
@@ -5580,6 +5711,7 @@ export async function hybridQuery(
   const explain = options?.explain ?? false;
   const intent = options?.intent;
   const skipRerank = options?.skipRerank ?? false;
+  const filter = options?.filter;
   const hooks = options?.hooks;
 
   const rankedLists: RankedResult[][] = [];
@@ -5594,7 +5726,7 @@ export async function hybridQuery(
   // match may not be what the caller wants (e.g. "performance" with intent
   // "web page load times" should NOT shortcut to a sports-performance doc).
   // Pass collection directly into FTS query (filter at SQL level, not post-hoc)
-  const initialFts = store.searchFTS(query, 20, collection);
+  const initialFts = store.searchFTS(query, 20, collection, filter);
   const topScore = initialFts[0]?.score ?? 0;
   const secondScore = initialFts[1]?.score ?? 0;
   // ko-qmd: a relaxed match is never a strong signal — it did not match all the words.
@@ -5635,7 +5767,7 @@ export async function hybridQuery(
   // 3a: Run FTS for all lex expansions right away (no LLM needed)
   for (const q of expanded) {
     if (q.type === 'lex') {
-      const ftsResults = store.searchFTS(q.query, 20, collection);
+      const ftsResults = store.searchFTS(q.query, 20, collection, filter);
       if (ftsResults.length > 0) {
         for (const r of ftsResults) docidMap.set(r.filepath, r.docid);
         rankedLists.push(ftsResults.map(r => ({
@@ -5677,7 +5809,7 @@ export async function hybridQuery(
 
       const vecResults = await store.searchVec(
         vecQueries[i]!.text, embedModel, 20, collection,
-        undefined, embedding
+        undefined, embedding, filter
       );
       if (vecResults.length > 0) {
         for (const r of vecResults) docidMap.set(r.filepath, r.docid);
@@ -5872,6 +6004,7 @@ export interface VectorSearchOptions {
   limit?: number;           // default 10
   minScore?: number;        // default 0.3
   intent?: string;          // domain intent hint for disambiguation
+  filter?: DocumentFilter;  // narrow the corpus by path glob and modified_at
   hooks?: Pick<SearchHooks, 'onExpand'>;
 }
 
@@ -5903,6 +6036,7 @@ export async function vectorSearchQuery(
   const minScore = options?.minScore ?? 0.3;
   const collection = options?.collection;
   const intent = options?.intent;
+  const filter = options?.filter;
 
   const hasVectors = !!store.db.prepare(
     `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`
@@ -5920,7 +6054,7 @@ export async function vectorSearchQuery(
   const queryTexts = [query, ...vecExpanded.map(q => q.query)];
   const allResults = new Map<string, VectorSearchResult>();
   for (const q of queryTexts) {
-    const vecResults = await store.searchVec(q, embedModel, limit, collection);
+    const vecResults = await store.searchVec(q, embedModel, limit, collection, undefined, undefined, filter);
     for (const r of vecResults) {
       const existing = allResults.get(r.filepath);
       if (!existing || r.score > existing.score) {
@@ -5962,6 +6096,8 @@ export interface StructuredSearchOptions {
   /** Skip LLM reranking, use only RRF scores */
   skipRerank?: boolean;
   chunkStrategy?: ChunkStrategy;
+  /** Narrow the corpus by path glob and modified_at before anything is ranked */
+  filter?: DocumentFilter;
   hooks?: SearchHooks;
 }
 
@@ -5994,6 +6130,7 @@ export async function structuredSearch(
   const explain = options?.explain ?? false;
   const intent = options?.intent;
   const skipRerank = options?.skipRerank ?? false;
+  const filter = options?.filter;
   const hooks = options?.hooks;
 
   const collections = options?.collections;
@@ -6033,7 +6170,7 @@ export async function structuredSearch(
   for (const search of searches) {
     if (search.type === 'lex') {
       for (const coll of collectionList) {
-        const ftsResults = store.searchFTS(search.query, 20, coll);
+        const ftsResults = store.searchFTS(search.query, 20, coll, filter);
         if (ftsResults.length > 0) {
           for (const r of ftsResults) docidMap.set(r.filepath, r.docid);
           rankedLists.push(ftsResults.map(r => ({
@@ -6073,7 +6210,7 @@ export async function structuredSearch(
         for (const coll of collectionList) {
           const vecResults = await store.searchVec(
             vecSearches[i]!.query, embedModel, 20, coll,
-            undefined, embedding
+            undefined, embedding, filter
           );
           if (vecResults.length > 0) {
             for (const r of vecResults) docidMap.set(r.filepath, r.docid);
