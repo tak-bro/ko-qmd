@@ -3236,6 +3236,26 @@ function stripUnpairedSurrogates(text: string): string {
  * When filepath and chunkStrategy are provided, uses AST-aware break points
  * for supported code files.
  */
+/**
+ * Token budgets expressed in characters via the document's own script-aware
+ * chars/token estimate. One definition so indexing and both search-path
+ * best-chunk selections stay in lockstep — a drift here would desync reranker
+ * inputs from indexed chunks.
+ */
+function scriptAwareCharBudgets(
+  content: string,
+  maxTokens: number = CHUNK_SIZE_TOKENS,
+  overlapTokens: number = CHUNK_OVERLAP_TOKENS,
+  windowTokens: number = CHUNK_WINDOW_TOKENS,
+): { maxChars: number; overlapChars: number; windowChars: number } {
+  const charsPerToken = estimateCharsPerToken(content);
+  return {
+    maxChars: maxTokens * charsPerToken,
+    overlapChars: overlapTokens * charsPerToken,
+    windowChars: windowTokens * charsPerToken,
+  };
+}
+
 export async function chunkDocumentByTokens(
   content: string,
   maxTokens: number = CHUNK_SIZE_TOKENS,
@@ -3253,10 +3273,7 @@ export async function chunkDocumentByTokens(
   // keeps the historical 3.0 so English chunk boundaries do not move. Chunks
   // still over the limit are re-split below with the actual ratio — that loop
   // is the safety net for documents the estimate got wrong.
-  const avgCharsPerToken = estimateCharsPerToken(content);
-  const maxChars = maxTokens * avgCharsPerToken;
-  const overlapChars = overlapTokens * avgCharsPerToken;
-  const windowChars = windowTokens * avgCharsPerToken;
+  const { maxChars, overlapChars, windowChars } = scriptAwareCharBudgets(content, maxTokens, overlapTokens, windowTokens);
 
   // Chunk in character space with conservative estimate
   // Use AST-aware chunking for the first pass when filepath/strategy provided
@@ -4645,12 +4662,12 @@ export function insertEmbedding(
   });
 }
 
-function pruneStaleChunkVectors(db: Database, hash: string, model: string, keepChunks: number): number {
-  return withLazyContentVectorMigration(db, () => {
+function pruneStaleChunkVectors(db: Database, hash: string, model: string, keepChunks: number): void {
+  withLazyContentVectorMigration(db, () => {
     const stale = db.prepare(
       `SELECT seq FROM content_vectors WHERE hash = ? AND model = ? AND seq >= ?`,
     ).all(hash, model, keepChunks) as { seq: number }[];
-    if (stale.length === 0) return 0;
+    if (stale.length === 0) return;
 
     const deleteVecStmt = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
     const deleteContentStmt = db.prepare(`DELETE FROM content_vectors WHERE hash = ? AND model = ? AND seq = ?`);
@@ -4658,7 +4675,6 @@ function pruneStaleChunkVectors(db: Database, hash: string, model: string, keepC
       deleteVecStmt.run(`${hash}_${row.seq}`);
       deleteContentStmt.run(hash, model, row.seq);
     }
-    return stale.length;
   });
 }
 
@@ -5888,12 +5904,12 @@ export async function hybridQuery(
   for (const cand of candidates) {
     // Same script-aware ratio the indexer uses, so a Korean body does not
     // arrive at the reranker as one ~3600-char (≈2× English) chunk.
-    const charsPerToken = estimateCharsPerToken(cand.body);
+    const { maxChars, overlapChars, windowChars } = scriptAwareCharBudgets(cand.body);
     const chunks = await chunkDocumentAsync(
       cand.body,
-      CHUNK_SIZE_TOKENS * charsPerToken,
-      CHUNK_OVERLAP_TOKENS * charsPerToken,
-      CHUNK_WINDOW_TOKENS * charsPerToken,
+      maxChars,
+      overlapChars,
+      windowChars,
       cand.file,
       chunkStrategy,
     );
@@ -6292,12 +6308,12 @@ export async function structuredSearch(
   const ssChunkStrategy = options?.chunkStrategy;
 
   for (const cand of candidates) {
-    const charsPerToken = estimateCharsPerToken(cand.body);
+    const { maxChars, overlapChars, windowChars } = scriptAwareCharBudgets(cand.body);
     const chunks = await chunkDocumentAsync(
       cand.body,
-      CHUNK_SIZE_TOKENS * charsPerToken,
-      CHUNK_OVERLAP_TOKENS * charsPerToken,
-      CHUNK_WINDOW_TOKENS * charsPerToken,
+      maxChars,
+      overlapChars,
+      windowChars,
       cand.file,
       ssChunkStrategy,
     );
