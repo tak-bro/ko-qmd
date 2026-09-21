@@ -171,19 +171,25 @@ const CJK_SCRIPT_PATTERN = /\p{Script=Hangul}|\p{Script=Han}|\p{Script=Hiragana}
  * Estimated characters per token for chunk sizing, judged from the script
  * makeup of `text` alone — a regex count, no tokenizer call. CJK (Hangul,
  * Han, kana) runs at 1.6 chars/token (measured 1.64 on Korean prose,
- * 2026-09-21); everything else keeps 3.0, the constant store.ts used before,
- * so English chunk boundaries do not move. Because token counts add across
+ * 2026-09-21); everything else keeps whatever ratio the caller was already
+ * using, so non-CJK chunk boundaries do not move. That ratio differs by call
+ * site — indexing sized its first pass at 3.0, the search paths at 4.0
+ * (`CHUNK_SIZE_CHARS / CHUNK_SIZE_TOKENS`) — so each passes its own through
+ * `otherCharsPerToken` rather than sharing one default. Because token counts add across
  * scripts, the blend is the harmonic mean `(c + o) / (c/1.6 + o/3.0)` — a
  * linear interpolation of the two ratios would overestimate a half-and-half
  * document by about 10% (2.30 vs 2.09) and call the resplit safety net back
  * into action. The count is whole-text, not a leading sample: a Korean
  * document that opens with an English code block would otherwise be judged
- * Latin. Empty or whitespace-only text returns 3.0, the previous behavior.
+ * Latin. Empty text returns `otherCharsPerToken`, the caller's previous behavior.
  */
-export function estimateCharsPerToken(text: string): number {
+export function estimateCharsPerToken(
+  text: string,
+  otherCharsPerToken: number = OTHER_CHARS_PER_TOKEN,
+): number {
   const cjk = (text.match(CJK_SCRIPT_PATTERN) ?? []).length;
   const total = [...text].length;
-  if (total === 0) return OTHER_CHARS_PER_TOKEN;
+  if (total === 0) return otherCharsPerToken;
   const other = total - cjk;
-  return total / (cjk / CJK_CHARS_PER_TOKEN + other / OTHER_CHARS_PER_TOKEN);
+  return total / (cjk / CJK_CHARS_PER_TOKEN + other / otherCharsPerToken);
 }

@@ -10,8 +10,10 @@
   Qwen3-Embedding-0.6B-Q8_0, 2026-09-21), and indexing plus both search-path
   best-chunk selections size chunks with it. A 20KB Korean document now
   first-passes into ~900-token chunks instead of being split ~855 and Korean
-  rerank chunks shrink from ~3600 to ~1440 chars. English chunk boundaries are
-  unchanged, and the ko-vault bench holds (bm25_r5=0.9519).
+  rerank chunks shrink from ~3600 to ~1440 chars. Non-CJK text keeps the ratio
+  each call site already used — 3.0 when indexing, 4.0 on the search paths — so
+  English chunk boundaries do not move, and the ko-vault bench holds
+  (bm25_r5=0.9519).
 - Re-embedding a document whose chunk count shrank now prunes its stale
   higher-`seq` vectors before inserting, so one `qmd embed` run converges
   instead of waiting for a second run. The embedding fingerprint gains a

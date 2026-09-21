@@ -15,6 +15,7 @@ import { join } from "node:path";
 import YAML from "yaml";
 import * as llmModule from "../src/llm.js";
 import { disposeDefaultLlamaCpp, setDefaultLlamaCpp } from "../src/llm.js";
+import { estimateCharsPerToken } from "../src/hangul.js";
 import {
   createStore,
   DEFAULT_QUERY_MODEL,
@@ -31,6 +32,9 @@ import {
   getEmbeddingFingerprint,
   chunkDocument,
   chunkDocumentByTokens,
+  CHUNK_WINDOW_TOKENS,
+  CHUNK_SIZE_TOKENS,
+  CHUNK_SIZE_CHARS,
   chunkDocumentAsync,
   chunkDocumentWithBreakPoints,
   mergeBreakPoints,
@@ -3190,10 +3194,11 @@ describe("Index Status", () => {
   });
 
   test("embedding fingerprint changes when the chunker's char/token estimator changes", () => {
-    // Fingerprints before the estimator landed in the hash:
-    // hf:test/embed-model.gguf → "2069c4", default model → "3f4dfd".
-    expect(getEmbeddingFingerprint("hf:test/embed-model.gguf")).not.toBe("2069c4");
-    expect(getEmbeddingFingerprint()).not.toBe("3f4dfd");
+    // Pinned, not just "different from the old value": a `not.toBe` passes for
+    // any future change too, so the next bump would land silently. Before the
+    // estimator entered the hash these were "2069c4" / "3f4dfd".
+    expect(getEmbeddingFingerprint("hf:test/embed-model.gguf")).toBe("2eff41");
+    expect(getEmbeddingFingerprint()).toBe("21b505");
   });
 
   test("getIndexHealth returns health info", async () => {
@@ -4806,16 +4811,63 @@ describe("Token chunking guardrails", () => {
     } as any);
 
     try {
-      const doc = "The quick brown fox jumps over the lazy dog. ".repeat(60);
+      // 200 repeats = 8800 chars, comfortably past maxChars (2700) so real
+      // boundaries and overlap are exercised — at 60 repeats the document is
+      // exactly maxChars and chunkDocument returns it whole, comparing one
+      // chunk against itself.
+      const doc = "The quick brown fox jumps over the lazy dog. ".repeat(200);
 
       const chunks = await chunkDocumentByTokens(doc);
 
       // First pass must still use maxTokens*3 chars: same boundaries as the
       // pre-change constant, and no resplit (English ~444 tokens per chunk).
-      const expected = chunkDocument(doc, 900 * 3, 135 * 3, 20 * 3);
+      const expected = chunkDocument(doc, 900 * 3, 135 * 3, CHUNK_WINDOW_TOKENS * 3);
       expect(chunks.map((c) => c.pos)).toEqual(expected.map((c) => c.pos));
       expect(chunks.map((c) => c.text)).toEqual(expected.map((c) => c.text));
       expect(tokenizeCalls).toBe(chunks.length);
+    } finally {
+      setDefaultLlamaCpp(null);
+    }
+  });
+
+  test("estimateCharsPerToken keeps each call site's own non-CJK ratio", () => {
+    const english = "The quick brown fox jumps over the lazy dog. ".repeat(200);
+    // Indexing sized its first pass at 3.0, the search paths at
+    // CHUNK_SIZE_CHARS / CHUNK_SIZE_TOKENS = 4.0. Pure non-CJK text must come
+    // back at exactly the ratio the caller passes, or that call site's
+    // boundaries move (search path measured 3600 -> 2700 chars before this).
+    expect(estimateCharsPerToken(english)).toBe(3.0);
+    expect(estimateCharsPerToken(english, 4.0)).toBe(4.0);
+    expect(Math.floor(CHUNK_SIZE_TOKENS * estimateCharsPerToken(english, 4.0))).toBe(CHUNK_SIZE_CHARS);
+    // Empty text returns the caller's ratio, not a hardcoded 3.0.
+    expect(estimateCharsPerToken("", 4.0)).toBe(4.0);
+  });
+
+  test("mixed-script chunk positions stay integers", async () => {
+    // content_vectors.pos has INTEGER affinity and extractSnippet slices with
+    // it, so a fractional char budget must not reach chunk positions. A 50/50
+    // ko/en document gives the most fractional ratio (~2.46).
+    setDefaultLlamaCpp({
+      async tokenize(text: string) {
+        const hangul = (text.match(/\p{Script=Hangul}/gu) ?? []).length;
+        return Array.from(
+          { length: Math.max(1, Math.round(hangul * 0.61 + (text.length - hangul) * 0.33)) },
+          () => 1,
+        );
+      },
+      async detokenize(tokens: readonly number[]) {
+        return "x".repeat(tokens.length);
+      },
+    } as any);
+
+    try {
+      const doc = "한국어 문장이 여기 있다 English sentence sits right here ".repeat(200);
+      const chunks = await chunkDocumentByTokens(doc);
+
+      expect(chunks.length).toBeGreaterThan(1);
+      for (const chunk of chunks) {
+        expect(Number.isInteger(chunk.pos)).toBe(true);
+      }
     } finally {
       setDefaultLlamaCpp(null);
     }

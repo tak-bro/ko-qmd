@@ -3242,19 +3242,36 @@ function stripUnpairedSurrogates(text: string): string {
  * best-chunk selections stay in lockstep — a drift here would desync reranker
  * inputs from indexed chunks.
  */
+/**
+ * Character budgets for one chunking pass, sized from the text's script makeup.
+ *
+ * `otherCharsPerToken` is the ratio the call site used before this became
+ * script-aware, so non-CJK text keeps its old boundaries: indexing sized its
+ * first pass at 3.0, the search paths at `CHUNK_SIZE_CHARS / CHUNK_SIZE_TOKENS`.
+ *
+ * Budgets are floored. `chunkDocumentWithBreakPoints` subtracts `overlapChars`
+ * from a chunk end to get the next chunk's `pos`, and that `pos` is persisted
+ * into `content_vectors.pos` (INTEGER affinity) and later used as a slice
+ * offset by `extractSnippet`; a fractional budget would carry through as a
+ * fractional offset. The pre-change budgets were always integers.
+ */
 function scriptAwareCharBudgets(
   content: string,
   maxTokens: number = CHUNK_SIZE_TOKENS,
   overlapTokens: number = CHUNK_OVERLAP_TOKENS,
   windowTokens: number = CHUNK_WINDOW_TOKENS,
+  otherCharsPerToken?: number,
 ): { maxChars: number; overlapChars: number; windowChars: number } {
-  const charsPerToken = estimateCharsPerToken(content);
+  const charsPerToken = estimateCharsPerToken(content, otherCharsPerToken);
   return {
-    maxChars: maxTokens * charsPerToken,
-    overlapChars: overlapTokens * charsPerToken,
-    windowChars: windowTokens * charsPerToken,
+    maxChars: Math.floor(maxTokens * charsPerToken),
+    overlapChars: Math.floor(overlapTokens * charsPerToken),
+    windowChars: Math.floor(windowTokens * charsPerToken),
   };
 }
+
+/** The chars/token the search-path best-chunk selection used before it became script-aware. */
+const SEARCH_PATH_OTHER_CHARS_PER_TOKEN = CHUNK_SIZE_CHARS / CHUNK_SIZE_TOKENS;
 
 export async function chunkDocumentByTokens(
   content: string,
@@ -5904,7 +5921,13 @@ export async function hybridQuery(
   for (const cand of candidates) {
     // Same script-aware ratio the indexer uses, so a Korean body does not
     // arrive at the reranker as one ~3600-char (≈2× English) chunk.
-    const { maxChars, overlapChars, windowChars } = scriptAwareCharBudgets(cand.body);
+    const { maxChars, overlapChars, windowChars } = scriptAwareCharBudgets(
+      cand.body,
+      CHUNK_SIZE_TOKENS,
+      CHUNK_OVERLAP_TOKENS,
+      CHUNK_WINDOW_TOKENS,
+      SEARCH_PATH_OTHER_CHARS_PER_TOKEN,
+    );
     const chunks = await chunkDocumentAsync(
       cand.body,
       maxChars,
@@ -6308,7 +6331,13 @@ export async function structuredSearch(
   const ssChunkStrategy = options?.chunkStrategy;
 
   for (const cand of candidates) {
-    const { maxChars, overlapChars, windowChars } = scriptAwareCharBudgets(cand.body);
+    const { maxChars, overlapChars, windowChars } = scriptAwareCharBudgets(
+      cand.body,
+      CHUNK_SIZE_TOKENS,
+      CHUNK_OVERLAP_TOKENS,
+      CHUNK_WINDOW_TOKENS,
+      SEARCH_PATH_OTHER_CHARS_PER_TOKEN,
+    );
     const chunks = await chunkDocumentAsync(
       cand.body,
       maxChars,
