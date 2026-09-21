@@ -20,7 +20,7 @@ import { readFileSync, realpathSync, statSync, mkdirSync } from "node:fs";
 // Note: node:path resolve is not imported — we export our own cross-platform resolve()
 import fastGlob from "fast-glob";
 import { qmdHomedir } from "./paths.js";
-import { hangulBigramTail, hangulMixedQuery, hangulTermQuery } from "./hangul.js";
+import { estimateCharsPerToken, hangulBigramTail, hangulMixedQuery, hangulTermQuery } from "./hangul.js";
 import {
   LlamaCpp,
   getDefaultLlamaCpp,
@@ -3238,9 +3238,13 @@ export async function chunkDocumentByTokens(
 ): Promise<{ text: string; pos: number; tokens: number }[]> {
   const llm = getDefaultLlamaCpp();
 
-  // Use moderate chars/token estimate (prose ~4, code ~2, mixed ~3)
-  // If chunks exceed limit, they'll be re-split with actual ratio
-  const avgCharsPerToken = 3;
+  // Script-aware chars/token estimate from the document's own text: CJK prose
+  // measures 1.64 chars/token on Qwen3-Embedding-0.6B-Q8_0 (2026-09-21, ko
+  // 1380 chars / 842 tokens) while English measures 6.08 (2680 / 441) but
+  // keeps the historical 3.0 so English chunk boundaries do not move. Chunks
+  // still over the limit are re-split below with the actual ratio — that loop
+  // is the safety net for documents the estimate got wrong.
+  const avgCharsPerToken = estimateCharsPerToken(content);
   const maxChars = maxTokens * avgCharsPerToken;
   const overlapChars = overlapTokens * avgCharsPerToken;
   const windowChars = windowTokens * avgCharsPerToken;

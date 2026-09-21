@@ -4649,6 +4649,127 @@ describe("Token chunking guardrails", () => {
     }
   });
 
+  test("chunkDocumentByTokens chunks Korean 20KB prose in one pass — no resplit", async () => {
+    // Qwen3-Embedding-0.6B-Q8_0 measures Korean at ~0.61 tokens per char
+    // (1.64 chars/token); the estimate must land first-pass chunks under 900.
+    let tokenizeCalls = 0;
+    setDefaultLlamaCpp({
+      async tokenize(text: string) {
+        tokenizeCalls += 1;
+        const hangul = (text.match(/\p{Script=Hangul}/gu) ?? []).length;
+        return Array.from({ length: Math.max(1, Math.round(hangul * 0.61)) }, () => 1);
+      },
+      async detokenize(tokens: readonly number[]) {
+        return "가".repeat(tokens.length);
+      },
+    } as any);
+
+    try {
+      const doc = "한국어 검색 품질을 개선하는 문장입니다. ".repeat(900);
+      expect(doc.length).toBeGreaterThanOrEqual(20 * 1024);
+
+      const chunks = await chunkDocumentByTokens(doc);
+
+      // One tokenize call per final chunk: the resplit loop never ran.
+      expect(tokenizeCalls).toBe(chunks.length);
+      expect(chunks.length).toBeGreaterThan(1);
+      expect(chunks.every((chunk) => chunk.tokens <= 900)).toBe(true);
+      expect(Math.max(...chunks.map((c) => c.tokens))).toBeGreaterThanOrEqual(700);
+    } finally {
+      setDefaultLlamaCpp(null);
+    }
+  });
+
+  test("chunkDocumentByTokens keeps English chunk boundaries at the historical 3 chars/token", async () => {
+    let tokenizeCalls = 0;
+    setDefaultLlamaCpp({
+      async tokenize(text: string) {
+        tokenizeCalls += 1;
+        return Array.from({ length: Math.max(1, Math.round(text.length / 6.08)) }, () => 1);
+      },
+      async detokenize(tokens: readonly number[]) {
+        return "x".repeat(tokens.length);
+      },
+    } as any);
+
+    try {
+      const doc = "The quick brown fox jumps over the lazy dog. ".repeat(60);
+
+      const chunks = await chunkDocumentByTokens(doc);
+
+      // First pass must still use maxTokens*3 chars: same boundaries as the
+      // pre-change constant, and no resplit (English ~444 tokens per chunk).
+      const expected = chunkDocument(doc, 900 * 3, 135 * 3, 20 * 3);
+      expect(chunks.map((c) => c.pos)).toEqual(expected.map((c) => c.pos));
+      expect(chunks.map((c) => c.text)).toEqual(expected.map((c) => c.text));
+      expect(tokenizeCalls).toBe(chunks.length);
+    } finally {
+      setDefaultLlamaCpp(null);
+    }
+  });
+
+  test("chunkDocumentByTokens keeps mixed code-block + Korean prose chunks under 900 tokens", async () => {
+    // Half Latin code (~0.3 tokens/char), half Korean prose (~0.61):
+    // the harmonic blend (2.09 chars/token) keeps a full chunk at ~854
+    // tokens; linear interpolation (2.30) or the old constant (3.0)
+    // would push the same chunk over 900 and trigger the resplit loop.
+    let tokenizeCalls = 0;
+    setDefaultLlamaCpp({
+      async tokenize(text: string) {
+        tokenizeCalls += 1;
+        const hangul = (text.match(/\p{Script=Hangul}/gu) ?? []).length;
+        return Array.from(
+          { length: Math.max(1, Math.round(hangul * 0.61 + (text.length - hangul) * 0.3)) },
+          () => 1,
+        );
+      },
+      async detokenize(tokens: readonly number[]) {
+        return "x".repeat(tokens.length);
+      },
+    } as any);
+
+    try {
+      const unit =
+        "```js\nconst value = compute(input); // release\n```\n" +
+        "한국어 검색 품질을 개선하는 문장입니다. \n";
+      const doc = unit.repeat(60);
+
+      const chunks = await chunkDocumentByTokens(doc);
+
+      expect(tokenizeCalls).toBe(chunks.length);
+      expect(chunks.every((chunk) => chunk.tokens <= 900)).toBe(true);
+    } finally {
+      setDefaultLlamaCpp(null);
+    }
+  });
+
+  test("chunkDocumentByTokens still resplits when the estimate undercounts tokens", async () => {
+    // Estimate says 1.6 chars/token but the stub charges 2 tokens per char:
+    // the safety net must cut the oversized first-pass chunks back under 900.
+    let tokenizeCalls = 0;
+    setDefaultLlamaCpp({
+      async tokenize(text: string) {
+        tokenizeCalls += 1;
+        return Array.from({ length: text.length * 2 }, () => 1);
+      },
+      async detokenize(tokens: readonly number[]) {
+        return "가".repeat(tokens.length);
+      },
+    } as any);
+
+    try {
+      const doc = "한국어 검색 품질을 개선하는 문장입니다. ".repeat(250);
+
+      const chunks = await chunkDocumentByTokens(doc);
+
+      expect(chunks.length).toBeGreaterThan(1);
+      expect(chunks.every((chunk) => chunk.tokens <= 900)).toBe(true);
+      expect(tokenizeCalls).toBeGreaterThan(chunks.length); // resplit ran
+    } finally {
+      setDefaultLlamaCpp(null);
+    }
+  });
+
   test("chunkDocumentByTokens keeps surrogate pairs intact when the token budget shrinks the char budget below 2", async () => {
     // A tokenizer that reports one token per UTF-16 code unit makes
     // astral-plane content (emoji) look 2x as "expensive" as it actually
