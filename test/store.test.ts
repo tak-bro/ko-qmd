@@ -4326,6 +4326,52 @@ describe("Embedding batching", () => {
     }
   });
 
+  test("generateEmbeddings prunes stale higher-seq rows so a shrinking document converges in one run", async () => {
+    const store = await createTestStore();
+    const db = store.db;
+    const fakeLlm = createFakeEmbedLlm();
+    const model = "hf:env/embed-model.gguf";
+
+    setDefaultLlamaCpp(createFakeTokenizer() as any);
+    store.llm = { ...fakeLlm, embedModelName: model } as any;
+
+    try {
+      // ~3000 chars → the current chunker makes 2 chunks (first pass 2700 chars).
+      const body = "# Old\n\n" + "alpha beta gamma delta epsilon. ".repeat(90);
+      await insertTestDocument(db, "docs", { name: "shrink", body });
+      const { hash } = db.prepare(`SELECT hash FROM documents WHERE path LIKE '%shrink%'`).get() as { hash: string };
+
+      // Simulate the previous embedding generation: same model, older
+      // fingerprint, 5 chunks. After the chunker change the doc embeds as 2.
+      store.ensureVecTable(3);
+      const staleRow = db.prepare(
+        `INSERT INTO content_vectors (hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      );
+      const staleVec = db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`);
+      for (let seq = 0; seq < 5; seq++) {
+        staleRow.run(hash, seq, 0, model, "old-fingerprint", 5, new Date().toISOString());
+        staleVec.run(`${hash}_${seq}`, new Float32Array([9, 9, 9]));
+      }
+
+      const result = await generateEmbeddings(store);
+
+      // Same-run convergence: exactly the new chunks remain, nothing more.
+      expect(result.chunksEmbedded).toBe(2);
+      const seqs = db.prepare(`SELECT seq FROM content_vectors WHERE hash = ? AND model = ? ORDER BY seq`)
+        .all(hash, model)
+        .map((r) => r.seq);
+      expect(seqs).toEqual([0, 1]);
+      const vecSeqs = db.prepare(`SELECT hash_seq FROM vectors_vec WHERE hash_seq LIKE ? ORDER BY hash_seq`)
+        .all(`${hash}_%`)
+        .map((r) => r.hash_seq);
+      expect(vecSeqs).toEqual([`${hash}_0`, `${hash}_1`]);
+      expect(store.getHashesNeedingEmbedding(model)).toBe(0);
+    } finally {
+      setDefaultLlamaCpp(null);
+      await cleanupTestDb(store);
+    }
+  });
+
   test("generateEmbeddings does not mark a partially embedded multi-chunk document complete", async () => {
     const store = await createTestStore();
     const db = store.db;

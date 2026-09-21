@@ -2127,6 +2127,12 @@ export async function generateEmbeddings(
           });
         }
         expectedChunksByHash.set(doc.hash, chunks.length);
+        // Stale rows from a previous chunking generation (seq >= new count)
+        // must go BEFORE inserting: removeIncompleteEmbeddings counts rows
+        // per hash regardless of fingerprint, so leftover higher-seq rows
+        // would make it wipe this hash's fresh rows and force a second
+        // embed run to converge.
+        pruneStaleChunkVectors(db, doc.hash, model, chunks.length);
       }
 
       totalChunks += batchChunks.length;
@@ -4633,6 +4639,23 @@ export function insertEmbedding(
     const insertVecStmt = db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`);
     deleteVecStmt.run(hashSeq);
     insertVecStmt.run(hashSeq, embedding);
+  });
+}
+
+function pruneStaleChunkVectors(db: Database, hash: string, model: string, keepChunks: number): number {
+  return withLazyContentVectorMigration(db, () => {
+    const stale = db.prepare(
+      `SELECT seq FROM content_vectors WHERE hash = ? AND model = ? AND seq >= ?`,
+    ).all(hash, model, keepChunks) as { seq: number }[];
+    if (stale.length === 0) return 0;
+
+    const deleteVecStmt = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
+    const deleteContentStmt = db.prepare(`DELETE FROM content_vectors WHERE hash = ? AND model = ? AND seq = ?`);
+    for (const row of stale) {
+      deleteVecStmt.run(`${hash}_${row.seq}`);
+      deleteContentStmt.run(hash, model, row.seq);
+    }
+    return stale.length;
   });
 }
 
