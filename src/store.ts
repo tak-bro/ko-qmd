@@ -3230,20 +3230,9 @@ function stripUnpairedSurrogates(text: string): string {
 }
 
 /**
- * Chunk a document by actual token count using the LLM tokenizer.
- * More accurate than character-based chunking but requires async.
- *
- * When filepath and chunkStrategy are provided, uses AST-aware break points
- * for supported code files.
- */
-/**
- * Token budgets expressed in characters via the document's own script-aware
- * chars/token estimate. One definition so indexing and both search-path
- * best-chunk selections stay in lockstep — a drift here would desync reranker
- * inputs from indexed chunks.
- */
-/**
  * Character budgets for one chunking pass, sized from the text's script makeup.
+ * One definition so indexing and both search-path best-chunk selections stay in
+ * lockstep — a drift here would desync reranker inputs from indexed chunks.
  *
  * `otherCharsPerToken` is the ratio the call site used before this became
  * script-aware, so non-CJK text keeps its old boundaries: indexing sized its
@@ -3273,6 +3262,13 @@ function scriptAwareCharBudgets(
 /** The chars/token the search-path best-chunk selection used before it became script-aware. */
 const SEARCH_PATH_OTHER_CHARS_PER_TOKEN = CHUNK_SIZE_CHARS / CHUNK_SIZE_TOKENS;
 
+/**
+ * Chunk a document by actual token count using the LLM tokenizer.
+ * More accurate than character-based chunking but requires async.
+ *
+ * When filepath and chunkStrategy are provided, uses AST-aware break points
+ * for supported code files.
+ */
 export async function chunkDocumentByTokens(
   content: string,
   maxTokens: number = CHUNK_SIZE_TOKENS,

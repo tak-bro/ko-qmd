@@ -182,6 +182,11 @@ const CJK_SCRIPT_PATTERN = /\p{Script=Hangul}|\p{Script=Han}|\p{Script=Hiragana}
  * into action. The count is whole-text, not a leading sample: a Korean
  * document that opens with an English code block would otherwise be judged
  * Latin. Empty text returns `otherCharsPerToken`, the caller's previous behavior.
+ *
+ * `otherCharsPerToken` must be positive — zero or negative yields a non-finite
+ * ratio and NaN budgets downstream. Both in-repo call sites pass a literal
+ * (3.0 when indexing, `CHUNK_SIZE_CHARS / CHUNK_SIZE_TOKENS` on the search
+ * paths), so this is a precondition, not a runtime check.
  */
 export function estimateCharsPerToken(
   text: string,

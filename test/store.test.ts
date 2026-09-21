@@ -4845,8 +4845,9 @@ describe("Token chunking guardrails", () => {
 
   test("mixed-script chunk positions stay integers", async () => {
     // content_vectors.pos has INTEGER affinity and extractSnippet slices with
-    // it, so a fractional char budget must not reach chunk positions. A 50/50
-    // ko/en document gives the most fractional ratio (~2.46).
+    // it, so a fractional char budget must not reach chunk positions. The
+    // repeated unit is 10 Hangul characters in ~51, which the harmonic blend
+    // puts at ~2.56 chars/token — fractional, which is what this pins.
     setDefaultLlamaCpp({
       async tokenize(text: string) {
         const hangul = (text.match(/\p{Script=Hangul}/gu) ?? []).length;
