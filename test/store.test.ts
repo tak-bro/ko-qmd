@@ -4575,6 +4575,66 @@ describe("Embedding batching", () => {
     }
   });
 
+  test("structuredSearch chunks Korean candidates at the token ratio before rerank", async () => {
+    const store = await createTestStore();
+    const collectionName = await createTestCollection();
+    const body = "zebraqx anchor\n\n" + "한국어 검색 품질을 개선하는 문장입니다. ".repeat(340);
+    await insertTestDocument(store.db, collectionName, {
+      name: "ko-doc",
+      title: "KO",
+      body,
+      displayPath: "test/ko.md",
+    });
+
+    const rerankedTexts: string[] = [];
+    store.rerank = (async (_query: string, docs: { file: string; text: string }[]) => {
+      rerankedTexts.push(...docs.map((d) => d.text));
+      return docs.map((d) => ({ file: d.file, score: 0.9 }));
+    }) as any;
+
+    try {
+      await structuredSearch(store, [{ type: "lex", query: "zebraqx" }], { limit: 5, minScore: 0 });
+
+      expect(rerankedTexts.length).toBeGreaterThan(0);
+      // Chunk cap is maxChars + window ≈ (900+200) × 1.6 ≈ 1760 chars —
+      // not the 3600-char English default the search path used before.
+      expect(rerankedTexts.every((t) => t.length <= 1800)).toBe(true);
+      expect(rerankedTexts.every((t) => t.length >= 1000)).toBe(true);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("hybridQuery chunks Korean candidates at the token ratio before rerank", async () => {
+    const store = await createTestStore();
+    const collectionName = await createTestCollection();
+    const body = "zebraqx anchor\n\n" + "한국어 검색 품질을 개선하는 문장입니다. ".repeat(340);
+    await insertTestDocument(store.db, collectionName, {
+      name: "ko-doc",
+      title: "KO",
+      body,
+      displayPath: "test/ko.md",
+    });
+
+    store.expandQuery = vi.fn(async () => [{ type: "lex", query: "zebraqx" }]) as any;
+    store.searchVec = (async () => []) as any;
+    const rerankedTexts: string[] = [];
+    store.rerank = (async (_query: string, docs: { file: string; text: string }[]) => {
+      rerankedTexts.push(...docs.map((d) => d.text));
+      return docs.map((d) => ({ file: d.file, score: 0.9 }));
+    }) as any;
+
+    try {
+      await hybridQuery(store, "zebraqx", { limit: 5, minScore: 0 });
+
+      expect(rerankedTexts.length).toBeGreaterThan(0);
+      expect(rerankedTexts.every((t) => t.length <= 1800)).toBe(true);
+      expect(rerankedTexts.every((t) => t.length >= 1000)).toBe(true);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
   test("structuredSearch uses the active llm embed model for precomputed vector lookups", async () => {
     const store = await createTestStore();
     const model = "hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf";

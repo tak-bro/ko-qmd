@@ -5860,7 +5860,17 @@ export async function hybridQuery(
 
   const chunkStrategy = options?.chunkStrategy;
   for (const cand of candidates) {
-    const chunks = await chunkDocumentAsync(cand.body, undefined, undefined, undefined, cand.file, chunkStrategy);
+    // Same script-aware ratio the indexer uses, so a Korean body does not
+    // arrive at the reranker as one ~3600-char (≈2× English) chunk.
+    const charsPerToken = estimateCharsPerToken(cand.body);
+    const chunks = await chunkDocumentAsync(
+      cand.body,
+      CHUNK_SIZE_TOKENS * charsPerToken,
+      CHUNK_OVERLAP_TOKENS * charsPerToken,
+      CHUNK_WINDOW_TOKENS * charsPerToken,
+      cand.file,
+      chunkStrategy,
+    );
     if (chunks.length === 0) continue;
 
     // Pick chunk with most keyword overlap (fallback: first chunk)
@@ -6256,7 +6266,15 @@ export async function structuredSearch(
   const ssChunkStrategy = options?.chunkStrategy;
 
   for (const cand of candidates) {
-    const chunks = await chunkDocumentAsync(cand.body, undefined, undefined, undefined, cand.file, ssChunkStrategy);
+    const charsPerToken = estimateCharsPerToken(cand.body);
+    const chunks = await chunkDocumentAsync(
+      cand.body,
+      CHUNK_SIZE_TOKENS * charsPerToken,
+      CHUNK_OVERLAP_TOKENS * charsPerToken,
+      CHUNK_WINDOW_TOKENS * charsPerToken,
+      cand.file,
+      ssChunkStrategy,
+    );
     if (chunks.length === 0) continue;
 
     // Pick chunk with most keyword overlap
