@@ -120,6 +120,9 @@ export function getEmbeddingFingerprint(model: string = DEFAULT_EMBED_MODEL): st
     `doc:${formatDocForEmbedding(EMBED_FINGERPRINT_PROBE_DOC, EMBED_FINGERPRINT_PROBE_TITLE, model)}`,
     `chunk_tokens:${CHUNK_SIZE_TOKENS}`,
     `chunk_overlap_tokens:${CHUNK_OVERLAP_TOKENS}`,
+    // v2: first-pass chunk sizing derives chars/token from script
+    // composition (estimateCharsPerToken) instead of the fixed 3.0.
+    `chunk_chars_estimator:2`,
   ].join("\n");
   return createHash("sha256").update(significant).digest("hex").slice(0, 6);
 }

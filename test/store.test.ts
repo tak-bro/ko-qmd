@@ -3189,6 +3189,13 @@ describe("Index Status", () => {
     await cleanupTestDb(store);
   });
 
+  test("embedding fingerprint changes when the chunker's char/token estimator changes", () => {
+    // Fingerprints before the estimator landed in the hash:
+    // hf:test/embed-model.gguf → "2069c4", default model → "3f4dfd".
+    expect(getEmbeddingFingerprint("hf:test/embed-model.gguf")).not.toBe("2069c4");
+    expect(getEmbeddingFingerprint()).not.toBe("3f4dfd");
+  });
+
   test("getIndexHealth returns health info", async () => {
     const store = await createTestStore();
     const collectionName = await createTestCollection();
