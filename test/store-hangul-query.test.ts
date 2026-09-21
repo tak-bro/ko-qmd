@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { createStore, type QMDStore } from "../src/index.js";
 import { normalizeCjkForFTS } from "../src/store.js";
 import {
+  estimateCharsPerToken,
   hangulBigramTail,
   hangulMixedQuery,
   hangulStems,
@@ -119,6 +120,31 @@ describe("hangulMixedQuery", () => {
     expect(hangulMixedQuery("검색을")).toBeNull();
     expect(hangulMixedQuery("qmd")).toBeNull();
     expect(hangulMixedQuery("中文检索")).toBeNull();
+  });
+});
+
+describe("estimateCharsPerToken", () => {
+  test("pure Hangul prose sits at the CJK density (1.6 chars/token)", () => {
+    expect(estimateCharsPerToken("가나다라마바사아자차")).toBeCloseTo(1.6, 5);
+  });
+
+  test("pure Latin keeps the existing 3.0 chars/token", () => {
+    expect(estimateCharsPerToken("the quick brown fox jumps")).toBe(3.0);
+  });
+
+  test("Han and kana count on the CJK side", () => {
+    expect(estimateCharsPerToken("漢字カタカナひらがな")).toBeCloseTo(1.6, 5);
+  });
+
+  test("empty and whitespace-only text fall back to 3.0", () => {
+    expect(estimateCharsPerToken("")).toBe(3.0);
+    expect(estimateCharsPerToken("  \n\t ")).toBe(3.0);
+  });
+
+  test("mixed CJK/Latin text is a harmonic blend, not linear (r=0.5: 2.09, not 2.3)", () => {
+    const ratio = estimateCharsPerToken("가".repeat(50) + "a".repeat(50));
+    expect(ratio).toBeCloseTo(2.087, 2);
+    expect(ratio).toBeLessThan(2.2); // linear interpolation would return 2.3
   });
 });
 
