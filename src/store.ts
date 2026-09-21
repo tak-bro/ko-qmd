@@ -20,7 +20,7 @@ import { readFileSync, realpathSync, statSync, mkdirSync } from "node:fs";
 // Note: node:path resolve is not imported — we export our own cross-platform resolve()
 import fastGlob from "fast-glob";
 import { qmdHomedir } from "./paths.js";
-import { hangulBigramTail, hangulMixedQuery, hangulTermQuery } from "./hangul.js";
+import { estimateCharsPerToken, hangulBigramTail, hangulMixedQuery, hangulTermQuery } from "./hangul.js";
 import {
   LlamaCpp,
   getDefaultLlamaCpp,
@@ -120,6 +120,9 @@ export function getEmbeddingFingerprint(model: string = DEFAULT_EMBED_MODEL): st
     `doc:${formatDocForEmbedding(EMBED_FINGERPRINT_PROBE_DOC, EMBED_FINGERPRINT_PROBE_TITLE, model)}`,
     `chunk_tokens:${CHUNK_SIZE_TOKENS}`,
     `chunk_overlap_tokens:${CHUNK_OVERLAP_TOKENS}`,
+    // v2: first-pass chunk sizing derives chars/token from script
+    // composition (estimateCharsPerToken) instead of the fixed 3.0.
+    `chunk_chars_estimator:2`,
   ].join("\n");
   return createHash("sha256").update(significant).digest("hex").slice(0, 6);
 }
@@ -2127,6 +2130,12 @@ export async function generateEmbeddings(
           });
         }
         expectedChunksByHash.set(doc.hash, chunks.length);
+        // Stale rows from a previous chunking generation (seq >= new count)
+        // must go BEFORE inserting: removeIncompleteEmbeddings counts rows
+        // per hash regardless of fingerprint, so leftover higher-seq rows
+        // would make it wipe this hash's fresh rows and force a second
+        // embed run to converge.
+        pruneStaleChunkVectors(db, doc.hash, model, chunks.length);
       }
 
       totalChunks += batchChunks.length;
@@ -3221,6 +3230,39 @@ function stripUnpairedSurrogates(text: string): string {
 }
 
 /**
+ * Character budgets for one chunking pass, sized from the text's script makeup.
+ * One definition so indexing and both search-path best-chunk selections stay in
+ * lockstep — a drift here would desync reranker inputs from indexed chunks.
+ *
+ * `otherCharsPerToken` is the ratio the call site used before this became
+ * script-aware, so non-CJK text keeps its old boundaries: indexing sized its
+ * first pass at 3.0, the search paths at `CHUNK_SIZE_CHARS / CHUNK_SIZE_TOKENS`.
+ *
+ * Budgets are floored. `chunkDocumentWithBreakPoints` subtracts `overlapChars`
+ * from a chunk end to get the next chunk's `pos`, and that `pos` is persisted
+ * into `content_vectors.pos` (INTEGER affinity) and later used as a slice
+ * offset by `extractSnippet`; a fractional budget would carry through as a
+ * fractional offset. The pre-change budgets were always integers.
+ */
+function scriptAwareCharBudgets(
+  content: string,
+  maxTokens: number = CHUNK_SIZE_TOKENS,
+  overlapTokens: number = CHUNK_OVERLAP_TOKENS,
+  windowTokens: number = CHUNK_WINDOW_TOKENS,
+  otherCharsPerToken?: number,
+): { maxChars: number; overlapChars: number; windowChars: number } {
+  const charsPerToken = estimateCharsPerToken(content, otherCharsPerToken);
+  return {
+    maxChars: Math.floor(maxTokens * charsPerToken),
+    overlapChars: Math.floor(overlapTokens * charsPerToken),
+    windowChars: Math.floor(windowTokens * charsPerToken),
+  };
+}
+
+/** The chars/token the search-path best-chunk selection used before it became script-aware. */
+const SEARCH_PATH_OTHER_CHARS_PER_TOKEN = CHUNK_SIZE_CHARS / CHUNK_SIZE_TOKENS;
+
+/**
  * Chunk a document by actual token count using the LLM tokenizer.
  * More accurate than character-based chunking but requires async.
  *
@@ -3238,12 +3280,13 @@ export async function chunkDocumentByTokens(
 ): Promise<{ text: string; pos: number; tokens: number }[]> {
   const llm = getDefaultLlamaCpp();
 
-  // Use moderate chars/token estimate (prose ~4, code ~2, mixed ~3)
-  // If chunks exceed limit, they'll be re-split with actual ratio
-  const avgCharsPerToken = 3;
-  const maxChars = maxTokens * avgCharsPerToken;
-  const overlapChars = overlapTokens * avgCharsPerToken;
-  const windowChars = windowTokens * avgCharsPerToken;
+  // Script-aware chars/token estimate from the document's own text: CJK prose
+  // measures 1.64 chars/token on Qwen3-Embedding-0.6B-Q8_0 (2026-09-21, ko
+  // 1380 chars / 842 tokens) while English measures 6.08 (2680 / 441) but
+  // keeps the historical 3.0 so English chunk boundaries do not move. Chunks
+  // still over the limit are re-split below with the actual ratio — that loop
+  // is the safety net for documents the estimate got wrong.
+  const { maxChars, overlapChars, windowChars } = scriptAwareCharBudgets(content, maxTokens, overlapTokens, windowTokens);
 
   // Chunk in character space with conservative estimate
   // Use AST-aware chunking for the first pass when filepath/strategy provided
@@ -4632,6 +4675,22 @@ export function insertEmbedding(
   });
 }
 
+function pruneStaleChunkVectors(db: Database, hash: string, model: string, keepChunks: number): void {
+  withLazyContentVectorMigration(db, () => {
+    const stale = db.prepare(
+      `SELECT seq FROM content_vectors WHERE hash = ? AND model = ? AND seq >= ?`,
+    ).all(hash, model, keepChunks) as { seq: number }[];
+    if (stale.length === 0) return;
+
+    const deleteVecStmt = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
+    const deleteContentStmt = db.prepare(`DELETE FROM content_vectors WHERE hash = ? AND model = ? AND seq = ?`);
+    for (const row of stale) {
+      deleteVecStmt.run(`${hash}_${row.seq}`);
+      deleteContentStmt.run(hash, model, row.seq);
+    }
+  });
+}
+
 function removeIncompleteEmbeddings(db: Database, expectedChunksByHash: Map<string, number>, model: string): number {
   return withLazyContentVectorMigration(db, () => {
     let removed = 0;
@@ -5856,7 +5915,23 @@ export async function hybridQuery(
 
   const chunkStrategy = options?.chunkStrategy;
   for (const cand of candidates) {
-    const chunks = await chunkDocumentAsync(cand.body, undefined, undefined, undefined, cand.file, chunkStrategy);
+    // Same script-aware ratio the indexer uses, so a Korean body does not
+    // arrive at the reranker as one ~3600-char (≈2× English) chunk.
+    const { maxChars, overlapChars, windowChars } = scriptAwareCharBudgets(
+      cand.body,
+      CHUNK_SIZE_TOKENS,
+      CHUNK_OVERLAP_TOKENS,
+      CHUNK_WINDOW_TOKENS,
+      SEARCH_PATH_OTHER_CHARS_PER_TOKEN,
+    );
+    const chunks = await chunkDocumentAsync(
+      cand.body,
+      maxChars,
+      overlapChars,
+      windowChars,
+      cand.file,
+      chunkStrategy,
+    );
     if (chunks.length === 0) continue;
 
     // Pick chunk with most keyword overlap (fallback: first chunk)
@@ -6252,7 +6327,21 @@ export async function structuredSearch(
   const ssChunkStrategy = options?.chunkStrategy;
 
   for (const cand of candidates) {
-    const chunks = await chunkDocumentAsync(cand.body, undefined, undefined, undefined, cand.file, ssChunkStrategy);
+    const { maxChars, overlapChars, windowChars } = scriptAwareCharBudgets(
+      cand.body,
+      CHUNK_SIZE_TOKENS,
+      CHUNK_OVERLAP_TOKENS,
+      CHUNK_WINDOW_TOKENS,
+      SEARCH_PATH_OTHER_CHARS_PER_TOKEN,
+    );
+    const chunks = await chunkDocumentAsync(
+      cand.body,
+      maxChars,
+      overlapChars,
+      windowChars,
+      cand.file,
+      ssChunkStrategy,
+    );
     if (chunks.length === 0) continue;
 
     // Pick chunk with most keyword overlap

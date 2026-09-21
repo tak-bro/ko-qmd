@@ -15,6 +15,7 @@ import { join } from "node:path";
 import YAML from "yaml";
 import * as llmModule from "../src/llm.js";
 import { disposeDefaultLlamaCpp, setDefaultLlamaCpp } from "../src/llm.js";
+import { estimateCharsPerToken } from "../src/hangul.js";
 import {
   createStore,
   DEFAULT_QUERY_MODEL,
@@ -31,6 +32,9 @@ import {
   getEmbeddingFingerprint,
   chunkDocument,
   chunkDocumentByTokens,
+  CHUNK_WINDOW_TOKENS,
+  CHUNK_SIZE_TOKENS,
+  CHUNK_SIZE_CHARS,
   chunkDocumentAsync,
   chunkDocumentWithBreakPoints,
   mergeBreakPoints,
@@ -3189,6 +3193,14 @@ describe("Index Status", () => {
     await cleanupTestDb(store);
   });
 
+  test("embedding fingerprint changes when the chunker's char/token estimator changes", () => {
+    // Pinned, not just "different from the old value": a `not.toBe` passes for
+    // any future change too, so the next bump would land silently. Before the
+    // estimator entered the hash these were "2069c4" / "3f4dfd".
+    expect(getEmbeddingFingerprint("hf:test/embed-model.gguf")).toBe("2eff41");
+    expect(getEmbeddingFingerprint()).toBe("21b505");
+  });
+
   test("getIndexHealth returns health info", async () => {
     const store = await createTestStore();
     const collectionName = await createTestCollection();
@@ -4326,6 +4338,52 @@ describe("Embedding batching", () => {
     }
   });
 
+  test("generateEmbeddings prunes stale higher-seq rows so a shrinking document converges in one run", async () => {
+    const store = await createTestStore();
+    const db = store.db;
+    const fakeLlm = createFakeEmbedLlm();
+    const model = "hf:env/embed-model.gguf";
+
+    setDefaultLlamaCpp(createFakeTokenizer() as any);
+    store.llm = { ...fakeLlm, embedModelName: model } as any;
+
+    try {
+      // ~3000 chars → the current chunker makes 2 chunks (first pass 2700 chars).
+      const body = "# Old\n\n" + "alpha beta gamma delta epsilon. ".repeat(90);
+      await insertTestDocument(db, "docs", { name: "shrink", body });
+      const { hash } = db.prepare(`SELECT hash FROM documents WHERE path LIKE '%shrink%'`).get() as { hash: string };
+
+      // Simulate the previous embedding generation: same model, older
+      // fingerprint, 5 chunks. After the chunker change the doc embeds as 2.
+      store.ensureVecTable(3);
+      const staleRow = db.prepare(
+        `INSERT INTO content_vectors (hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      );
+      const staleVec = db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`);
+      for (let seq = 0; seq < 5; seq++) {
+        staleRow.run(hash, seq, 0, model, "old-fingerprint", 5, new Date().toISOString());
+        staleVec.run(`${hash}_${seq}`, new Float32Array([9, 9, 9]));
+      }
+
+      const result = await generateEmbeddings(store);
+
+      // Same-run convergence: exactly the new chunks remain, nothing more.
+      expect(result.chunksEmbedded).toBe(2);
+      const seqs = db.prepare(`SELECT seq FROM content_vectors WHERE hash = ? AND model = ? ORDER BY seq`)
+        .all(hash, model)
+        .map((r) => r.seq);
+      expect(seqs).toEqual([0, 1]);
+      const vecSeqs = db.prepare(`SELECT hash_seq FROM vectors_vec WHERE hash_seq LIKE ? ORDER BY hash_seq`)
+        .all(`${hash}_%`)
+        .map((r) => r.hash_seq);
+      expect(vecSeqs).toEqual([`${hash}_0`, `${hash}_1`]);
+      expect(store.getHashesNeedingEmbedding(model)).toBe(0);
+    } finally {
+      setDefaultLlamaCpp(null);
+      await cleanupTestDb(store);
+    }
+  });
+
   test("generateEmbeddings does not mark a partially embedded multi-chunk document complete", async () => {
     const store = await createTestStore();
     const db = store.db;
@@ -4575,6 +4633,66 @@ describe("Embedding batching", () => {
     }
   });
 
+  test("structuredSearch chunks Korean candidates at the token ratio before rerank", async () => {
+    const store = await createTestStore();
+    const collectionName = await createTestCollection();
+    const body = "zebraqx anchor\n\n" + "한국어 검색 품질을 개선하는 문장입니다. ".repeat(340);
+    await insertTestDocument(store.db, collectionName, {
+      name: "ko-doc",
+      title: "KO",
+      body,
+      displayPath: "test/ko.md",
+    });
+
+    const rerankedTexts: string[] = [];
+    store.rerank = (async (_query: string, docs: { file: string; text: string }[]) => {
+      rerankedTexts.push(...docs.map((d) => d.text));
+      return docs.map((d) => ({ file: d.file, score: 0.9 }));
+    }) as any;
+
+    try {
+      await structuredSearch(store, [{ type: "lex", query: "zebraqx" }], { limit: 5, minScore: 0 });
+
+      expect(rerankedTexts.length).toBeGreaterThan(0);
+      // Chunk cap is maxChars + window ≈ (900+200) × 1.6 ≈ 1760 chars —
+      // not the 3600-char English default the search path used before.
+      expect(rerankedTexts.every((t) => t.length <= 1800)).toBe(true);
+      expect(rerankedTexts.every((t) => t.length >= 1000)).toBe(true);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("hybridQuery chunks Korean candidates at the token ratio before rerank", async () => {
+    const store = await createTestStore();
+    const collectionName = await createTestCollection();
+    const body = "zebraqx anchor\n\n" + "한국어 검색 품질을 개선하는 문장입니다. ".repeat(340);
+    await insertTestDocument(store.db, collectionName, {
+      name: "ko-doc",
+      title: "KO",
+      body,
+      displayPath: "test/ko.md",
+    });
+
+    store.expandQuery = vi.fn(async () => [{ type: "lex", query: "zebraqx" }]) as any;
+    store.searchVec = (async () => []) as any;
+    const rerankedTexts: string[] = [];
+    store.rerank = (async (_query: string, docs: { file: string; text: string }[]) => {
+      rerankedTexts.push(...docs.map((d) => d.text));
+      return docs.map((d) => ({ file: d.file, score: 0.9 }));
+    }) as any;
+
+    try {
+      await hybridQuery(store, "zebraqx", { limit: 5, minScore: 0 });
+
+      expect(rerankedTexts.length).toBeGreaterThan(0);
+      expect(rerankedTexts.every((t) => t.length <= 1800)).toBe(true);
+      expect(rerankedTexts.every((t) => t.length >= 1000)).toBe(true);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
   test("structuredSearch uses the active llm embed model for precomputed vector lookups", async () => {
     const store = await createTestStore();
     const model = "hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf";
@@ -4644,6 +4762,175 @@ describe("Token chunking guardrails", () => {
       for (let i = 1; i < chunks.length; i++) {
         expect(chunks[i]!.pos).toBeGreaterThan(chunks[i - 1]!.pos);
       }
+    } finally {
+      setDefaultLlamaCpp(null);
+    }
+  });
+
+  test("chunkDocumentByTokens chunks Korean 20KB prose in one pass — no resplit", async () => {
+    // Qwen3-Embedding-0.6B-Q8_0 measures Korean at ~0.61 tokens per char
+    // (1.64 chars/token); the estimate must land first-pass chunks under 900.
+    let tokenizeCalls = 0;
+    setDefaultLlamaCpp({
+      async tokenize(text: string) {
+        tokenizeCalls += 1;
+        const hangul = (text.match(/\p{Script=Hangul}/gu) ?? []).length;
+        return Array.from({ length: Math.max(1, Math.round(hangul * 0.61)) }, () => 1);
+      },
+      async detokenize(tokens: readonly number[]) {
+        return "가".repeat(tokens.length);
+      },
+    } as any);
+
+    try {
+      const doc = "한국어 검색 품질을 개선하는 문장입니다. ".repeat(900);
+      expect(doc.length).toBeGreaterThanOrEqual(20 * 1024);
+
+      const chunks = await chunkDocumentByTokens(doc);
+
+      // One tokenize call per final chunk: the resplit loop never ran.
+      expect(tokenizeCalls).toBe(chunks.length);
+      expect(chunks.length).toBeGreaterThan(1);
+      expect(chunks.every((chunk) => chunk.tokens <= 900)).toBe(true);
+      expect(Math.max(...chunks.map((c) => c.tokens))).toBeGreaterThanOrEqual(700);
+    } finally {
+      setDefaultLlamaCpp(null);
+    }
+  });
+
+  test("chunkDocumentByTokens keeps English chunk boundaries at the historical 3 chars/token", async () => {
+    let tokenizeCalls = 0;
+    setDefaultLlamaCpp({
+      async tokenize(text: string) {
+        tokenizeCalls += 1;
+        return Array.from({ length: Math.max(1, Math.round(text.length / 6.08)) }, () => 1);
+      },
+      async detokenize(tokens: readonly number[]) {
+        return "x".repeat(tokens.length);
+      },
+    } as any);
+
+    try {
+      // 200 repeats = 8800 chars, comfortably past maxChars (2700) so real
+      // boundaries and overlap are exercised — at 60 repeats the document is
+      // exactly maxChars and chunkDocument returns it whole, comparing one
+      // chunk against itself.
+      const doc = "The quick brown fox jumps over the lazy dog. ".repeat(200);
+
+      const chunks = await chunkDocumentByTokens(doc);
+
+      // First pass must still use maxTokens*3 chars: same boundaries as the
+      // pre-change constant, and no resplit (English ~444 tokens per chunk).
+      const expected = chunkDocument(doc, 900 * 3, 135 * 3, CHUNK_WINDOW_TOKENS * 3);
+      expect(chunks.map((c) => c.pos)).toEqual(expected.map((c) => c.pos));
+      expect(chunks.map((c) => c.text)).toEqual(expected.map((c) => c.text));
+      expect(tokenizeCalls).toBe(chunks.length);
+    } finally {
+      setDefaultLlamaCpp(null);
+    }
+  });
+
+  test("estimateCharsPerToken keeps each call site's own non-CJK ratio", () => {
+    const english = "The quick brown fox jumps over the lazy dog. ".repeat(200);
+    // Indexing sized its first pass at 3.0, the search paths at
+    // CHUNK_SIZE_CHARS / CHUNK_SIZE_TOKENS = 4.0. Pure non-CJK text must come
+    // back at exactly the ratio the caller passes, or that call site's
+    // boundaries move (search path measured 3600 -> 2700 chars before this).
+    expect(estimateCharsPerToken(english)).toBe(3.0);
+    expect(estimateCharsPerToken(english, 4.0)).toBe(4.0);
+    expect(Math.floor(CHUNK_SIZE_TOKENS * estimateCharsPerToken(english, 4.0))).toBe(CHUNK_SIZE_CHARS);
+    // Empty text returns the caller's ratio, not a hardcoded 3.0.
+    expect(estimateCharsPerToken("", 4.0)).toBe(4.0);
+  });
+
+  test("mixed-script chunk positions stay integers", async () => {
+    // content_vectors.pos has INTEGER affinity and extractSnippet slices with
+    // it, so a fractional char budget must not reach chunk positions. The
+    // repeated unit is 10 Hangul characters in ~51, which the harmonic blend
+    // puts at ~2.56 chars/token — fractional, which is what this pins.
+    setDefaultLlamaCpp({
+      async tokenize(text: string) {
+        const hangul = (text.match(/\p{Script=Hangul}/gu) ?? []).length;
+        return Array.from(
+          { length: Math.max(1, Math.round(hangul * 0.61 + (text.length - hangul) * 0.33)) },
+          () => 1,
+        );
+      },
+      async detokenize(tokens: readonly number[]) {
+        return "x".repeat(tokens.length);
+      },
+    } as any);
+
+    try {
+      const doc = "한국어 문장이 여기 있다 English sentence sits right here ".repeat(200);
+      const chunks = await chunkDocumentByTokens(doc);
+
+      expect(chunks.length).toBeGreaterThan(1);
+      for (const chunk of chunks) {
+        expect(Number.isInteger(chunk.pos)).toBe(true);
+      }
+    } finally {
+      setDefaultLlamaCpp(null);
+    }
+  });
+
+  test("chunkDocumentByTokens keeps mixed code-block + Korean prose chunks under 900 tokens", async () => {
+    // Half Latin code (~0.3 tokens/char), half Korean prose (~0.61):
+    // the harmonic blend (2.09 chars/token) keeps a full chunk at ~854
+    // tokens; linear interpolation (2.30) or the old constant (3.0)
+    // would push the same chunk over 900 and trigger the resplit loop.
+    let tokenizeCalls = 0;
+    setDefaultLlamaCpp({
+      async tokenize(text: string) {
+        tokenizeCalls += 1;
+        const hangul = (text.match(/\p{Script=Hangul}/gu) ?? []).length;
+        return Array.from(
+          { length: Math.max(1, Math.round(hangul * 0.61 + (text.length - hangul) * 0.3)) },
+          () => 1,
+        );
+      },
+      async detokenize(tokens: readonly number[]) {
+        return "x".repeat(tokens.length);
+      },
+    } as any);
+
+    try {
+      const unit =
+        "```js\nconst value = compute(input); // release\n```\n" +
+        "한국어 검색 품질을 개선하는 문장입니다. \n";
+      const doc = unit.repeat(60);
+
+      const chunks = await chunkDocumentByTokens(doc);
+
+      expect(tokenizeCalls).toBe(chunks.length);
+      expect(chunks.every((chunk) => chunk.tokens <= 900)).toBe(true);
+    } finally {
+      setDefaultLlamaCpp(null);
+    }
+  });
+
+  test("chunkDocumentByTokens still resplits when the estimate undercounts tokens", async () => {
+    // Estimate says 1.6 chars/token but the stub charges 2 tokens per char:
+    // the safety net must cut the oversized first-pass chunks back under 900.
+    let tokenizeCalls = 0;
+    setDefaultLlamaCpp({
+      async tokenize(text: string) {
+        tokenizeCalls += 1;
+        return Array.from({ length: text.length * 2 }, () => 1);
+      },
+      async detokenize(tokens: readonly number[]) {
+        return "가".repeat(tokens.length);
+      },
+    } as any);
+
+    try {
+      const doc = "한국어 검색 품질을 개선하는 문장입니다. ".repeat(250);
+
+      const chunks = await chunkDocumentByTokens(doc);
+
+      expect(chunks.length).toBeGreaterThan(1);
+      expect(chunks.every((chunk) => chunk.tokens <= 900)).toBe(true);
+      expect(tokenizeCalls).toBeGreaterThan(chunks.length); // resplit ran
     } finally {
       setDefaultLlamaCpp(null);
     }

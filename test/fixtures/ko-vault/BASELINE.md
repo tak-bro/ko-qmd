@@ -277,3 +277,18 @@ RRF weight reaches it. Closing it means giving documents plain-language surface 
 (a summary field, aliases), which is indexing work, not ranking work.
 
 lex is at 0.250 on this bucket by construction.
+
+## 2026-09-21 — search-path best-chunk sizing follows the script-aware char/token ratio
+
+`chunkDocumentByTokens` and both search-path best-chunk call sites now size chunks with
+`estimateCharsPerToken` (harmonic char/token blend, measured ko 1.64 / en 6.08 on
+Qwen3-Embedding-0.6B-Q8_0) instead of the fixed 3.0. Attribution pair for the search-path
+change, run at `990bbc7` (before) and `9a3c060` (after):
+
+```
+RESULT bm25_r5=0.9519 vector_r5=1.0000 hybrid_r5=0.9904 full_r5=1.0000 full_mrr=0.9760   # before
+RESULT bm25_r5=0.9519 vector_r5=1.0000 hybrid_r5=0.9904 full_r5=1.0000 full_mrr=0.9760   # after
+```
+
+Identical on every metric: Korean rerank chunks get smaller (~1440 vs ~3600 chars target) but
+the winning chunk per query is unchanged, so bm25/vector/hybrid/full all hold.

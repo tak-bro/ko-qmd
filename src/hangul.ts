@@ -2,7 +2,8 @@
  * hangul.ts - Korean (Hangul) handling for FTS5 indexing and queries.
  *
  * ko-qmd patch stack: all Hangul-specific logic lives here so store.ts keeps
- * at most two call sites. Han and kana text never reaches these functions.
+ * at most two call sites. Han and kana appear only as CJK-side characters in
+ * estimateCharsPerToken's density count — indexing and query logic never sees them.
  */
 
 const HANGUL_WORD_PATTERN = /^\p{Script=Hangul}+$/u;
@@ -160,4 +161,40 @@ export function hangulMixedQuery(term: string): string | null {
     return latin ? [`"${latin}"*`] : [];
   });
   return parts.length > 0 ? `(${parts.join(" AND ")})` : null;
+}
+
+const CJK_CHARS_PER_TOKEN = 1.6;
+const OTHER_CHARS_PER_TOKEN = 3.0;
+const CJK_SCRIPT_PATTERN = /\p{Script=Hangul}|\p{Script=Han}|\p{Script=Hiragana}|\p{Script=Katakana}/gu;
+
+/**
+ * Estimated characters per token for chunk sizing, judged from the script
+ * makeup of `text` alone — a regex count, no tokenizer call. CJK (Hangul,
+ * Han, kana) runs at 1.6 chars/token (measured 1.64 on Korean prose,
+ * 2026-09-21); everything else keeps whatever ratio the caller was already
+ * using, so non-CJK chunk boundaries do not move. That ratio differs by call
+ * site — indexing sized its first pass at 3.0, the search paths at 4.0
+ * (`CHUNK_SIZE_CHARS / CHUNK_SIZE_TOKENS`) — so each passes its own through
+ * `otherCharsPerToken` rather than sharing one default. Because token counts add across
+ * scripts, the blend is the harmonic mean `(c + o) / (c/1.6 + o/3.0)` — a
+ * linear interpolation of the two ratios would overestimate a half-and-half
+ * document by about 10% (2.30 vs 2.09) and call the resplit safety net back
+ * into action. The count is whole-text, not a leading sample: a Korean
+ * document that opens with an English code block would otherwise be judged
+ * Latin. Empty text returns `otherCharsPerToken`, the caller's previous behavior.
+ *
+ * `otherCharsPerToken` must be positive — zero or negative yields a non-finite
+ * ratio and NaN budgets downstream. Both in-repo call sites pass a literal
+ * (3.0 when indexing, `CHUNK_SIZE_CHARS / CHUNK_SIZE_TOKENS` on the search
+ * paths), so this is a precondition, not a runtime check.
+ */
+export function estimateCharsPerToken(
+  text: string,
+  otherCharsPerToken: number = OTHER_CHARS_PER_TOKEN,
+): number {
+  const cjk = (text.match(CJK_SCRIPT_PATTERN) ?? []).length;
+  const total = [...text].length;
+  if (total === 0) return otherCharsPerToken;
+  const other = total - cjk;
+  return total / (cjk / CJK_CHARS_PER_TOKEN + other / otherCharsPerToken);
 }

@@ -4,6 +4,22 @@
 
 ### Changes
 
+- Korean documents are chunked at their real token budget instead of the
+  English-tuned 3.0 chars/token: `estimateCharsPerToken` blends CJK and other
+  scripts as a harmonic mean (measured ko 1.64 / en 6.08 chars per token on
+  Qwen3-Embedding-0.6B-Q8_0, 2026-09-21), and indexing plus both search-path
+  best-chunk selections size chunks with it. A 20KB Korean document now
+  first-passes into ~900-token chunks instead of being split ~855 and Korean
+  rerank chunks shrink from ~3600 to ~1440 chars. Non-CJK text keeps the ratio
+  each call site already used — 3.0 when indexing, 4.0 on the search paths — so
+  English chunk boundaries do not move, and the ko-vault bench holds
+  (bm25_r5=0.9519).
+- Re-embedding a document whose chunk count shrank now prunes its stale
+  higher-`seq` vectors before inserting, so one `qmd embed` run converges
+  instead of waiting for a second run. The embedding fingerprint gains a
+  `chunk_chars_estimator` term, so `qmd status` reports re-embedding as needed
+  for existing indexes; run `qmd embed` once to pick up the new chunking.
+
 - `search`, `vsearch` and `query` take `--path`, `--since` and `--until`, so a
   search can be narrowed to part of a collection or to what changed recently.
   `--path` matches globs against `collection/path` and is repeatable, with a
