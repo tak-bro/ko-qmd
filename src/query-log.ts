@@ -41,6 +41,13 @@ type HeaderSource = Headers | IncomingHttpHeaders;
 
 type StatusSource = { getStatus(): Promise<IndexStatus> };
 
+/**
+ * One search hit. `vec_score` / `fts_score` are the raw backend scores the
+ * daemon attaches on `rerank:false` responses; absent when that backend did
+ * not return the hit (absent, never 0).
+ */
+export type QueryLogResult = { file: string; score: number; vec_score?: number; fts_score?: number };
+
 export type QueryLogEntry = {
   via: "rest" | "mcp";
   tool: string;
@@ -50,7 +57,7 @@ export type QueryLogEntry = {
   limit: number;
   /** null = the request left reranking to the daemon default */
   rerank: boolean | null;
-  results: { file: string; score: number }[];
+  results: QueryLogResult[];
   ms: number;
   /** Injectable clock for tests; defaults to the time of the call. */
   now?: Date;
@@ -196,7 +203,13 @@ const queueRow = (entry: QueryLogEntry, store: StatusSource): void => {
     collections: entry.collections,
     limit: entry.limit,
     rerank: entry.rerank,
-    results: entry.results.map((r, i) => ({ file: normalizeResultFile(r.file), score: r.score, rank: i + 1 })),
+    results: entry.results.map((r, i) => ({
+      file: normalizeResultFile(r.file),
+      score: r.score,
+      ...(r.vec_score !== undefined && { vec_score: r.vec_score }),
+      ...(r.fts_score !== undefined && { fts_score: r.fts_score }),
+      rank: i + 1,
+    })),
     ms: entry.ms,
     client: {
       tag: clip(readHeader(entry.headers, "x-qmd-tag"), TAG_MAX),
@@ -268,7 +281,7 @@ export const entryFromRest = (input: {
   params: { limit?: unknown; rerank?: unknown };
   /** The collections actually searched (the handler's defaults applied). */
   collections: string[];
-  results: { file: string; score: number }[];
+  results: QueryLogResult[];
   ms: number;
 }): QueryLogEntry => ({
     via: "rest",
@@ -292,7 +305,7 @@ export const entryFromMcp = (input: {
   collections: string[];
   limit: number;
   rerank: boolean;
-  results: { file: string; score: number }[];
+  results: QueryLogResult[];
   ms: number;
 }): QueryLogEntry => ({
     via: "mcp",

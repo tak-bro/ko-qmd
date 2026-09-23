@@ -4,6 +4,13 @@
 
 ### Changes
 
+- REST `POST /query` and the MCP `query` tool attach `vec_score` (cosine
+  similarity) and `fts_score` (normalized BM25) to each result on the
+  `rerank:false` path, where `score` is the 1/rank fusion position and cannot
+  be thresholded. Each is the max over the sub-queries that returned the hit
+  and is omitted, never 0, when that backend did not return it. The daemon
+  query log (`QMD_QUERY_LOG`) records the same two fields per result; the row
+  schema stays `v: 1` and `rerank:true` responses are unchanged.
 - Korean documents are chunked at their real token budget instead of the
   English-tuned 3.0 chars/token: `estimateCharsPerToken` blends CJK and other
   scripts as a harmonic mean (measured ko 1.64 / en 6.08 chars per token on

@@ -1479,7 +1479,19 @@ describe("REST /query, MCP query and the query log", () => {
       headers: { "Content-Type": "application/json", ...headers },
       body: JSON.stringify({ searches: [{ type: "lex", query: "readme" }], collections: ["docs"], limit: 5, rerank: false }),
     });
-    return { status: res.status, json: await res.json() as { results: { file: string; score: number; snippet: string }[] } };
+    return { status: res.status, json: await res.json() as RestQueryResponse };
+  };
+
+  type RawScoredResult = { file: string; score: number; vec_score?: number; fts_score?: number };
+  type RestQueryResponse = { results: (RawScoredResult & { snippet: string })[] };
+
+  const postSearches = async (body: Record<string, unknown>) => {
+    const res = await fetch(`${baseUrl}/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ collections: ["docs"], limit: 5, ...body }),
+    });
+    return { status: res.status, json: await res.json() as RestQueryResponse };
   };
 
   type StatusToolResponse = {
@@ -1508,7 +1520,7 @@ describe("REST /query, MCP query and the query log", () => {
   };
 
   type QueryToolResponse = {
-    result: { structuredContent: { results: { file: string; score: number }[] } };
+    result: { structuredContent: { results: RawScoredResult[] } };
   };
 
   const callQueryTool = async (
@@ -1553,6 +1565,66 @@ describe("REST /query, MCP query and the query log", () => {
     expect(typeof json.results[0]!.snippet).toBe("string");
   });
 
+  test("rerank:false lex results carry fts_score in (0,1] and no vec_score", async () => {
+    const { status, json } = await postSearches({ searches: [{ type: "lex", query: "readme" }], rerank: false });
+    expect(status).toBe(200);
+    expect(json.results.length).toBeGreaterThan(0);
+    for (const r of json.results) {
+      expect(r.fts_score).toBeGreaterThan(0);
+      expect(r.fts_score).toBeLessThanOrEqual(1);
+      expect(r).not.toHaveProperty("vec_score");
+    }
+    // `score` stays the RRF position score; keys ride after it.
+    expect(Object.keys(json.results[0]!).slice(0, 5)).toEqual(["docid", "file", "title", "score", "fts_score"]);
+  });
+
+  test("fts_score is the max over lex sub-queries hitting the same doc, not the first", async () => {
+    const single = async (query: string) => {
+      const { json } = await postSearches({ searches: [{ type: "lex", query }], rerank: false });
+      return json.results.find((r) => r.file === "qmd://docs/readme.md")!.fts_score!;
+    };
+    const [a, b] = [await single("readme"), await single("setup")];
+    expect(a, "fixture precondition: the two queries must score readme.md differently").not.toBe(b);
+    const [low, high] = a < b ? ["readme", "setup"] : ["setup", "readme"];
+    const { json } = await postSearches({
+      searches: [{ type: "lex", query: low }, { type: "lex", query: high }],
+      rerank: false,
+    });
+    const hit = json.results.find((r) => r.file === "qmd://docs/readme.md")!;
+    expect(hit.fts_score).toBe(Math.max(a, b));
+  });
+
+  test("the MCP query tool carries fts_score on rerank:false", async () => {
+    const { status, json } = await callQueryTool(
+      { searches: [{ type: "lex", query: "readme" }], collections: ["docs"], limit: 5, rerank: false },
+    );
+    expect(status).toBe(200);
+    const [first] = json.result.structuredContent.results;
+    expect(first!.fts_score).toBeGreaterThan(0);
+    expect(first).not.toHaveProperty("vec_score");
+  });
+
+  // vec sub-queries embed the query and rerank:true loads the reranker — CI refuses both.
+  test.skipIf(!!process.env.CI)("rerank:false vec results carry vec_score", async () => {
+    const { status, json } = await postSearches({ searches: [{ type: "vec", query: "project readme" }], rerank: false });
+    expect(status).toBe(200);
+    expect(json.results.length).toBeGreaterThan(0);
+    for (const r of json.results) {
+      expect(typeof r.vec_score).toBe("number");
+      expect(r).not.toHaveProperty("fts_score");
+    }
+  });
+
+  test.skipIf(!!process.env.CI)("rerank:true responses carry neither raw score (REST and MCP)", async () => {
+    const rest = await postSearches({ searches: [{ type: "lex", query: "readme" }], rerank: true });
+    expect(rest.status).toBe(200);
+    const mcp = await callQueryTool({ searches: [{ type: "lex", query: "readme" }], collections: ["docs"], limit: 5, rerank: true });
+    for (const r of [...rest.json.results, ...mcp.json.result.structuredContent.results]) {
+      expect(r).not.toHaveProperty("fts_score");
+      expect(r).not.toHaveProperty("vec_score");
+    }
+  });
+
   test("off by default: no log file", async () => {
     await postQuery();
     await flushQueryLog();
@@ -1576,7 +1648,12 @@ describe("REST /query, MCP query and the query log", () => {
       client: { tag: "explore", qid: "run-1", role: "primary" },
     });
     expect(rows[0].index.docs).toBeGreaterThan(0);
-    expect(rows[0].results[0]).toEqual({ file: "docs/readme.md", score: json.results[0]!.score, rank: 1 });
+    expect(rows[0].results[0]).toEqual({
+      file: "docs/readme.md",
+      score: json.results[0]!.score,
+      fts_score: json.results[0]!.fts_score,
+      rank: 1,
+    });
     expect(rows[0].results).toHaveLength(json.results.length);
     expect(typeof rows[0].ms).toBe("number");
   });
@@ -1625,6 +1702,7 @@ describe("REST /query, MCP query and the query log", () => {
     expect(rows[0].results[0]).toEqual({
       file: "docs/readme.md",
       score: json.result.structuredContent.results[0]!.score,
+      fts_score: json.result.structuredContent.results[0]!.fts_score,
       rank: 1,
     });
   });

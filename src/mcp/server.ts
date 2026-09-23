@@ -25,6 +25,7 @@ import {
   type QMDStore,
   type ExpandedQuery,
   type IndexStatus,
+  type HybridQueryExplain,
 } from "../index.js";
 import { getConfigPath } from "../collections.js";
 import { enableProductionMode } from "../store.js";
@@ -44,9 +45,26 @@ type SearchResultItem = {
   file: string;
   title: string;
   score: number;
+  vec_score?: number;
+  fts_score?: number;
   context: string | null;
   line: number;   // Absolute line in source markdown
   snippet: string;
+};
+
+const roundScore = (score: number): number => Math.round(score * 100) / 100;
+
+/**
+ * ko-qmd: raw backend scores for `rerank:false` hits, whose `score` is 1/rank
+ * and cannot be thresholded. Max over the sub-queries that returned the hit;
+ * a backend that did not return it is omitted, never 0.
+ */
+const rawBackendScores = (explain: HybridQueryExplain | undefined): { vec_score?: number; fts_score?: number } => {
+  if (!explain) return {};
+  return {
+    ...(explain.vectorScores.length > 0 && { vec_score: roundScore(Math.max(...explain.vectorScores)) }),
+    ...(explain.ftsScores.length > 0 && { fts_score: roundScore(Math.max(...explain.ftsScores)) }),
+  };
 };
 
 type StatusResult = {
@@ -411,7 +429,7 @@ Intent-aware lex (C++ performance, not sports):
           "Background context to disambiguate the query. Example: query='performance', intent='web page load times and Core Web Vitals'. Does not search on its own."
         ),
         rerank: z.boolean().optional().default(true).describe(
-          "Rerank results using LLM (default: true). Set to false for faster results on CPU-only machines."
+          "Rerank results using LLM (default: true). Set to false for faster results on CPU-only machines; `score` is then the 1/rank fusion position, and each result adds `vec_score` (cosine similarity) and `fts_score` (normalized BM25) for the backends that returned it."
         ),
       }),
     },
@@ -461,6 +479,8 @@ Intent-aware lex (C++ performance, not sports):
         minScore,
         candidateLimit,
         rerank,
+        // rerank:false scores are 1/rank; explain carries the raw backend scores.
+        explain: rerank === false,
         intent,
         filter,
       });
@@ -478,7 +498,8 @@ Intent-aware lex (C++ performance, not sports):
           docid: `#${r.docid}`,
           file: r.displayPath,
           title: r.title,
-          score: Math.round(r.score * 100) / 100,
+          score: roundScore(r.score),
+          ...rawBackendScores(r.explain),
           context: r.context,
           line,
           snippet: addLineNumbers(snippet, line),
@@ -1213,6 +1234,7 @@ export async function startMcpHttpServer(
 
         await refreshBeforeQuery(store, effectiveCollections);
 
+        const rerank = typeof params.rerank === "boolean" ? params.rerank : undefined;
         const results = await store.search({
           queries,
           collections: effectiveCollections.length > 0 ? effectiveCollections : undefined,
@@ -1220,7 +1242,9 @@ export async function startMcpHttpServer(
           minScore: typeof params.minScore === "number" ? params.minScore : 0,
           candidateLimit: typeof params.candidateLimit === "number" ? params.candidateLimit : undefined,
           intent: typeof params.intent === "string" ? params.intent : undefined,
-          rerank: typeof params.rerank === "boolean" ? params.rerank : undefined,
+          rerank,
+          // rerank:false scores are 1/rank; explain carries the raw backend scores.
+          explain: rerank === false,
           filter: restFilter,
         });
 
@@ -1235,7 +1259,8 @@ export async function startMcpHttpServer(
             docid: `#${r.docid}`,
             file: `qmd://${encodeQmdPath(r.displayPath)}`,
             title: r.title,
-            score: Math.round(r.score * 100) / 100,
+            score: roundScore(r.score),
+            ...rawBackendScores(r.explain),
             context: r.context,
             line,
             snippet: addLineNumbers(snippet, line),
