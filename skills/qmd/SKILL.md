@@ -253,6 +253,9 @@ indexes syllable bigrams, but it does not undo verb endings.
 - **`lex:` gets stems, aliases and English terms.** Write nouns and stems
   (`회의록 정리`, not `회의록을 정리해`). Add the page's aliases or English/romanized
   names as separate sub-queries (`lex: 벡터 검색`, `lex: vector search`).
+  Hangul spellings of common tech loanwords (`서치`, `웹`, `코어`, `마이그레이션`)
+  also match their Latin spelling automatically; project names and identifiers
+  outside that built-in table still need their own English sub-query.
 - **`vec:` gets a Korean paraphrase.** Full sentences are fine here — the default
   embedding model (Qwen3-Embedding-0.6B) is multilingual.
 - **Do not paste the user's sentence into `lex:`.** Particles and endings stay in

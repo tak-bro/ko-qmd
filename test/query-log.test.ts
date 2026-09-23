@@ -128,6 +128,26 @@ describe("row", () => {
     expect(JSON.stringify(row)).not.toMatch(/snippet|body/);
   });
 
+  test("raw backend scores ride along when present and stay absent otherwise", async () => {
+    logQuery(baseEntry({
+      results: [
+        { file: "qmd://docs/a%20b.md", score: 1, vec_score: 0.62, fts_score: 0.81 },
+        { file: "qmd://docs/sub/c.md", score: 0.5, fts_score: 0.4 },
+        { file: "qmd://docs/d.md", score: 0.33 },
+      ],
+    }), fakeStore);
+    await flushQueryLog();
+    const [row] = readRows();
+    expect(row.v).toBe(1);
+    expect(row.results).toEqual([
+      { file: "docs/a b.md", score: 1, vec_score: 0.62, fts_score: 0.81, rank: 1 },
+      { file: "docs/sub/c.md", score: 0.5, fts_score: 0.4, rank: 2 },
+      { file: "docs/d.md", score: 0.33, rank: 3 },
+    ]);
+    expect(row.results[2]).not.toHaveProperty("vec_score");
+    expect(row.results[2]).not.toHaveProperty("fts_score");
+  });
+
   test("file is created 0600", async () => {
     logQuery(baseEntry(), fakeStore);
     await flushQueryLog();

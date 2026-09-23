@@ -188,7 +188,11 @@ and last update), `via` (`rest` or `mcp`), the searches (a plain MCP `query`
 argument is recorded as one search of type `auto`), collections, limit, rerank
 flag, each result's
 `<collection>/<path>`, score and rank, and the elapsed milliseconds — no
-snippets or document text. Clients can annotate rows with request headers:
+snippets or document text. On `rerank:false` rows each result also carries the
+raw backend scores the response returned, `vec_score` (cosine similarity) and
+`fts_score` (normalized BM25), since `score` there is only the 1/rank fusion
+position; each is absent, never 0, when that backend did not return the hit,
+and the row schema stays `v: 1`. Clients can annotate rows with request headers:
 
 | Header | Row field |
 |--------|-----------|

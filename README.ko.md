@@ -11,12 +11,13 @@
 1. 패키징: 이름·repository·플러그인 marketplace owner, `publish.yml` 은 `ko-qmd` 로 발행, CI에 `windows-latest`와 Electron 스모크 잡 추가
 2. Hangul FTS (`src/hangul.ts`, `store.ts` 접점 2곳)
    - 질의: 따옴표 없는 한글 단어는 끝 조사 하나 또는 `기`를 뗀 어간도 매칭한다(`검색을` → `검색`, 어간 2음절 이상). 따옴표 구문·한자·가나는 그대로.
+   - 외래어 다리: 기술 용어의 한글 외래어 표기(`서치`·`웹`·`코어`·`마이그레이션` 등 약 80개, `hangul.ts` 내장 표)는 영문 표기를 OR 로 함께 찾는다(`하이브리드 서치` → `hybrid search`). 어간에도 적용(`서치를` → `search`), 영문과 붙은 한글 구간도(`qmd서치`). 붙여 쓴 한글 복합어(`레몬웹코어`)와 1음절 항목에 조사가 붙은 꼴(`웹을`)은 대상 아님. 질의 쪽만 바뀌므로 재색인 불필요.
    - 색인: 한글 구간의 음절 bigram을 필드 끝에 덧붙인다. `FTS_CJK_NORMALIZED_VERSION`이 `"2"`라 기존 인덱스는 처음 열 때 FTS를 한 번 다시 만든다.
 3. 한국어 기본값
    - 기본 임베딩 모델: `hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf`(업스트림은 embeddinggemma-300M). [README.md](README.md)의 모델 표·"Custom Embedding Model"·"Model Configuration" 절도 이 기본값 기준으로 고쳐 뒀다. 리랭커·질의 확장 모델은 업스트림 기본값 그대로.
    - 스킬 `skills/qmd/SKILL.md`에 "Korean queries" 절(`lex:`에 어간·alias·영문 용어, `vec:`에 한국어 패러프레이즈).
 
-4. 데몬 질의 로그 (`src/query-log.ts`, `server.ts` 접점 = REST 핸들러·MCP `query` 툴·`status` 툴): `QMD_QUERY_LOG=1` 로 띄운 HTTP 데몬이 REST 검색과 HTTP MCP `query` 툴 호출마다 `queries-YYYY-MM.jsonl` 에 한 줄을 남긴다(stdio MCP 는 남기지 않는다)(결과 경로·점수, 스니펫 없음). 헤더 `X-QMD-Tag`·`X-QMD-Qid`·`X-QMD-Role`·`X-QMD-No-Log`. 계약은 [README.md § Query log](README.md#query-log-ko-qmd). 업스트림 PR 대상 아님.
+4. 데몬 질의 로그 (`src/query-log.ts`, `server.ts` 접점 = REST 핸들러·MCP `query` 툴·`status` 툴): `QMD_QUERY_LOG=1` 로 띄운 HTTP 데몬이 REST 검색과 HTTP MCP `query` 툴 호출마다 `queries-YYYY-MM.jsonl` 에 한 줄을 남긴다(stdio MCP 는 남기지 않는다)(결과 경로·점수, 스니펫 없음). `rerank:false` 응답·로그 행에는 결과마다 원시 점수 `vec_score`(코사인 유사도)·`fts_score`(정규화 BM25)가 붙는다 — 그 경로의 `score`는 1/순위라 임계값을 걸 수 없다. 헤더 `X-QMD-Tag`·`X-QMD-Qid`·`X-QMD-Role`·`X-QMD-No-Log`. 계약은 [README.md § Query log](README.md#query-log-ko-qmd). 업스트림 PR 대상 아님.
 5. 모델 idle 타임아웃 env (`src/llm.ts` `LlamaCpp` 생성자): `QMD_LLM_IDLE_TIMEOUT_MS` 가 `createStore()` 의 5분 고정값보다 우선한다. `0` 이면 모델을 내리지 않는다 — 상주 데몬의 첫 검색이 모델을 다시 올리지 않게 하는 용도다.
 
 ### 기본 임베딩 변경 후 재임베딩
@@ -44,7 +45,9 @@ bash scripts/dogfood.sh --check "RESULT bm25_r5=…"   # 게이트 판정만
 
 ### ko-vault 벤치
 
-`bash scripts/bench-ko.sh` (픽스처 `test/fixtures/ko-vault/`, 문서 28·질의 36, 임베딩은 픽스처 `models.yml`의 embeddinggemma로 고정). 표와 run별 수치는 [BASELINE.md](test/fixtures/ko-vault/BASELINE.md).
+`bash scripts/bench-ko.sh` (픽스처 `test/fixtures/ko-vault/`, 문서 28·질의 63, 임베딩은 픽스처 `models.yml`의 Qwen3-Embedding-0.6B-Q8_0으로 고정 — 패키지 기본값과 같다). run별 수치는 [BASELINE.md](test/fixtures/ko-vault/BASELINE.md).
+
+아래 표는 질의 36·embeddinggemma 시절의 단계별 기록이다.
 
 | 단계 | bm25_r5 | vector_r5 | full_r5 |
 |---|---|---|---|
@@ -52,7 +55,7 @@ bash scripts/dogfood.sh --check "RESULT bm25_r5=…"   # 게이트 판정만
 | + 질의 조사 처리 (B2) | 0.6528 | 0.9861 | 1.0000 |
 | + bigram 색인 (B3) | 0.6528 | 0.9861 | 1.0000 |
 
-Qwen3-Embedding 기본값의 벤치 수치는 미측정이다(design §6 라운드 M1).
+Qwen3-Embedding 기본값에서 질의 52는 bm25_r5 0.9519 · vector_r5 1.0000 · full_r5 1.0000이다. 질의 63은 외래어 표기 질의 11건(`하이브리드 서치` → `hybrid-search.md`)을 더한 것으로, 그 11건의 bm25_r5는 BASELINE.md 2026-09-23 절에 따로 적는다.
 
 ## 설치
 

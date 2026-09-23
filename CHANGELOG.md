@@ -4,6 +4,22 @@
 
 ### Changes
 
+- Plain Hangul lex terms that spell a common technical loanword (`서치`, `웹`,
+  `코어`, `마이그레이션`, about 80 entries in a built-in table) also match the
+  Latin spelling, so `하이브리드 서치` finds a note that only says
+  `hybrid-search` and `레몬 웹 코어` reaches `lemon-web-core`. The lookup runs
+  on particle-stripped stems too (`서치를`), single-syllable entries (`웹`, `훅`)
+  are bridged when they stand alone (not `웹을`), and terms with no entry produce the same FTS5 query as before.
+  Query-side only; no re-index. On the ko-vault bench the eleven new loanword
+  queries go from bm25_r5 0.0000 to 1.0000 while the original 52 hold at
+  0.9519 per query.
+- REST `POST /query` and the MCP `query` tool attach `vec_score` (cosine
+  similarity) and `fts_score` (normalized BM25) to each result on the
+  `rerank:false` path, where `score` is the 1/rank fusion position and cannot
+  be thresholded. Each is the max over the sub-queries that returned the hit
+  and is omitted, never 0, when that backend did not return it. The daemon
+  query log (`QMD_QUERY_LOG`) records the same two fields per result; the row
+  schema stays `v: 1` and `rerank:true` responses are unchanged.
 - Korean documents are chunked at their real token budget instead of the
   English-tuned 3.0 chars/token: `estimateCharsPerToken` blends CJK and other
   scripts as a harmonic mean (measured ko 1.64 / en 6.08 chars per token on

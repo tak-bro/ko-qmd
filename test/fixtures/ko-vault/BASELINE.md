@@ -292,3 +292,52 @@ RESULT bm25_r5=0.9519 vector_r5=1.0000 hybrid_r5=0.9904 full_r5=1.0000 full_mrr=
 
 Identical on every metric: Korean rerank chunks get smaller (~1440 vs ~3600 chars target) but
 the winning chunk per query is unchanged, so bm25/vector/hybrid/full all hold.
+
+## 2026-09-23 — loanword alias queries (`ali-12`…`ali-22`)
+
+Eleven `alias` queries spell a Latin identifier in Hangul loanword form (`하이브리드 서치` for
+`hybrid-search.md`, `디시전 레코드` for `decision-record.md`, …); none of the loanwords appears
+in the fixture text, so lex can only reach the target through the Latin form. The fixture grows
+from 52 to 63 queries, so the overall `bm25_r5` below is not comparable with earlier rows — the
+split is. Before the loanword bridge, run at `c68f63c` + fixture change:
+
+```
+RESULT bm25_r5=0.7857 vector_r5=1.0000 hybrid_r5=0.9921 full_r5=1.0000 full_mrr=0.9802   # before
+```
+
+| subset | bm25_r5 | vector_r5 | hybrid_r5 | full_r5 |
+|---|---|---|---|---|
+| original 52 | 0.9519 | 1.0000 | 0.9904 | 1.0000 |
+| loanword 11 | 0.0000 | 1.0000 | 1.0000 | 1.0000 |
+
+Every loanword query returns zero lex results: FTS5 ANDs the terms and the Hangul loanword
+matches nothing. The vector path already finds all eleven, so the gap is lex-only — it matters
+where lex runs alone or carries the fusion (the knowledge-base seam sends raw query as lex + vec,
+and the standing miss `레몬 웹 코어` is this shape against a real vault).
+
+After the loanword bridge (`hangulLoanwordForms` in `hangulTermQuery`):
+
+```
+RESULT bm25_r5=0.9603 vector_r5=1.0000 hybrid_r5=1.0000 full_r5=1.0000 full_mrr=0.9802   # after
+```
+
+| subset | bm25_r5 | vector_r5 | hybrid_r5 | full_r5 |
+|---|---|---|---|---|
+| original 52 | 0.9519 | 1.0000 | 1.0000 | 1.0000 |
+| loanword 11 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+
+Per query, bm25 recall@5 and MRR on the original 52 are identical before and after. Four
+original queries moved on hybrid MRR or recall (`ali-01`, `ali-06`, `top-01`, `ko-11`), in both
+directions; `ali-01` (`inverted index`) has no Hangul and never reaches the bridge, so these are
+run-to-run variance from re-embedding, not the change. The loanword table covers every
+loanword in these eleven queries by construction — the bench shows the bridge works and does
+not disturb the rest, not how much of a real vault's vocabulary the table covers.
+
+A rerun at ship time gave `hybrid_r5=0.9841` with everything else equal: `ko-11` (`검색하기`)
+sat at hybrid rank 4 in the run above and at rank 6 here, while its bm25 result did not move.
+Hybrid numbers on this fixture wobble by one query between runs; bm25 per query is the stable
+regression signal.
+
+```
+RESULT bm25_r5=0.9603 vector_r5=1.0000 hybrid_r5=0.9841 full_r5=1.0000 full_mrr=0.9802   # after, rerun
+```

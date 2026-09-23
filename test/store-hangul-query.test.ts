@@ -18,6 +18,7 @@ import { normalizeCjkForFTS } from "../src/store.js";
 import {
   estimateCharsPerToken,
   hangulBigramTail,
+  hangulLoanwordForms,
   hangulMixedQuery,
   hangulStems,
   hangulTermQuery,
@@ -106,6 +107,42 @@ describe("hangulTermQuery", () => {
   });
 });
 
+describe("hangulLoanwordForms", () => {
+  test("maps a Hangul loanword to its Latin spelling", () => {
+    expect(hangulLoanwordForms("서치")).toEqual(["search"]);
+    expect(hangulLoanwordForms("웹")).toEqual(["web"]);
+  });
+
+  test("native words and unknown loanwords map to nothing", () => {
+    expect(hangulLoanwordForms("검색")).toEqual([]);
+    expect(hangulLoanwordForms("역색인")).toEqual([]);
+  });
+
+  test("looks up the particle-stripped stem, once", () => {
+    expect(hangulLoanwordForms("서치를")).toEqual(["search"]);
+  });
+});
+
+describe("hangulTermQuery with loanwords", () => {
+  test("ORs the Latin spelling as one quoted phrase after the Hangul phrases", () => {
+    expect(hangulTermQuery("서치를")).toBe('("서치" OR "서 치" OR "서치 치를" OR "서 치 를" OR "search")');
+    expect(hangulTermQuery("엔그램")).toBe('("엔그 그램" OR "엔 그 램" OR "ngram" OR "n gram")');
+  });
+
+  test("a single-syllable loanword queries its character and Latin spelling", () => {
+    expect(hangulTermQuery("웹")).toBe('("웹" OR "web")');
+  });
+
+  test("a Hangul run inside a script-mixed term is bridged too", () => {
+    expect(hangulMixedQuery("qmd서치")).toBe('("qmd"* AND ("서치" OR "서 치" OR "search"))');
+  });
+
+  test("a word with no loanword entry is unchanged", () => {
+    expect(hangulTermQuery("역색인")).toBe('("역색 색인" OR "역 색 인")');
+    expect(hangulTermQuery("책")).toBeNull();
+  });
+});
+
 describe("hangulMixedQuery", () => {
   test("splits a script-mixed term into ANDed runs", () => {
     expect(hangulMixedQuery("qmd색인을")).toBe('("qmd"* AND ("색인" OR "색 인" OR "색인 인을" OR "색 인 을"))');
@@ -157,6 +194,7 @@ describe("searchLex with Hangul particles", () => {
     const docs = join(root, "docs");
     await mkdir(docs, { recursive: true });
     await writeFile(join(docs, "ko.md"), "# 검색 품질\n\n역색인 구조를 설명한다. qmd 색인은 FTS5 위에서 돈다.\n");
+    await writeFile(join(docs, "hybrid-search.md"), "# hybrid-search\n\nBM25 and vector lists fused over n-gram tokens. Notes on the lemon web core.\n");
     await writeFile(join(docs, "zh.md"), "# 中文检索说明\n\n关键词检索。\n");
     await writeFile(join(docs, "ja.md"), "# 日本語検索メモ\n\n検索品質について。\n");
     store = await createStore({
@@ -190,6 +228,12 @@ describe("searchLex with Hangul particles", () => {
   test("unsuffixed and single-syllable terms still match inside words", async () => {
     expect(await files("색인")).toEqual([expect.stringContaining("ko.md")]);
     expect(await files("품")).toEqual([expect.stringContaining("ko.md")]);
+  });
+
+  test("Hangul loanword spellings reach Latin-identifier documents", async () => {
+    expect(await files("하이브리드 서치")).toEqual([expect.stringContaining("hybrid-search.md")]);
+    expect(await files("엔그램 토큰을")).toEqual([expect.stringContaining("hybrid-search.md")]);
+    expect(await files("레몬 웹 코어")).toEqual([expect.stringContaining("hybrid-search.md")]);
   });
 
   test("quoted phrases stay exact over character tokens", async () => {

@@ -1,5 +1,5 @@
 {
-  "description": "Synthetic Korean vault search benchmark (A2). Distribution exact 7 / alias 11 / semantic 11 / topical 4 / cross-domain 3. Korean-specific kinds tagged in query description as ko:particle, ko:spacing, ko:alias.",
+  "description": "Synthetic Korean vault search benchmark (A2). Distribution exact 19 / alias 24 / semantic 11 / topical 6 / cross-domain 3. Korean-specific kinds tagged in query description as ko:particle, ko:spacing, ko:alias, ko:loanword.",
   "version": 1,
   "collection": "ko-vault",
   "queries": [
@@ -527,6 +527,116 @@
       ],
       "description": "ko:spacing+particle",
       "expected_in_top_k": 1
+    },
+    {
+      "id": "ali-12",
+      "type": "alias",
+      "query": "하이브리드 서치",
+      "expected_files": [
+        "wiki/hybrid-search.md"
+      ],
+      "description": "ko:loanword — 한글 외래어 표기로 영문 식별자 문서 찾기 (hybrid search)",
+      "expected_in_top_k": 5
+    },
+    {
+      "id": "ali-13",
+      "type": "alias",
+      "query": "프로버넌스 트래킹",
+      "expected_files": [
+        "wiki/provenance-tracking.md"
+      ],
+      "description": "ko:loanword — 한글 외래어 표기로 영문 식별자 문서 찾기 (provenance tracking)",
+      "expected_in_top_k": 5
+    },
+    {
+      "id": "ali-14",
+      "type": "alias",
+      "query": "인버티드 인덱스",
+      "expected_files": [
+        "wiki/inverted-index.md"
+      ],
+      "description": "ko:loanword — 한글 외래어 표기로 영문 식별자 문서 찾기 (inverted index)",
+      "expected_in_top_k": 5
+    },
+    {
+      "id": "ali-15",
+      "type": "alias",
+      "query": "바이그램",
+      "expected_files": [
+        "wiki/ngram-tokenization.md"
+      ],
+      "description": "ko:loanword — 한글 외래어 표기로 영문 식별자 문서 찾기 (bigram)",
+      "expected_in_top_k": 5
+    },
+    {
+      "id": "ali-16",
+      "type": "alias",
+      "query": "엔그램 토크나이제이션",
+      "expected_files": [
+        "wiki/ngram-tokenization.md"
+      ],
+      "description": "ko:loanword — 한글 외래어 표기로 영문 식별자 문서 찾기 (n-gram tokenization)",
+      "expected_in_top_k": 5
+    },
+    {
+      "id": "ali-17",
+      "type": "alias",
+      "query": "어펜드 온리 아카이브",
+      "expected_files": [
+        "wiki/append-only-archive.md"
+      ],
+      "description": "ko:loanword — 한글 외래어 표기로 영문 식별자 문서 찾기 (append-only archive)",
+      "expected_in_top_k": 5
+    },
+    {
+      "id": "ali-18",
+      "type": "alias",
+      "query": "스페이스드 리피티션",
+      "expected_files": [
+        "wiki/spaced-repetition.md"
+      ],
+      "description": "ko:loanword — 한글 외래어 표기로 영문 식별자 문서 찾기 (spaced repetition)",
+      "expected_in_top_k": 5
+    },
+    {
+      "id": "ali-19",
+      "type": "alias",
+      "query": "디시전 레코드",
+      "expected_files": [
+        "wiki/decision-record.md"
+      ],
+      "description": "ko:loanword — 한글 외래어 표기로 영문 식별자 문서 찾기 (decision record)",
+      "expected_in_top_k": 5
+    },
+    {
+      "id": "ali-20",
+      "type": "alias",
+      "query": "레시프로컬 랭크 퓨전",
+      "expected_files": [
+        "wiki/reciprocal-rank-fusion.md"
+      ],
+      "description": "ko:loanword — 한글 외래어 표기로 영문 식별자 문서 찾기 (reciprocal rank fusion)",
+      "expected_in_top_k": 5
+    },
+    {
+      "id": "ali-21",
+      "type": "alias",
+      "query": "쿼리 익스팬션",
+      "expected_files": [
+        "wiki/query-expansion.md"
+      ],
+      "description": "ko:loanword — 한글 외래어 표기로 영문 식별자 문서 찾기 (query expansion)",
+      "expected_in_top_k": 5
+    },
+    {
+      "id": "ali-22",
+      "type": "alias",
+      "query": "골든 데이터셋",
+      "expected_files": [
+        "wiki/golden-dataset.md"
+      ],
+      "description": "ko:loanword — 한글 외래어 표기로 영문 식별자 문서 찾기 (golden dataset)",
+      "expected_in_top_k": 5
     }
   ]
 }
