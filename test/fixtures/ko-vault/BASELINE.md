@@ -332,3 +332,12 @@ directions; `ali-01` (`inverted index`) has no Hangul and never reaches the brid
 run-to-run variance from re-embedding, not the change. The loanword table covers every
 loanword in these eleven queries by construction — the bench shows the bridge works and does
 not disturb the rest, not how much of a real vault's vocabulary the table covers.
+
+A rerun at ship time gave `hybrid_r5=0.9841` with everything else equal: `ko-11` (`검색하기`)
+sat at hybrid rank 4 in the run above and at rank 6 here, while its bm25 result did not move.
+Hybrid numbers on this fixture wobble by one query between runs; bm25 per query is the stable
+regression signal.
+
+```
+RESULT bm25_r5=0.9603 vector_r5=1.0000 hybrid_r5=0.9841 full_r5=1.0000 full_mrr=0.9802   # after, rerun
+```

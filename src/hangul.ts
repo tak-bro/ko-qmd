@@ -132,12 +132,12 @@ function contractions(stem: string): string[] {
  */
 export function hangulTermQuery(term: string): string | null {
   if (!HANGUL_WORD_PATTERN.test(term)) return null;
-  const loanwords = hangulLoanwordForms(term).map((form) => `"${form}"`);
+  const stems = hangulStems(term);
+  const loanwords = loanwordForms([term, ...stems]).map((form) => `"${form}"`);
   if (Array.from(term).length < 2) {
     return loanwords.length > 0 ? `(${[`"${term}"`, ...loanwords].join(" OR ")})` : null;
   }
   const phrases = (s: string) => [`"${syllableBigrams(s).join(" ")}"`, `"${Array.from(s).join(" ")}"`];
-  const stems = hangulStems(term);
   return `(${[...stems.flatMap(phrases), ...phrases(term), ...loanwords].join(" OR ")})`;
 }
 
@@ -235,8 +235,11 @@ const LOANWORDS: Readonly<Record<string, readonly string[]>> = {
  * its particle-stripped stems so `서치를` bridges too. Empty when nothing matches.
  */
 export function hangulLoanwordForms(term: string): string[] {
-  const forms = [term, ...hangulStems(term)].flatMap((word) => LOANWORDS[word] ?? []);
-  return [...new Set(forms)];
+  return loanwordForms([term, ...hangulStems(term)]);
+}
+
+function loanwordForms(words: readonly string[]): string[] {
+  return [...new Set(words.flatMap((word) => LOANWORDS[word] ?? []))];
 }
 
 /**

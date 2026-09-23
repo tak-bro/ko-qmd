@@ -1473,26 +1473,20 @@ describe("REST /query, MCP query and the query log", () => {
     if (configDir) rmSync(configDir, { recursive: true, force: true });
   });
 
-  const postQuery = async (headers: Record<string, string> = {}) => {
-    const res = await fetch(`${baseUrl}/query`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...headers },
-      body: JSON.stringify({ searches: [{ type: "lex", query: "readme" }], collections: ["docs"], limit: 5, rerank: false }),
-    });
-    return { status: res.status, json: await res.json() as RestQueryResponse };
-  };
-
   type RawScoredResult = { file: string; score: number; vec_score?: number; fts_score?: number };
   type RestQueryResponse = { results: (RawScoredResult & { snippet: string })[] };
 
-  const postSearches = async (body: Record<string, unknown>) => {
+  const postSearches = async (body: Record<string, unknown>, headers: Record<string, string> = {}) => {
     const res = await fetch(`${baseUrl}/query`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...headers },
       body: JSON.stringify({ collections: ["docs"], limit: 5, ...body }),
     });
     return { status: res.status, json: await res.json() as RestQueryResponse };
   };
+
+  const postQuery = (headers: Record<string, string> = {}) =>
+    postSearches({ searches: [{ type: "lex", query: "readme" }], rerank: false }, headers);
 
   type StatusToolResponse = {
     result: { structuredContent: { queryLog: QueryLogStatus }; content: { text: string }[] };
