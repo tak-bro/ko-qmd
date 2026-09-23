@@ -236,6 +236,20 @@ describe("searchLex with Hangul particles", () => {
     expect(await files("레몬 웹 코어")).toEqual([expect.stringContaining("hybrid-search.md")]);
   });
 
+  // Hangul-only terms joined by a separator take the character-phrase fallback (no stems, no
+  // loanwords) — before and after upstream's separator split. `레몬-웹` / `검색-품질을` still miss.
+  test("separator-joined and script-mixed Hangul terms keep matching", async () => {
+    expect(await files("검색-품질")).toEqual([expect.stringContaining("ko.md")]);
+    expect(await files('"검색-품질"')).toEqual([expect.stringContaining("ko.md")]);
+    expect(await files("qmd-색인")).toEqual([expect.stringContaining("ko.md")]);
+    expect(await files("hybrid-search서치")).toEqual([expect.stringContaining("hybrid-search.md")]);
+    expect(await files("hybrid -검색-품질")).toEqual([expect.stringContaining("hybrid-search.md")]);
+  });
+
+  test("a quoted hyphenated Latin term matches its separator-split tokens", async () => {
+    expect(await files('"hybrid-search"')).toEqual([expect.stringContaining("hybrid-search.md")]);
+  });
+
   test("quoted phrases stay exact over character tokens", async () => {
     expect(await files('"검색을"')).toEqual([]);
     expect(await files('"검색 품질"')).toEqual([expect.stringContaining("ko.md")]);
