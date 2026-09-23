@@ -1157,7 +1157,7 @@ Semantics:
 Guarantees and limits:
 
 - Every returned result satisfies the filter, before RRF fusion and reranking.
-- Like collection filtering, highly selective filters are best-effort for top-K completeness: backends over-fetch and post-filter, so a very selective filter can return fewer than `limit` results.
+- Like collection filtering, highly selective filters are best-effort for top-K completeness: backends over-fetch and post-filter, so a very selective filter can return fewer than `limit` results. (ko-qmd: a metadata filter takes the same full-scan / exact-scan path as `--path`, so a selective filter still returns its own best matches.)
 - Filtered search only considers documents whose metadata has been extracted (run `qmd update` after upgrading; `qmd status` shows the pending count).
 
 JSON output (`--format json`), the SDK, MCP structured results, and the HTTP endpoints include each result's indexed metadata.

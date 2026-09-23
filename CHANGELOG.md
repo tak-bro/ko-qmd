@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Breaking
+
+- SDK: ko-qmd's path/time narrowing option is now `scope` (was `filter`) on
+  `search()`, `searchLex()` and `searchVector()`, and the trailing `scope`
+  parameter of `searchFTS`/`searchVec`. `filter` is upstream's metadata filter.
+  CLI `--path/--since/--until` and REST/MCP `path/since/until` are unchanged,
+  and a request may pass both — a result has to satisfy each.
+
+### Upstream sync
+
+- Merged tobi/qmd `main` up to `04e4dbd` (24 commits past v2.8.3): oxlint
+  fence (`bun run lint` is oxlint; the tsc check is `bun run test:types`),
+  metadata filtering, separator-aware FTS terms (quoted `"PIO-1384"` now
+  matches), REST JSON body guard, Windows index names, unreadable-gguf
+  diagnostics and the store-local embedding tokenizer. ko-qmd behaviour is
+  kept: the Hangul query branch runs ahead of the separator split, a metadata
+  filter gets the same anti-starvation scan as `--path`, and bm25 on the
+  ko-vault bench is identical per query.
+
 ### Added
 
 - Added Oxlint lint fence.

@@ -350,3 +350,11 @@ the sync slices diff against (bm25 recall@5 + MRR, all 63 queries).
 ```
 RESULT bm25_r5=0.9603 vector_r5=1.0000 hybrid_r5=0.9921 full_r5=1.0000 full_mrr=0.9802   # pre-sync
 ```
+
+After the last sync merge (`04e4dbd`); the same run held after the metadata (`a6764bc`) and
+separator (`bfb0bcc`) merges. bm25 recall@5 and MRR are identical to the pre-sync run on all 63
+queries.
+
+```
+RESULT bm25_r5=0.9603 vector_r5=1.0000 hybrid_r5=0.9921 full_r5=1.0000 full_mrr=0.9802   # post-sync
+```
