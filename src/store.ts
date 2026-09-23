@@ -39,6 +39,15 @@ import type {
   CollectionConfig,
   ContextMap,
 } from "./collections.js";
+import { METADATA_EXTRACTION_VERSION, type DocumentMetadata } from "./metadata.js";
+import { compileMetadataFilter, type MetadataFilter } from "./metadata-filter.js";
+import {
+  initializeMetadataSchema,
+  syncDocumentMetadata,
+  countDocumentsPendingMetadata,
+  getMetadataByFilepath,
+  parseMetadataJson,
+} from "./metadata-store.js";
 
 // =============================================================================
 // Configuration
@@ -891,19 +900,16 @@ function containsCjk(text: string): boolean {
 }
 
 function sanitizeFTS5Phrase(phrase: string): string {
-  // Dotted tokens (1.0.21, 2026.4.10) are indexed as adjacent parts by the
-  // porter unicode61 tokenizer. Stripping the dots would produce "1021",
-  // which never matches — split them into phrase terms instead (#757).
+  // A quoted phrase is matched against tokens the porter unicode61 tokenizer
+  // produced, and that tokenizer splits document text on every separator.
+  // Deleting the separators here instead would collapse "1.0.21" to "1021" and
+  // "PIO-1384" to "pio1384", tokens no document holds, so the query returns
+  // nothing with no error (#757 for dots, #916 for the rest). Split on the same
+  // separators the tokenizer does and emit the parts as adjacent phrase terms.
   // ko-qmd: query phrases use character tokens only, not the bigram tail.
   return spaceCjkRuns(phrase)
     .split(/\s+/)
-    .flatMap(t => {
-      if (isDottedToken(t)) {
-        return t.split('.').map(p => sanitizeFTS5Term(p)).filter(p => p);
-      }
-      const sanitized = sanitizeFTS5Term(t);
-      return sanitized ? [sanitized] : [];
-    })
+    .flatMap(t => splitFTS5CompoundTerm(t))
     .join(' ');
 }
 
@@ -1264,6 +1270,10 @@ function initializeDatabase(db: Database): void {
 
   ensureContentVectorsStatusIndex(db);
 
+  // Document metadata — extraction state plus normalized value rows for
+  // metadata filtering. Keyed by document identity, not content hash.
+  initializeMetadataSchema(db);
+
   // Store collections — makes the DB self-contained (no external config needed)
   db.exec(`
     CREATE TABLE IF NOT EXISTS store_collections (
@@ -1542,8 +1552,8 @@ export type Store = {
   toVirtualPath: (absolutePath: string) => string | null;
 
   // Search
-  searchFTS: (query: string, limit?: number, collectionName?: string | readonly string[], filter?: DocumentFilter) => SearchResult[];
-  searchVec: (query: string, model: string, limit?: number, collectionName?: string | readonly string[], session?: ILLMSession, precomputedEmbedding?: number[], filter?: DocumentFilter) => Promise<SearchResult[]>;
+  searchFTS: (query: string, limit?: number, collectionName?: string | readonly string[], filter?: MetadataFilter, scope?: DocumentFilter) => SearchResult[];
+  searchVec: (query: string, model: string, limit?: number, collectionName?: string | readonly string[], session?: ILLMSession, precomputedEmbedding?: number[], filter?: MetadataFilter, scope?: DocumentFilter) => Promise<SearchResult[]>;
 
   // Query expansion & reranking
   expandQuery: (query: string, model?: string) => Promise<ExpandedQuery[]>;
@@ -1563,7 +1573,7 @@ export type Store = {
 
   // Document indexing operations
   insertContent: (hash: string, content: string, createdAt: string) => void;
-  insertDocument: (collectionName: string, path: string, title: string, hash: string, createdAt: string, modifiedAt: string) => void;
+  insertDocument: (collectionName: string, path: string, title: string, hash: string, createdAt: string, modifiedAt: string) => number;
   findActiveDocument: (collectionName: string, path: string) => { id: number; hash: string; title: string } | null;
   findOrMigrateLegacyDocument: (collectionName: string, path: string) => { id: number; hash: string; title: string } | null;
   updateDocumentTitle: (documentId: number, title: string, modifiedAt: string) => void;
@@ -1608,6 +1618,8 @@ export type ReindexResult = {
   orphanedCleaned: number;
   skipped: number;
   skippedFiles: ReindexSkippedFile[];
+  /** Documents whose qmd.metadata frontmatter failed extraction this pass. */
+  metadataErrors: number;
 };
 
 /**
@@ -1659,7 +1671,7 @@ export async function reindexCollection(
   const files = await listCollectionFiles(collectionPath, globPattern, options?.ignorePatterns);
 
   const total = files.length;
-  let indexed = 0, updated = 0, unchanged = 0, processed = 0;
+  let indexed = 0, updated = 0, unchanged = 0, processed = 0, metadataErrors = 0;
   const skippedFiles: ReindexSkippedFile[] = [];
   const seenPaths = new Set<string>();
   // Literal paths of every file in this scan. Passed to the legacy-path
@@ -1706,8 +1718,13 @@ export async function reindexCollection(
 
     const existing = findOrMigrateLegacyDocument(db, collectionName, path, livePaths);
 
+    let documentId: number;
+    let contentChanged = true;
+
     if (existing) {
+      documentId = existing.id;
       if (existing.hash === hash) {
+        contentChanged = false;
         if (existing.title !== title) {
           updateDocumentTitle(db, existing.id, title, now);
           updated++;
@@ -1725,10 +1742,15 @@ export async function reindexCollection(
       indexed++;
       insertContent(db, hash, content, now);
       const stat = statSync(filepath);
-      insertDocument(db, collectionName, path, title, hash,
+      documentId = insertDocument(db, collectionName, path, title, hash,
         stat ? new Date(stat.birthtime).toISOString() : now,
         stat ? new Date(stat.mtime).toISOString() : now);
     }
+
+    // Unchanged content still backfills missing or stale extraction state.
+    const extraction = syncDocumentMetadata(db, documentId, content, path,
+      contentChanged ? undefined : { onlyIfStale: true });
+    if (extraction?.error) metadataErrors++;
 
     processed++;
     options?.onProgress?.({ file: relativeFile, current: processed, total });
@@ -1746,7 +1768,7 @@ export async function reindexCollection(
 
   const orphanedCleaned = cleanupOrphanedContent(db);
 
-  return { indexed, updated, unchanged, removed, orphanedCleaned, skipped: skippedFiles.length, skippedFiles };
+  return { indexed, updated, unchanged, removed, orphanedCleaned, skipped: skippedFiles.length, skippedFiles, metadataErrors };
 }
 
 export type EmbedFailure = {
@@ -2108,7 +2130,8 @@ export async function generateEmbeddings(
         if (!doc.body.trim()) continue;
 
         const title = extractTitle(doc.body, doc.path);
-        const chunks = await chunkDocumentByTokens(
+        const chunks = await chunkDocumentByTokensWithLlm(
+          llm,
           doc.body,
           undefined, undefined, undefined,
           doc.path,
@@ -2302,8 +2325,8 @@ export function createStore(dbPath?: string): Store {
     toVirtualPath: (absolutePath: string) => toVirtualPath(db, absolutePath),
 
     // Search
-    searchFTS: (query: string, limit?: number, collectionName?: string | readonly string[], filter?: DocumentFilter) => searchFTS(db, query, limit, collectionName, filter),
-    searchVec: (query: string, model: string, limit?: number, collectionName?: string | readonly string[], session?: ILLMSession, precomputedEmbedding?: number[], filter?: DocumentFilter) => searchVec(db, query, model, limit, collectionName, session, precomputedEmbedding, getLlm(store), filter),
+    searchFTS: (query: string, limit?: number, collectionName?: string | readonly string[], filter?: MetadataFilter, scope?: DocumentFilter) => searchFTS(db, query, limit, collectionName, filter, scope),
+    searchVec: (query: string, model: string, limit?: number, collectionName?: string | readonly string[], session?: ILLMSession, precomputedEmbedding?: number[], filter?: MetadataFilter, scope?: DocumentFilter) => searchVec(db, query, model, limit, collectionName, session, precomputedEmbedding, getLlm(store), filter, scope),
 
     // Query expansion & reranking
     expandQuery: (query: string, model?: string) => expandQuery(query, model ?? store.llm?.generateModelName ?? DEFAULT_QUERY_MODEL, db, store.llm),
@@ -2447,6 +2470,7 @@ export function handelize(path: string): string {
  * Search result extends DocumentResult with score and source info
  */
 export type SearchResult = DocumentResult & {
+  metadata: DocumentMetadata;
   score: number;              // Relevance score (0-1)
   source: "fts" | "vec";      // Search source (full-text or vector)
   matchMode?: "all" | "any";  // ko-qmd: "any" marks a relaxed FTS retry (weaker evidence)
@@ -2542,6 +2566,8 @@ export type IndexStatus = {
   totalDocuments: number;
   needsEmbedding: number;
   hasVectorIndex: boolean;
+  /** Active documents without current, error-free metadata extraction. */
+  pendingMetadata: number;
   collections: CollectionInfo[];
 };
 
@@ -2619,7 +2645,16 @@ export async function maybeAdoptLegacyEmbeddingFingerprint(store: Store, model: 
   const llm = getLlm(store);
 
   return await withLLMSessionForLlm(llm, async (session) => {
-    const chunks = await chunkDocumentByTokens(sample.body, undefined, undefined, undefined, sample.path, undefined, session.signal);
+    const chunks = await chunkDocumentByTokensWithLlm(
+      llm,
+      sample.body,
+      undefined,
+      undefined,
+      undefined,
+      sample.path,
+      undefined,
+      session.signal,
+    );
     const chunk = chunks[sample.seq];
     if (!chunk) {
       return { checked: true, adopted: 0, reason: `sample chunk ${expectedHashSeq} no longer exists` };
@@ -2668,7 +2703,14 @@ export function getIndexHealth(db: Database, model: string = DEFAULT_EMBED_MODEL
 // Caching
 // =============================================================================
 
-export function getCacheKey(url: string, body: object): string {
+export type CacheKeyBody = {
+  query?: string;
+  model?: string;
+  chunk?: string;
+  file?: string;
+};
+
+export function getCacheKey(url: string, body: CacheKeyBody): string {
   const hash = createHash("sha256");
   hash.update(url);
   hash.update(JSON.stringify(body));
@@ -2964,6 +3006,7 @@ function rebuildDocumentFTS(db: Database, documentId: number): void {
 
 /**
  * Insert a new document into the documents table.
+ * Returns the document's id so callers can attach document-scoped state.
  */
 export function insertDocument(
   db: Database,
@@ -2973,7 +3016,7 @@ export function insertDocument(
   hash: string,
   createdAt: string,
   modifiedAt: string
-): void {
+): number {
   db.prepare(`
     INSERT INTO documents (collection, path, title, hash, created_at, modified_at, active)
     VALUES (?, ?, ?, ?, ?, ?, 1)
@@ -2985,7 +3028,10 @@ export function insertDocument(
   `).run(collectionName, path, title, hash, createdAt, modifiedAt);
 
   const row = db.prepare(`SELECT id FROM documents WHERE collection = ? AND path = ?`).get(collectionName, path) as { id: number } | undefined;
-  if (row) rebuildDocumentFTS(db, row.id);
+  if (!row) throw new Error(`Document row missing after insert: ${collectionName}/${path}`);
+
+  rebuildDocumentFTS(db, row.id);
+  return row.id;
 }
 
 /**
@@ -3269,7 +3315,8 @@ const SEARCH_PATH_OTHER_CHARS_PER_TOKEN = CHUNK_SIZE_CHARS / CHUNK_SIZE_TOKENS;
  * When filepath and chunkStrategy are provided, uses AST-aware break points
  * for supported code files.
  */
-export async function chunkDocumentByTokens(
+async function chunkDocumentByTokensWithLlm(
+  llm: LlamaCpp,
   content: string,
   maxTokens: number = CHUNK_SIZE_TOKENS,
   overlapTokens: number = CHUNK_OVERLAP_TOKENS,
@@ -3278,8 +3325,6 @@ export async function chunkDocumentByTokens(
   chunkStrategy: ChunkStrategy = "regex",
   signal?: AbortSignal
 ): Promise<{ text: string; pos: number; tokens: number }[]> {
-  const llm = getDefaultLlamaCpp();
-
   // Script-aware chars/token estimate from the document's own text: CJK prose
   // measures 1.64 chars/token on Qwen3-Embedding-0.6B-Q8_0 (2026-09-21, ko
   // 1380 chars / 842 tokens) while English measures 6.08 (2680 / 441) but
@@ -3367,6 +3412,27 @@ export async function chunkDocumentByTokens(
   }
 
   return results;
+}
+
+export async function chunkDocumentByTokens(
+  content: string,
+  maxTokens: number = CHUNK_SIZE_TOKENS,
+  overlapTokens: number = CHUNK_OVERLAP_TOKENS,
+  windowTokens: number = CHUNK_WINDOW_TOKENS,
+  filepath?: string,
+  chunkStrategy: ChunkStrategy = "regex",
+  signal?: AbortSignal,
+): Promise<{ text: string; pos: number; tokens: number }[]> {
+  return await chunkDocumentByTokensWithLlm(
+    getDefaultLlamaCpp(),
+    content,
+    maxTokens,
+    overlapTokens,
+    windowTokens,
+    filepath,
+    chunkStrategy,
+    signal,
+  );
 }
 
 // =============================================================================
@@ -3890,41 +3956,30 @@ export function sanitizeFTS5Term(term: string): string {
 }
 
 /**
- * Check if a token is a hyphenated compound word (e.g., multi-agent, DEC-0054, gpt-4).
- * Returns true if the token contains internal hyphens between word/digit characters.
+ * A run of characters the FTS tokenizer treats as a separator.
+ *
+ * `documents_fts` is tokenized with `porter unicode61`, which starts a new
+ * token at every character that is not a letter or a digit. Underscore is one
+ * of those, but it is deliberately kept here rather than split on: FTS5 applies
+ * the same tokenizer to a quoted phrase, so leaving `apply_secrets` intact lets
+ * it split symmetrically into `apply secrets` on both sides, and that is the
+ * behaviour #305 shipped. The apostrophe is kept for the same reason.
  */
-function isHyphenatedToken(token: string): boolean {
-  return /^[\p{L}\p{N}][\p{L}\p{N}'-]*-[\p{L}\p{N}][\p{L}\p{N}'-]*$/u.test(token);
-}
+const FTS5_SEPARATOR_RUN = /[^\p{L}\p{N}'_]+/u;
 
 /**
- * Sanitize a hyphenated term into an FTS5 phrase by splitting on hyphens
- * and sanitizing each part. Returns the parts joined by spaces for use
- * inside FTS5 quotes: "multi agent" matches "multi-agent" in porter tokenizer.
+ * Split one query term the way the tokenizer split the document text, and
+ * sanitize each part.
+ *
+ * `PIO-1384` becomes ["pio", "1384"], `src/lib/i18n.ts` becomes
+ * ["src", "lib", "i18n", "ts"], and a term with no separator in it comes back
+ * as a single part. Callers join the parts into an FTS5 phrase, which is what
+ * makes the parts have to be adjacent in the document rather than merely all
+ * present. Parts that sanitize to nothing are dropped, so a term that is all
+ * punctuation yields an empty list and the caller skips it.
  */
-function sanitizeHyphenatedTerm(term: string): string {
-  return term.split('-').map(t => sanitizeFTS5Term(t)).filter(t => t).join(' ');
-}
-
-/**
- * Check if a token is a dotted version/version-like string (e.g., 2026.4.10, 3.14.0).
- * Returns true if splitting on dots yields at least 2 non-empty parts consisting of
- * word/digit characters only. This avoids incorrectly splitting tokens with leading/
- * trailing dots. Version strings like "2026.4.10" split into ["2026","4","10"] (3 parts).
- */
-function isDottedToken(token: string): boolean {
-  const parts = token.split('.');
-  return parts.length >= 2 && parts.every(p => p.length > 0 && /^[\p{L}\p{N}_]+$/u.test(p));
-}
-
-/**
- * Sanitize a dotted term into individual FTS5 tokens joined with AND.
- * e.g. "2026.4.10" → '"2026"* AND "4"* AND "10"*'
- * The AND ensures all parts must appear, matching how the porter tokenizer
- * indexes dotted strings.
- */
-function sanitizeDottedTerm(term: string): string {
-  return term.split('.').map(t => sanitizeFTS5Term(t)).filter(t => t).map(t => `"${t}"*`).join(' AND ');
+function splitFTS5CompoundTerm(term: string): string[] {
+  return term.split(FTS5_SEPARATOR_RUN).map(p => sanitizeFTS5Term(p)).filter(p => p);
 }
 
 /**
@@ -3933,7 +3988,8 @@ function sanitizeDottedTerm(term: string): string {
  * Supports:
  * - Quoted phrases: "exact phrase" → "exact phrase" (exact match)
  * - Negation: -term or -"phrase" → uses FTS5 NOT operator
- * - Hyphenated tokens: multi-agent, DEC-0054, gpt-4 → treated as phrases
+ * - Terms holding a separator: multi-agent, DEC-0054, gpt-4, 2026.4.10,
+ *   src/lib/i18n.ts, @tobilu/qmd → treated as phrases over their parts
  * - Plain terms: term → "term"* (prefix match)
  *
  * FTS5 NOT is a binary operator: `term1 NOT term2` means "match term1 but not term2".
@@ -3950,6 +4006,8 @@ function sanitizeDottedTerm(term: string): string {
  *   multi-agent memory      → "multi agent" AND "memory"*
  *   DEC-0054               → "dec 0054"
  *   -multi-agent            → NOT "multi agent"
+ *   "DEC-0054"              → "dec 0054"
+ *   src/lib/i18n.ts         → "src lib i18n ts"
  */
 /**
  * ko-qmd: how the positive terms are joined.
@@ -4000,41 +4058,12 @@ function buildFTS5Query(query: string, join: TermJoin = "all"): string | null {
       while (i < s.length && !/[\s"]/.test(s[i]!)) i++;
       const term = s.slice(start, i);
 
-      // Handle hyphenated tokens: multi-agent, DEC-0054, gpt-4
-      // These get split into phrase queries so FTS5 porter tokenizer matches them.
-      // ko-qmd: script-mixed terms are split before the hyphen/dot handling below —
-      // those branches would keep the Hangul run glued into one unsearchable phrase.
+      // ko-qmd: script-mixed terms are split into runs first — the CJK branch below would
+      // make the whole term one character phrase, losing particle stems, loanwords and
+      // bigram weight for its Hangul run.
       const mixed = negated ? null : hangulMixedQuery(term);
       if (mixed) {
         positive.push(mixed);
-      } else if (isHyphenatedToken(term)) {
-        const sanitized = sanitizeHyphenatedTerm(term);
-        if (sanitized) {
-          const ftsPhrase = `"${sanitized}"`;  // Phrase match (no prefix)
-          if (negated) {
-            negative.push(ftsPhrase);
-          } else {
-            positive.push(ftsPhrase);
-          }
-        }
-      } else if (isDottedToken(term)) {
-        // Handle dotted version strings: 2026.4.10, 3.14.0, v1.2.3
-        // The porter tokenizer splits on dots, so the index has individual tokens.
-        // We AND all parts together so the query matches documents containing all parts.
-        const sanitized = sanitizeDottedTerm(term);
-        if (sanitized) {
-          // sanitizeDottedTerm already wraps each part in quotes with prefix match
-          if (negated) {
-            // Wrap multi-token AND expression in parens for NOT negation
-            negative.push(`(${sanitized})`);
-          } else {
-            // Flatten individual AND'd terms into the positive list so they combine
-            // correctly with other terms (avoids double-wrapping in outer AND).
-            for (const part of sanitized.split(' AND ')) {
-              positive.push(part.trim());
-            }
-          }
-        }
       } else if (containsCjk(term)) {
         // ko-qmd: Hangul words query bigrams and their particle-stripped stem
         const hangul = negated ? null : hangulTermQuery(term);
@@ -4050,9 +4079,16 @@ function buildFTS5Query(query: string, join: TermJoin = "all"): string | null {
           }
         }
       } else {
-        const sanitized = sanitizeFTS5Term(term);
-        if (sanitized) {
-          const ftsTerm = `"${sanitized}"*`;  // Prefix match
+        // Any separator inside the term (multi-agent, DEC-0054, 2026.4.10,
+        // src/lib/i18n.ts, @tobilu/qmd) split it at index time too, so the term
+        // has to be matched as the phrase those parts form. A term with no
+        // separator is one part and keeps its prefix match, which is what makes
+        // a plain word still match longer words that start with it.
+        const parts = splitFTS5CompoundTerm(term);
+        if (parts.length > 0) {
+          const ftsTerm = parts.length > 1
+            ? `"${parts.join(' ')}"`   // Phrase match (no prefix)
+            : `"${parts[0]}"*`;        // Prefix match
           if (negated) {
             negative.push(ftsTerm);
           } else {
@@ -4185,15 +4221,15 @@ export function countFilteredDocuments(
   return { kept, total: rows.length };
 }
 
-export function searchFTS(db: Database, query: string, limit: number = 20, collectionName?: string | readonly string[], filter?: DocumentFilter): SearchResult[] {
+export function searchFTS(db: Database, query: string, limit: number = 20, collectionName?: string | readonly string[], filter?: MetadataFilter, scope?: DocumentFilter): SearchResult[] {
   const names = scopedCollectionNames(collectionName);
   // Search each requested collection before merging/truncating so a large
   // unrelated collection cannot occupy global top-k and starve the rest (#775).
   if (names && names.length > 1) {
-    return mergeSearchResultsByScore(names.map(name => searchFTS(db, query, limit, name, filter)), limit);
+    return mergeSearchResultsByScore(names.map(name => searchFTS(db, query, limit, name, filter, scope)), limit);
   }
   const collectionFilter = names?.[0];
-  const filtered = isNarrowing(filter);
+  const filtered = isNarrowing(scope) || filter !== undefined;
 
   const ftsQuery = buildFTS5Query(query);
   if (!ftsQuery) return [];
@@ -4210,7 +4246,7 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
     // since some will be filtered out. Without a collection filter we can
     // fetch exactly the requested limit.
     const breadth = Math.max(limit, MIN_RETRIEVAL_BREADTH);
-    // A document filter has to narrow the corpus, not the answer. Taking the top `ftsLimit`
+    // A path/time scope or a metadata filter has to narrow the corpus, not the answer. Taking the top `ftsLimit`
     // and *then* dropping what the filter excludes is the starvation #791/#803 already cost
     // us: ask for `journals/**` and the top 200 global hits may hold none of it. So when a
     // filter is in play every FTS match is a candidate, capped only against a pathological
@@ -4233,9 +4269,11 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
         d.title,
         d.hash,
         d.modified_at,
-        fm.bm25_score
+        fm.bm25_score,
+        dm.metadata_json
       FROM fts_matches fm
       JOIN documents d ON d.id = fm.rowid
+      LEFT JOIN document_metadata dm ON dm.document_id = d.id
       WHERE d.active = 1
     `;
 
@@ -4244,30 +4282,37 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
       params.push(String(collectionFilter));
     }
 
-    if (filter?.sinceIso) {
-      sql += ` AND d.modified_at >= ?`;
-      params.push(filter.sinceIso);
+    if (filter) {
+      // Only documents with current, error-free extraction can match — an
+      // unprocessed document must not accidentally satisfy `exists: false`.
+      const compiledFilter = compileMetadataFilter(filter, "d");
+      sql += ` AND dm.extraction_version = ${METADATA_EXTRACTION_VERSION} AND dm.extraction_error IS NULL AND ${compiledFilter.sql}`;
+      params.push(...compiledFilter.params);
     }
-    if (filter?.untilIso) {
+    if (scope?.sinceIso) {
+      sql += ` AND d.modified_at >= ?`;
+      params.push(scope.sinceIso);
+    }
+    if (scope?.untilIso) {
       sql += ` AND d.modified_at <= ?`;
-      params.push(filter.untilIso);
+      params.push(scope.untilIso);
     }
 
     // bm25 lower is better; sort ascending. Path globs are matched below rather than here:
     // `Database` spans better-sqlite3 and bun:sqlite, and neither shares a way to register
     // the picomatch predicate as a SQL function. Dropping the inner LIMIT above is what
     // keeps this from being a post-filter on a truncated pool.
-    const matchingPaths = (filter?.paths?.length ?? 0) > 0;
+    const matchingPaths = (scope?.paths?.length ?? 0) > 0;
     sql += ` ORDER BY fm.bm25_score ASC`;
     if (!matchingPaths) {
       sql += ` LIMIT ?`;
       params.push(limit);
     }
 
-    type CandidateRow = { filepath: string; display_path: string; title: string; hash: string; modified_at: string; bm25_score: number };
+    type CandidateRow = { filepath: string; display_path: string; title: string; hash: string; modified_at: string; bm25_score: number; metadata_json: string | null };
     const candidates = db.prepare(sql).all(...params) as CandidateRow[];
     const rows = matchingPaths
-      ? candidates.filter(row => matchesPaths(row.display_path, filter)).slice(0, limit)
+      ? candidates.filter(row => matchesPaths(row.display_path, scope)).slice(0, limit)
       : candidates;
     if (rows.length === 0) return [];
 
@@ -4304,6 +4349,7 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
         bodyLength: body.length,
         body,
         context: getContextForFile(db, row.filepath),
+        metadata: parseMetadataJson(row.metadata_json),
         score,
         source: "fts" as const,
         matchMode,
@@ -4328,12 +4374,13 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
 const SQLITE_VEC_MAX_K = 4096;
 
 /**
- * Max collection-scoped vectors for an exact cosine scan. Above this we fall
+ * Max filter-eligible vectors for an exact cosine scan. Above this we fall
  * back to global ANN with a capped over-fetch. Exact scan avoids the
- * post-filter starvation of small collections (#791, #803); ANN remains for
- * very large collections where a full scan would be expensive.
+ * post-filter starvation of small eligible sets — originally small
+ * collections (#791, #803), now also selective metadata filters; ANN remains
+ * for very large eligible sets where a full scan would be expensive.
  */
-const COLLECTION_VEC_EXACT_SCAN_MAX = 20_000;
+const FILTERED_VEC_EXACT_SCAN_MAX = 20_000;
 
 const VEC_HASH_SEQ_IN_CHUNK = 400;
 
@@ -4382,7 +4429,7 @@ function annVecScan(
   `).all(new Float32Array(embedding), vecK) as { hash_seq: string; distance: number }[];
 }
 
-export async function searchVec(db: Database, query: string, model: string, limit: number = 20, collectionName?: string | readonly string[], session?: ILLMSession, precomputedEmbedding?: number[], llm?: LlamaCpp, filter?: DocumentFilter): Promise<SearchResult[]> {
+export async function searchVec(db: Database, query: string, model: string, limit: number = 20, collectionName?: string | readonly string[], session?: ILLMSession, precomputedEmbedding?: number[], llm?: LlamaCpp, filter?: MetadataFilter, scope?: DocumentFilter): Promise<SearchResult[]> {
   const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
   if (!tableExists) return [];
 
@@ -4392,12 +4439,12 @@ export async function searchVec(db: Database, query: string, model: string, limi
   const names = scopedCollectionNames(collectionName);
   if (names && names.length > 1) {
     const lists = await Promise.all(
-      names.map(name => searchVec(db, query, model, limit, name, session, embedding, llm, filter)),
+      names.map(name => searchVec(db, query, model, limit, name, session, embedding, llm, filter, scope)),
     );
     return mergeSearchResultsByScore(lists, limit);
   }
   const collectionFilter = names?.[0];
-  const filtered = isNarrowing(filter);
+  const filtered = isNarrowing(scope) || filter !== undefined;
   const breadth = Math.max(limit, MIN_RETRIEVAL_BREADTH);
 
   // IMPORTANT: We use a two-step query approach here because sqlite-vec virtual tables
@@ -4407,11 +4454,11 @@ export async function searchVec(db: Database, query: string, model: string, limi
 
   // Step 1: Get vector matches from sqlite-vec (no JOINs allowed).
   //
-  // Collection filter cannot be pushed into MATCH (sqlite-vec has no join-safe
-  // predicate here). Global ANN + post-filter starves small collections: they
-  // never enter the top-k (#791, #803). Multiplier over-fetch alone is not
-  // enough either — sqlite-vec caps k at 4096. For a collection filter we
-  // therefore exact-scan that collection's vectors when the set is small
+  // Collection and metadata filters cannot be pushed into MATCH (sqlite-vec
+  // has no join-safe predicate here). Global ANN + post-filter starves small
+  // eligible sets: they never enter the top-k (#791, #803). Multiplier
+  // over-fetch alone is not enough either — sqlite-vec caps k at 4096. For a
+  // filter we therefore exact-scan the eligible vectors when the set is small
   // enough, and only then fall back to capped ANN + post-filter.
   //
   // A document filter is the same shape of problem as a collection filter and gets the same
@@ -4420,37 +4467,49 @@ export async function searchVec(db: Database, query: string, model: string, limi
   let vecResults: { hash_seq: string; distance: number }[];
 
   if (collectionFilter || filtered) {
-    const scopeParams: string[] = [];
-    let scopeSql = `
-        SELECT cv.hash || '_' || cv.seq AS hash_seq, d.collection || '/' || d.path AS display_path
-        FROM content_vectors cv
-        JOIN documents d ON d.hash = cv.hash AND d.active = 1
-        WHERE 1 = 1
+    let eligibleSql = `
+      SELECT DISTINCT cv.hash || '_' || cv.seq AS hash_seq, d.collection || '/' || d.path AS display_path
+      FROM content_vectors cv
+      JOIN documents d ON d.hash = cv.hash AND d.active = 1
     `;
+    const eligibleConditions: string[] = ["1 = 1"];
+    const eligibleParams: (string | number)[] = [];
+
     if (collectionFilter) {
-      scopeSql += ` AND d.collection = ?`;
-      scopeParams.push(String(collectionFilter));
+      eligibleConditions.push(`d.collection = ?`);
+      eligibleParams.push(collectionFilter);
     }
-    if (filter?.sinceIso) {
-      scopeSql += ` AND d.modified_at >= ?`;
-      scopeParams.push(filter.sinceIso);
+    if (scope?.sinceIso) {
+      eligibleConditions.push(`d.modified_at >= ?`);
+      eligibleParams.push(scope.sinceIso);
     }
-    if (filter?.untilIso) {
-      scopeSql += ` AND d.modified_at <= ?`;
-      scopeParams.push(filter.untilIso);
+    if (scope?.untilIso) {
+      eligibleConditions.push(`d.modified_at <= ?`);
+      eligibleParams.push(scope.untilIso);
+    }
+    if (filter) {
+      const compiledFilter = compileMetadataFilter(filter, "d");
+      eligibleSql += ` JOIN document_metadata dm ON dm.document_id = d.id`;
+      eligibleConditions.push(`dm.extraction_version = ${METADATA_EXTRACTION_VERSION}`);
+      eligibleConditions.push(`dm.extraction_error IS NULL`);
+      eligibleConditions.push(compiledFilter.sql);
+      eligibleParams.push(...compiledFilter.params);
     }
 
-    const scopeRows = withLazyContentVectorMigration(db, () =>
-      db.prepare(scopeSql).all(...scopeParams) as { hash_seq: string; display_path: string }[],
-    );
-    const collectionHashSeqs = scopeRows
-      .filter(r => matchesPaths(r.display_path, filter))
+    eligibleSql += ` WHERE ${eligibleConditions.join(" AND ")}`;
+
+    const eligibleHashSeqs = withLazyContentVectorMigration(db, () =>
+      db.prepare(eligibleSql).all(...eligibleParams) as { hash_seq: string; display_path: string }[],
+    )
+      .filter(r => matchesPaths(r.display_path, scope))
       .map(r => r.hash_seq);
+    // Identical content under two paths shares a hash_seq; count and scan it once.
+    const uniqueEligibleHashSeqs = [...new Set(eligibleHashSeqs)];
 
-    if (collectionHashSeqs.length === 0) return [];
+    if (uniqueEligibleHashSeqs.length === 0) return [];
 
-    if (collectionHashSeqs.length <= COLLECTION_VEC_EXACT_SCAN_MAX) {
-      vecResults = exactVecScanByHashSeq(db, embedding, collectionHashSeqs, breadth);
+    if (uniqueEligibleHashSeqs.length <= FILTERED_VEC_EXACT_SCAN_MAX) {
+      vecResults = exactVecScanByHashSeq(db, embedding, uniqueEligibleHashSeqs, breadth);
     } else {
       // Past the exact-scan ceiling: ANN with over-fetch, hard-capped at sqlite-vec's max k.
       // The document predicate is re-applied below, so a filter this broad still answers —
@@ -4477,36 +4536,46 @@ export async function searchVec(db: Database, query: string, model: string, limi
       'qmd://' || d.collection || '/' || d.path as filepath,
       d.collection || '/' || d.path as display_path,
       d.title,
-      content.doc as body
+      content.doc as body,
+      dm.metadata_json
     FROM content_vectors cv
     JOIN documents d ON d.hash = cv.hash AND d.active = 1
     JOIN content ON content.hash = d.hash
+    LEFT JOIN document_metadata dm ON dm.document_id = d.id
     WHERE cv.hash || '_' || cv.seq IN (${placeholders})
   `;
-  const params: string[] = [...hashSeqs];
+  const params: (string | number)[] = [...hashSeqs];
 
   if (collectionFilter) {
     docSql += ` AND d.collection = ?`;
     params.push(collectionFilter);
   }
-  if (filter?.sinceIso) {
+  if (scope?.sinceIso) {
     docSql += ` AND d.modified_at >= ?`;
-    params.push(filter.sinceIso);
+    params.push(scope.sinceIso);
   }
-  if (filter?.untilIso) {
+  if (scope?.untilIso) {
     docSql += ` AND d.modified_at <= ?`;
-    params.push(filter.untilIso);
+    params.push(scope.untilIso);
+  }
+
+  if (filter) {
+    // Re-apply the filter on the document join: vectors are content-scoped,
+    // so one hash can belong to both matching and non-matching documents.
+    const compiledFilter = compileMetadataFilter(filter, "d");
+    docSql += ` AND dm.extraction_version = ${METADATA_EXTRACTION_VERSION} AND dm.extraction_error IS NULL AND ${compiledFilter.sql}`;
+    params.push(...compiledFilter.params);
   }
 
   const docRows = withLazyContentVectorMigration(db, () => db.prepare(docSql).all(...params) as {
     hash_seq: string; hash: string; pos: number; filepath: string;
-    display_path: string; title: string; body: string;
+    display_path: string; title: string; body: string; metadata_json: string | null;
   }[]);
 
   // Combine with distances and dedupe by filepath
   const seen = new Map<string, { row: typeof docRows[0]; bestDist: number }>();
   for (const row of docRows) {
-    if (!matchesPaths(row.display_path, filter)) continue;
+    if (!matchesPaths(row.display_path, scope)) continue;
     const distance = distanceMap.get(row.hash_seq) ?? 1;
     const existing = seen.get(row.filepath);
     if (!existing || distance < existing.bestDist) {
@@ -4530,6 +4599,7 @@ export async function searchVec(db: Database, query: string, model: string, limi
         bodyLength: row.body.length,
         body: row.body,
         context: getContextForFile(db, row.filepath),
+        metadata: parseMetadataJson(row.metadata_json),
         score: 1 - bestDist,  // Cosine similarity = 1 - cosine distance
         source: "vec" as const,
         chunkPos: row.pos,
@@ -5448,6 +5518,7 @@ export function getStatus(db: Database, model: string = DEFAULT_EMBED_MODEL): In
     totalDocuments: totalDocs,
     needsEmbedding,
     hasVectorIndex: hasVectors,
+    pendingMetadata: countDocumentsPendingMetadata(db),
     collections,
   };
 }
@@ -5632,6 +5703,7 @@ export interface SearchHooks {
 
 export interface HybridQueryOptions {
   collection?: string | readonly string[];
+  filter?: MetadataFilter;  // metadata filter applied to every retrieval call
   limit?: number;           // default 10
   minScore?: number;        // default 0
   candidateLimit?: number;  // default RERANK_CANDIDATE_LIMIT
@@ -5639,7 +5711,7 @@ export interface HybridQueryOptions {
   intent?: string;          // domain intent hint for disambiguation
   skipRerank?: boolean;     // skip LLM reranking, use only RRF scores
   chunkStrategy?: ChunkStrategy;
-  filter?: DocumentFilter;  // narrow the corpus by path glob and modified_at
+  scope?: DocumentFilter;   // narrow the corpus by path glob and modified_at
   hooks?: SearchHooks;
 }
 
@@ -5653,7 +5725,21 @@ export interface HybridQueryResult {
   score: number;            // blended score (full precision)
   context: string | null;   // user-set context
   docid: string;            // content hash prefix (6 chars)
+  metadata: DocumentMetadata; // indexed qmd.metadata for the document
   explain?: HybridQueryExplain;
+}
+
+/**
+ * Attach canonical metadata to final search results with one batch query.
+ * Runs after RRF/reranking so metadata is never duplicated through the
+ * intermediate ranked lists.
+ */
+function attachResultMetadata<T extends { file: string }>(
+  db: Database,
+  results: T[],
+): (T & { metadata: DocumentMetadata })[] {
+  const metadataByFilepath = getMetadataByFilepath(db, results.map(r => r.file));
+  return results.map(r => ({ ...r, metadata: metadataByFilepath.get(r.file) ?? {} }));
 }
 
 export type RankedListMeta = {
@@ -5767,10 +5853,11 @@ export async function hybridQuery(
   const minScore = options?.minScore ?? 0;
   const candidateLimit = options?.candidateLimit ?? RERANK_CANDIDATE_LIMIT;
   const collection = options?.collection;
+  const filter = options?.filter;
   const explain = options?.explain ?? false;
   const intent = options?.intent;
   const skipRerank = options?.skipRerank ?? false;
-  const filter = options?.filter;
+  const scope = options?.scope;
   const hooks = options?.hooks;
 
   const rankedLists: RankedResult[][] = [];
@@ -5784,8 +5871,10 @@ export async function hybridQuery(
   // When intent is provided, disable strong-signal bypass — the obvious BM25
   // match may not be what the caller wants (e.g. "performance" with intent
   // "web page load times" should NOT shortcut to a sports-performance doc).
-  // Pass collection directly into FTS query (filter at SQL level, not post-hoc)
-  const initialFts = store.searchFTS(query, 20, collection, filter);
+  // Pass collection and metadata filter directly into FTS query (filter at
+  // SQL level, not post-hoc) — the strong-signal decision must be based only
+  // on eligible documents.
+  const initialFts = store.searchFTS(query, 20, collection, filter, scope);
   const topScore = initialFts[0]?.score ?? 0;
   const secondScore = initialFts[1]?.score ?? 0;
   // ko-qmd: a relaxed match is never a strong signal — it did not match all the words.
@@ -5826,7 +5915,7 @@ export async function hybridQuery(
   // 3a: Run FTS for all lex expansions right away (no LLM needed)
   for (const q of expanded) {
     if (q.type === 'lex') {
-      const ftsResults = store.searchFTS(q.query, 20, collection, filter);
+      const ftsResults = store.searchFTS(q.query, 20, collection, filter, scope);
       if (ftsResults.length > 0) {
         for (const r of ftsResults) docidMap.set(r.filepath, r.docid);
         rankedLists.push(ftsResults.map(r => ({
@@ -5868,7 +5957,7 @@ export async function hybridQuery(
 
       const vecResults = await store.searchVec(
         vecQueries[i]!.text, embedModel, 20, collection,
-        undefined, embedding, filter
+        undefined, embedding, filter, scope
       );
       if (vecResults.length > 0) {
         for (const r of vecResults) docidMap.set(r.filepath, r.docid);
@@ -5953,7 +6042,7 @@ export async function hybridQuery(
   if (skipRerank) {
     // Skip LLM reranking — return candidates scored by RRF only
     const seenFiles = new Set<string>();
-    return candidates
+    const rrfResults = candidates
       .map((cand, i) => {
         const chunkInfo = docChunkMap.get(cand.file);
         const bestIdx = chunkInfo?.bestIdx ?? 0;
@@ -5998,6 +6087,7 @@ export async function hybridQuery(
       })
       .filter(r => r.score >= minScore)
       .slice(0, limit);
+    return attachResultMetadata(store.db, rrfResults);
   }
 
   // Step 6: Rerank chunks (NOT full bodies)
@@ -6064,7 +6154,7 @@ export async function hybridQuery(
 
   // Step 8: Dedup by file (safety net — prevents duplicate output)
   const seenFiles = new Set<string>();
-  return blended
+  const finalResults = blended
     .filter(r => {
       if (seenFiles.has(r.file)) return false;
       seenFiles.add(r.file);
@@ -6072,14 +6162,16 @@ export async function hybridQuery(
     })
     .filter(r => r.score >= minScore)
     .slice(0, limit);
+  return attachResultMetadata(store.db, finalResults);
 }
 
 export interface VectorSearchOptions {
   collection?: string | readonly string[];
+  filter?: MetadataFilter;  // metadata filter applied to every retrieval call
   limit?: number;           // default 10
   minScore?: number;        // default 0.3
   intent?: string;          // domain intent hint for disambiguation
-  filter?: DocumentFilter;  // narrow the corpus by path glob and modified_at
+  scope?: DocumentFilter;   // narrow the corpus by path glob and modified_at
   hooks?: Pick<SearchHooks, 'onExpand'>;
 }
 
@@ -6091,6 +6183,7 @@ export interface VectorSearchResult {
   score: number;
   context: string | null;
   docid: string;
+  metadata: DocumentMetadata;
 }
 
 /**
@@ -6110,8 +6203,9 @@ export async function vectorSearchQuery(
   const limit = options?.limit ?? 10;
   const minScore = options?.minScore ?? 0.3;
   const collection = options?.collection;
-  const intent = options?.intent;
   const filter = options?.filter;
+  const intent = options?.intent;
+  const scope = options?.scope;
 
   const hasVectors = !!store.db.prepare(
     `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`
@@ -6129,7 +6223,7 @@ export async function vectorSearchQuery(
   const queryTexts = [query, ...vecExpanded.map(q => q.query)];
   const allResults = new Map<string, VectorSearchResult>();
   for (const q of queryTexts) {
-    const vecResults = await store.searchVec(q, embedModel, limit, collection, undefined, undefined, filter);
+    const vecResults = await store.searchVec(q, embedModel, limit, collection, undefined, undefined, filter, scope);
     for (const r of vecResults) {
       const existing = allResults.get(r.filepath);
       if (!existing || r.score > existing.score) {
@@ -6141,6 +6235,7 @@ export async function vectorSearchQuery(
           score: r.score,
           context: store.getContextForFile(r.filepath),
           docid: r.docid,
+          metadata: r.metadata,
         });
       }
     }
@@ -6162,6 +6257,7 @@ export async function vectorSearchQuery(
  */
 export interface StructuredSearchOptions {
   collections?: string[];   // Filter to specific collections (OR match)
+  filter?: MetadataFilter;  // metadata filter applied to every retrieval call
   limit?: number;           // default 10
   minScore?: number;        // default 0
   candidateLimit?: number;  // default RERANK_CANDIDATE_LIMIT
@@ -6172,7 +6268,7 @@ export interface StructuredSearchOptions {
   skipRerank?: boolean;
   chunkStrategy?: ChunkStrategy;
   /** Narrow the corpus by path glob and modified_at before anything is ranked */
-  filter?: DocumentFilter;
+  scope?: DocumentFilter;
   hooks?: SearchHooks;
 }
 
@@ -6209,6 +6305,7 @@ export async function structuredSearch(
   const hooks = options?.hooks;
 
   const collections = options?.collections;
+  const scope = options?.scope;
 
   if (searches.length === 0) return [];
 
@@ -6245,7 +6342,7 @@ export async function structuredSearch(
   for (const search of searches) {
     if (search.type === 'lex') {
       for (const coll of collectionList) {
-        const ftsResults = store.searchFTS(search.query, 20, coll, filter);
+        const ftsResults = store.searchFTS(search.query, 20, coll, filter, scope);
         if (ftsResults.length > 0) {
           for (const r of ftsResults) docidMap.set(r.filepath, r.docid);
           rankedLists.push(ftsResults.map(r => ({
@@ -6285,7 +6382,7 @@ export async function structuredSearch(
         for (const coll of collectionList) {
           const vecResults = await store.searchVec(
             vecSearches[i]!.query, embedModel, 20, coll,
-            undefined, embedding, filter
+            undefined, embedding, filter, scope
           );
           if (vecResults.length > 0) {
             for (const r of vecResults) docidMap.set(r.filepath, r.docid);
@@ -6363,7 +6460,7 @@ export async function structuredSearch(
   if (skipRerank) {
     // Skip LLM reranking — return candidates scored by RRF only
     const seenFiles = new Set<string>();
-    return candidates
+    const rrfResults = candidates
       .map((cand, i) => {
         const chunkInfo = docChunkMap.get(cand.file);
         const bestIdx = chunkInfo?.bestIdx ?? 0;
@@ -6408,6 +6505,7 @@ export async function structuredSearch(
       })
       .filter(r => r.score >= minScore)
       .slice(0, limit);
+    return attachResultMetadata(store.db, rrfResults);
   }
 
   // Step 5: Rerank chunks
@@ -6473,7 +6571,7 @@ export async function structuredSearch(
 
   // Step 7: Dedup by file
   const seenFiles = new Set<string>();
-  return blended
+  const finalResults = blended
     .filter(r => {
       if (seenFiles.has(r.file)) return false;
       seenFiles.add(r.file);
@@ -6481,4 +6579,5 @@ export async function structuredSearch(
     })
     .filter(r => r.score >= minScore)
     .slice(0, limit);
+  return attachResultMetadata(store.db, finalResults);
 }

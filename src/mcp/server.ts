@@ -22,10 +22,13 @@ import {
   addLineNumbers,
   getDefaultDbPath,
   DEFAULT_MULTI_GET_MAX_BYTES,
+  parseMetadataFilter,
   type QMDStore,
   type ExpandedQuery,
   type IndexStatus,
   type HybridQueryExplain,
+  type DocumentMetadata,
+  type MetadataFilter,
 } from "../index.js";
 import { getConfigPath } from "../collections.js";
 import { enableProductionMode } from "../store.js";
@@ -48,6 +51,7 @@ type SearchResultItem = {
   vec_score?: number;
   fts_score?: number;
   context: string | null;
+  metadata?: DocumentMetadata;  // Indexed qmd.metadata (present when non-empty)
   line: number;   // Absolute line in source markdown
   snippet: string;
 };
@@ -66,6 +70,19 @@ const rawBackendScores = (explain: HybridQueryExplain | undefined): { vec_score?
     ...(explain.ftsScores.length > 0 && { fts_score: roundScore(Math.max(...explain.ftsScores)) }),
   };
 };
+
+/**
+ * Validate an untrusted `filter` argument through the shared runtime
+ * validator. Returns the parse error message when invalid.
+ */
+function validateFilterArgument(filter: unknown): { filter?: MetadataFilter; error?: string } {
+  if (filter === undefined) return {};
+  try {
+    return { filter: parseMetadataFilter(filter) };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
 
 type StatusResult = {
   totalDocuments: number;
@@ -425,6 +442,15 @@ Intent-aware lex (C++ performance, not sports):
         until: z.string().optional().describe(
           "Only documents modified at or before this point. Same formats as 'since'."
         ),
+        filter: z.record(z.string(), z.unknown()).optional().describe(
+          "Metadata filter (recursive JSON AST). Every returned result satisfies it. " +
+          "Nodes are operator-discriminated: logical groups {operator:'and'|'or', operands:[...]}, " +
+          "negation {operator:'not', operand:{...}}, and conditions {key, operator, value} with " +
+          "operators eq/ne/gt/gte/lt/lte (comparison), in/nin/all (membership), exists (presence). " +
+          "Values are typed exactly (no coercion); missing keys do not match ne/nin. " +
+          "Example: {\"operator\":\"and\",\"operands\":[{\"key\":\"topics\",\"operator\":\"all\",\"value\":[\"typescript\"]}," +
+          "{\"key\":\"status\",\"operator\":\"ne\",\"value\":\"draft\"}]}"
+        ),
         intent: z.string().optional().describe(
           "Background context to disambiguate the query. Example: query='performance', intent='web page load times and Core Web Vitals'. Does not search on its own."
         ),
@@ -433,7 +459,7 @@ Intent-aware lex (C++ performance, not sports):
         ),
       }),
     },
-    track(async ({ query, searches, limit, minScore, candidateLimit, collections, path, since, until, intent, rerank }) => {
+    track(async ({ query, searches, limit, minScore, candidateLimit, collections, path, since, until, filter, intent, rerank }) => {
       const startedAt = Date.now();
       // Require exactly one of `query` (plain text, auto-expanded) or `searches` (typed sub-queries).
       if (!query && (!searches || searches.length === 0)) {
@@ -449,11 +475,19 @@ Intent-aware lex (C++ performance, not sports):
         };
       }
 
-      // A filter that does not parse is an error the caller can fix, not a silently dropped
-      // narrowing that returns a full-corpus answer looking exactly like a narrow one.
-      let filter: DocumentFilter | undefined;
+      const filterValidation = validateFilterArgument(filter);
+      if (filterValidation.error) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${filterValidation.error}` }],
+          isError: true,
+        };
+      }
+
+      // A path/time scope that does not parse is an error the caller can fix, not a silently
+      // dropped narrowing that returns a full-corpus answer looking exactly like a narrow one.
+      let scope: DocumentFilter | undefined;
       try {
-        filter = buildDocumentFilter({ path, since, until });
+        scope = buildDocumentFilter({ path, since, until });
       } catch (error) {
         return {
           content: [{ type: "text" as const, text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
@@ -475,6 +509,7 @@ Intent-aware lex (C++ performance, not sports):
       const results = await store.search({
         ...searchOptions,
         collections: effectiveCollections.length > 0 ? effectiveCollections : undefined,
+        filter: filterValidation.filter,
         limit,
         minScore,
         candidateLimit,
@@ -482,7 +517,7 @@ Intent-aware lex (C++ performance, not sports):
         // rerank:false scores are 1/rank; explain carries the raw backend scores.
         explain: rerank === false,
         intent,
-        filter,
+        scope,
       });
 
       // Use the plain query, or the first lex/vec sub-query, for snippet extraction
@@ -501,6 +536,7 @@ Intent-aware lex (C++ performance, not sports):
           score: roundScore(r.score),
           ...rawBackendScores(r.explain),
           context: r.context,
+          ...(Object.keys(r.metadata).length > 0 ? { metadata: r.metadata } : {}),
           line,
           snippet: addLineNumbers(snippet, line),
         };
@@ -523,8 +559,8 @@ Intent-aware lex (C++ performance, not sports):
       return {
         content: [{
           type: "text",
-          text: filtered.length === 0 && filter
-            ? describeEmptyFilteredSearch(store, filter, effectiveCollections)
+          text: filtered.length === 0 && scope
+            ? describeEmptyFilteredSearch(store, scope, effectiveCollections)
             : formatSearchSummary(filtered, primaryQuery),
         }],
         structuredContent: { results: filtered },
@@ -1200,7 +1236,20 @@ export async function startMcpHttpServer(
       // REST endpoint: POST /query (alias: /search) — structured search without MCP protocol
       if ((pathname === "/query" || pathname === "/search") && nodeReq.method === "POST") {
         const rawBody = await collectBody(nodeReq);
-        const params = JSON.parse(rawBody) as Record<string, unknown>;
+        let parsedParams: unknown;
+        try {
+          parsedParams = JSON.parse(rawBody);
+        } catch {
+          nodeRes.writeHead(400, { "Content-Type": "application/json" });
+          nodeRes.end(JSON.stringify({ error: "Invalid JSON body" }));
+          return;
+        }
+        if (typeof parsedParams !== "object" || parsedParams === null || Array.isArray(parsedParams)) {
+          nodeRes.writeHead(400, { "Content-Type": "application/json" });
+          nodeRes.end(JSON.stringify({ error: "JSON body must be an object" }));
+          return;
+        }
+        const params = parsedParams as Record<string, unknown>;
 
         // Validate required fields
         if (!params.searches || !Array.isArray(params.searches)) {
@@ -1216,12 +1265,29 @@ export async function startMcpHttpServer(
           query: String(s.query || ""),
         }));
 
+        // Optional metadata filter — must be an object and a valid filter AST
+        let restFilter: MetadataFilter | undefined;
+        if (params.filter !== undefined) {
+          if (typeof params.filter !== "object" || params.filter === null || Array.isArray(params.filter)) {
+            nodeRes.writeHead(400, { "Content-Type": "application/json" });
+            nodeRes.end(JSON.stringify({ error: "Invalid field: filter (must be an object)" }));
+            return;
+          }
+          const filterValidation = validateFilterArgument(params.filter);
+          if (filterValidation.error) {
+            nodeRes.writeHead(400, { "Content-Type": "application/json" });
+            nodeRes.end(JSON.stringify({ error: filterValidation.error }));
+            return;
+          }
+          restFilter = filterValidation.filter;
+        }
+
         // Use default collections if none specified
         const effectiveCollections = Array.isArray(params.collections) ? params.collections.map(String) : defaultCollectionNames;
 
-        let restFilter: DocumentFilter | undefined;
+        let restScope: DocumentFilter | undefined;
         try {
-          restFilter = buildDocumentFilter({
+          restScope = buildDocumentFilter({
             path: Array.isArray(params.path) ? params.path.map(String) : undefined,
             since: typeof params.since === "string" ? params.since : undefined,
             until: typeof params.until === "string" ? params.until : undefined,
@@ -1238,6 +1304,7 @@ export async function startMcpHttpServer(
         const results = await store.search({
           queries,
           collections: effectiveCollections.length > 0 ? effectiveCollections : undefined,
+          filter: restFilter,
           limit: typeof params.limit === "number" ? params.limit : 10,
           minScore: typeof params.minScore === "number" ? params.minScore : 0,
           candidateLimit: typeof params.candidateLimit === "number" ? params.candidateLimit : undefined,
@@ -1245,7 +1312,7 @@ export async function startMcpHttpServer(
           rerank,
           // rerank:false scores are 1/rank; explain carries the raw backend scores.
           explain: rerank === false,
-          filter: restFilter,
+          scope: restScope,
         });
 
         // Use first lex or vec query for snippet extraction
@@ -1262,6 +1329,7 @@ export async function startMcpHttpServer(
             score: roundScore(r.score),
             ...rawBackendScores(r.explain),
             context: r.context,
+            ...(Object.keys(r.metadata).length > 0 ? { metadata: r.metadata } : {}),
             line,
             snippet: addLineNumbers(snippet, line),
           };

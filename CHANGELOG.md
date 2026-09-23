@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### Breaking
+
+- SDK: ko-qmd's path/time narrowing option is now `scope` (was `filter`) on
+  `search()`, `searchLex()` and `searchVector()`, and the trailing `scope`
+  parameter of `searchFTS`/`searchVec`. `filter` is upstream's metadata filter.
+  CLI `--path/--since/--until` and REST/MCP `path/since/until` are unchanged,
+  and a request may pass both — a result has to satisfy each.
+
+### Upstream sync
+
+- Merged tobi/qmd `main` up to `04e4dbd` (24 commits past v2.8.3): oxlint
+  fence (`bun run lint` is oxlint; the tsc check is `bun run test:types`),
+  metadata filtering, separator-aware FTS terms (quoted `"PIO-1384"` now
+  matches), REST JSON body guard, Windows index names, unreadable-gguf
+  diagnostics and the store-local embedding tokenizer. ko-qmd behaviour is
+  kept: the Hangul query branch runs ahead of the separator split, a metadata
+  filter gets the same anti-starvation scan as `--path`, and bm25 on the
+  ko-vault bench is identical per query.
+
+### Added
+
+- Added Oxlint lint fence.
+- Document metadata and metadata filtering. Markdown documents can opt into typed metadata through a namespaced frontmatter block (`qmd.metadata` with strings, numbers, booleans, or flat homogeneous arrays), and every search surface — CLI `search`/`vsearch`/`query` via `--filter <json>`, the SDK's `filter` option on `search()`/`searchLex()`/`searchVector()`, the MCP `query` tool, and HTTP `POST /query` and `/search` — accepts one shared recursive filter AST discriminated by `operator`: `and`/`or`/`not` logical groups, `eq`/`ne`/`gt`/`gte`/`lt`/`lte` comparisons, `in`/`nin`/`all` membership, and `exists` presence. Every returned result satisfies the filter (applied before RRF fusion and reranking); like collection filtering, highly selective filters remain best-effort for top-K completeness. Frontmatter stays ordinary searchable content — no chunking, embedding, snippet, or line-number changes — and documents without `qmd.metadata` behave exactly as before. JSON/SDK/MCP/HTTP results now include each document's indexed metadata, and `qmd status` reports how many documents still need metadata extraction (a normal `qmd update` backfills existing indexes).
+
+### Fixed
+
+- Embedding generation and legacy fingerprint adoption now tokenize documents
+  with the store-selected embedding model instead of the global default. This
+  keeps chunk boundaries aligned with the model that creates and verifies the
+  stored vectors without initializing an unrelated provider.
+
 ### Changes
 
 - Plain Hangul lex terms that spell a common technical loanword (`서치`, `웹`,

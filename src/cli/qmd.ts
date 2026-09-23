@@ -90,6 +90,9 @@ import {
   type ReindexResult,
   type ChunkStrategy,
 } from "../store.js";
+import { syncDocumentMetadata, countDocumentsPendingMetadata } from "../metadata-store.js";
+import type { DocumentMetadata } from "../metadata.js";
+import { parseMetadataFilter, type MetadataFilter } from "../metadata-filter.js";
 import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_MODEL_CACHE_DIR, resolveEmbedModel, resolveGenerateModel, resolveRerankModel, resolveModels, inspectGgufFile, isDarwinMetalMitigationActive } from "../llm.js";
 import {
   formatSearchResults,
@@ -224,11 +227,16 @@ function mcpDaemonPaths(): { cacheDir: string; pidPath: string; logPath: string 
 
 function setIndexName(name: string | null): void {
   let normalizedName = name;
-  // Normalize relative paths to prevent malformed database paths
-  if (name && name.includes('/')) {
-    const absolutePath = pathResolve(process.cwd(), name);
-    // Replace path separators with underscores to create a valid filename
-    normalizedName = absolutePath.replace(/\//g, '_').replace(/^_/, '');
+  // Normalize relative paths to prevent malformed database paths. Windows
+  // absolute paths (C:\..., \\server\share) are already absolute -- skip
+  // pathResolve() for those and sanitize `:` and `\` alongside `/`.
+  if (name) {
+    const isWindowsAbsolute = /^[a-zA-Z]:[\\/]/.test(name) || /^\\/.test(name);
+    if (isWindowsAbsolute || /[\\/]/.test(name)) {
+      const absolutePath = isWindowsAbsolute ? name : pathResolve(process.cwd(), name);
+      // Replace path separators with underscores to create a valid filename
+      normalizedName = absolutePath.replace(/[:\\/]+/g, '_').replace(/^_+/, '');
+    }
   }
   currentIndexName = normalizedName || "index";
   storeDbPathOverride = normalizedName ? getDefaultDbPath(normalizedName) : undefined;
@@ -581,6 +589,10 @@ async function showStatus(): Promise<void> {
   }
   if (needsEmbedding > 0) {
     console.log(`  ${c.yellow}Pending:  ${needsEmbedding} need embedding${c.reset} (run 'qmd embed')`);
+  }
+  const pendingMetadata = countDocumentsPendingMetadata(db);
+  if (pendingMetadata > 0) {
+    console.log(`  ${c.yellow}Metadata: ${pendingMetadata} need extraction${c.reset} (run 'qmd update'; excluded from --filter searches)`);
   }
   if (mostRecent.latest) {
     const lastUpdate = new Date(mostRecent.latest);
@@ -1001,6 +1013,7 @@ async function updateCollections(): Promise<void> {
     progress.clear();
     console.log(`\nIndexed: ${result.indexed} new, ${result.updated} updated, ${result.unchanged} unchanged, ${result.removed} removed`);
     reportSkippedReads(result.skippedFiles);
+    reportMetadataErrors(result.metadataErrors);
     if (result.orphanedCleaned > 0) {
       console.log(`Cleaned up ${result.orphanedCleaned} orphaned content hash(es)`);
     }
@@ -1961,7 +1974,7 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
     // Continue so the deactivation pass can mark previously indexed docs as inactive.
   }
 
-  let indexed = 0, updated = 0, unchanged = 0, processed = 0;
+  let indexed = 0, updated = 0, unchanged = 0, processed = 0, metadataErrors = 0;
   const skippedFiles: { file: string; code: string }[] = [];
   const seenPaths = new Set<string>();
   // Literal paths of every file in this scan. Passed to the legacy-path
@@ -2004,8 +2017,13 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
     // Check if document exists (also migrates legacy lowercase paths)
     const existing = findOrMigrateLegacyDocument(db, collectionName, path, livePaths);
 
+    let documentId: number;
+    let contentChanged = true;
+
     if (existing) {
+      documentId = existing.id;
       if (existing.hash === hash) {
+        contentChanged = false;
         // Hash unchanged, but check if title needs updating
         if (existing.title !== title) {
           updateDocumentTitle(db, existing.id, title, now);
@@ -2026,10 +2044,15 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
       indexed++;
       insertContent(db, hash, content, now);
       const stat = statSync(filepath);
-      insertDocument(db, collectionName, path, title, hash,
+      documentId = insertDocument(db, collectionName, path, title, hash,
         stat ? new Date(stat.birthtime).toISOString() : now,
         stat ? new Date(stat.mtime).toISOString() : now);
     }
+
+    // Unchanged content still backfills missing or stale extraction state.
+    const extraction = syncDocumentMetadata(db, documentId, content, path,
+      contentChanged ? undefined : { onlyIfStale: true });
+    if (extraction?.error) metadataErrors++;
 
     processed++;
     progress.set((processed / total) * 100);
@@ -2059,6 +2082,7 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
   progress.clear();
   console.log(`\nIndexed: ${indexed} new, ${updated} updated, ${unchanged} unchanged, ${removed} removed`);
   reportSkippedReads(skippedFiles);
+  reportMetadataErrors(metadataErrors);
   if (orphanedContent > 0) {
     console.log(`Cleaned up ${orphanedContent} orphaned content hash(es)`);
   }
@@ -2076,6 +2100,11 @@ function fsErrorCode(err: unknown): string {
     if (typeof code === "string" && code.length > 0) return code;
   }
   return "ERROR";
+}
+
+function reportMetadataErrors(metadataErrors: number): void {
+  if (metadataErrors === 0) return;
+  console.warn(`⚠ ${metadataErrors} file(s) have invalid qmd.metadata frontmatter and are excluded from filtered search`);
 }
 
 function reportSkippedReads(skippedFiles: { file: string; code: string }[]): void {
@@ -2351,7 +2380,8 @@ type OutputOptions = {
   skipRerank?: boolean;  // Skip LLM reranking, use RRF scores only
   chunkStrategy?: ChunkStrategy;  // "auto" (default) or "regex"
   fullPath?: boolean;    // Show realpath instead of qmd:// URI (relative to $PWD when subpath)
-  filter?: DocumentFilter;  // --path / --since / --until
+  filter?: MetadataFilter;  // Metadata filter (--filter JSON)
+  scope?: DocumentFilter;   // --path / --since / --until
 };
 
 /**
@@ -2426,17 +2456,17 @@ type EmptySearchReason = "no_results" | "min_score";
  * match against. When a filter is in play, count what survived it and say so.
  */
 function reportEmptyFilteredSearch(db: Database, opts: OutputOptions, collectionNames: string[]): void {
-  if (!opts.filter || opts.format === "json" || opts.format === "csv" || opts.format === "xml"
+  if (!opts.scope || opts.format === "json" || opts.format === "csv" || opts.format === "xml"
       || opts.format === "md" || opts.format === "files") {
     printEmptySearchResults(opts.format);
     return;
   }
-  const { kept, total } = countFilteredDocuments(db, opts.filter, collectionSearchFilter(collectionNames));
+  const { kept, total } = countFilteredDocuments(db, opts.scope, collectionSearchFilter(collectionNames));
   if (kept === 0) {
-    console.log(`No results found — ${describeFilter(opts.filter)} matched 0 of ${total} documents.`);
+    console.log(`No results found — ${describeFilter(opts.scope)} matched 0 of ${total} documents.`);
     return;
   }
-  console.log(`No results found in the ${kept} of ${total} documents matching ${describeFilter(opts.filter)}.`);
+  console.log(`No results found in the ${kept} of ${total} documents matching ${describeFilter(opts.scope)}.`);
 }
 
 // Emit format-safe empty output for search commands.
@@ -2475,6 +2505,7 @@ type OutputRow = {
   chunkLen?: number;
   hash?: string;
   docid?: string;
+  metadata?: DocumentMetadata;
   explain?: HybridQueryExplain;
 };
 
@@ -2491,17 +2522,12 @@ function getEditorUriTemplate(): string {
   if (envTemplate) return envTemplate;
 
   try {
-    const config = loadConfig() as unknown as {
-      editor_uri?: string;
-      editor_uri_template?: string;
-      editorUri?: string;
-      [key: string]: unknown;
-    };
+    const config = loadConfig();
     const configTemplate = (
       config.editor_uri
       || config.editor_uri_template
       || config.editorUri
-      || (typeof config["editor-uri"] === "string" ? config["editor-uri"] : undefined)
+      || config["editor-uri"]
     )?.trim();
 
     if (configTemplate) return configTemplate;
@@ -2604,6 +2630,7 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
         line: snippetInfo.line,
         title: row.title,
         ...(row.context && { context: row.context }),
+        ...(row.metadata && Object.keys(row.metadata).length > 0 && { metadata: row.metadata }),
         ...(body && { body }),
         ...(snippet && { snippet }),
         ...(opts.explain && row.explain && { explain: row.explain }),
@@ -2871,6 +2898,36 @@ function parseStructuredQuery(query: string): ParsedStructuredQuery | null {
   return typed.length > 0 ? { searches: typed, intent } : null;
 }
 
+// Parse and validate a --filter JSON string; exits with an actionable
+// message on malformed JSON or an invalid filter AST.
+function parseCliMetadataFilter(rawFilter: unknown): MetadataFilter | undefined {
+  if (rawFilter === undefined) return undefined;
+
+  let filterJson: unknown;
+  try {
+    filterJson = JSON.parse(String(rawFilter));
+  } catch (err) {
+    console.error(`Invalid --filter JSON: ${err instanceof Error ? err.message : String(err)}`);
+    console.error(`Example: --filter '{"key":"status","operator":"eq","value":"published"}'`);
+    process.exit(1);
+  }
+
+  try {
+    return parseMetadataFilter(filterJson);
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
+}
+
+// Filtered search excludes documents without current metadata extraction;
+// tell the user when that makes results incomplete.
+function warnPendingMetadata(db: Database): void {
+  const pendingMetadata = countDocumentsPendingMetadata(db);
+  if (pendingMetadata === 0) return;
+  process.stderr.write(`${c.yellow}Warning: ${pendingMetadata} document(s) lack current metadata extraction and are excluded from filtered results. Run 'qmd update'.${c.reset}\n`);
+}
+
 function search(query: string, opts: OutputOptions): void {
   const db = getDb();
 
@@ -2878,9 +2935,11 @@ function search(query: string, opts: OutputOptions): void {
   // Use default collections if none specified
   const collectionNames = resolveCollectionFilter(opts.collection, true);
 
+  if (opts.filter) warnPendingMetadata(db);
+
   // Use large limit for --all, otherwise fetch more than needed and let outputResults filter
   const fetchLimit = opts.all ? 100000 : Math.max(50, opts.limit * 2);
-  const results = searchFTS(db, query, fetchLimit, collectionSearchFilter(collectionNames), opts.filter);
+  const results = searchFTS(db, query, fetchLimit, collectionSearchFilter(collectionNames), opts.filter, opts.scope);
 
   // Add context to results
   const resultsWithContext = results.map(r => ({
@@ -2892,6 +2951,7 @@ function search(query: string, opts: OutputOptions): void {
     context: getContextForFile(db, r.filepath),
     hash: r.hash,
     docid: r.docid,
+    metadata: r.metadata,
   }));
 
   if (resultsWithContext.length === 0) {
@@ -2924,7 +2984,7 @@ function grepCommand(pattern: string, opts: OutputOptions, values: Record<string
   const maxLinesRaw = values["max-lines"];
   const result = grepDocuments(db, compiled, {
     collections: collectionNames,
-    filter: opts.filter,
+    filter: opts.scope,
     limit: opts.all ? 100000 : (opts.limit || 20),
     maxLinesPerFile: maxLinesRaw ? Math.max(1, parseInt(String(maxLinesRaw), 10) || 20) : undefined,
   });
@@ -2951,7 +3011,7 @@ function grepCommand(pattern: string, opts: OutputOptions, values: Record<string
   }
 
   if (result.files.length === 0) {
-    const scope = opts.filter ? ` matching ${describeFilter(opts.filter)}` : "";
+    const scope = opts.scope ? ` matching ${describeFilter(opts.scope)}` : "";
     console.log(`No matches in ${result.scanned} document${result.scanned === 1 ? "" : "s"}${scope}.`);
     return;
   }
@@ -3001,14 +3061,16 @@ async function vectorSearch(query: string, opts: OutputOptions, _model: string =
   const collectionNames = resolveCollectionFilter(opts.collection, true);
 
   checkIndexHealth(store.db);
+  if (opts.filter) warnPendingMetadata(store.db);
 
   await withLLMSession(async () => {
     let results = await vectorSearchQuery(store, query, {
       collection: collectionSearchFilter(collectionNames),
+      filter: opts.filter,
       limit: opts.all ? 500 : (opts.limit || 10),
       minScore: opts.minScore || 0.3,
       intent: opts.intent,
-      filter: opts.filter,
+      scope: opts.scope,
       hooks: {
         onExpand: (original, expanded) => {
           logExpansionTree(original, expanded);
@@ -3032,6 +3094,7 @@ async function vectorSearch(query: string, opts: OutputOptions, _model: string =
       score: r.score,
       context: r.context,
       docid: r.docid,
+      metadata: r.metadata,
     })), query, { ...opts, limit: results.length });
   }, { maxDuration: 10 * 60 * 1000, name: 'vectorSearch' });
 }
@@ -3044,6 +3107,7 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
   const collectionNames = resolveCollectionFilter(opts.collection, true);
 
   checkIndexHealth(store.db);
+  if (opts.filter) warnPendingMetadata(store.db);
 
   // Check for structured query syntax (lex:/vec:/hyde:/intent: prefixes)
   const parsed = parseStructuredQuery(query);
@@ -3072,6 +3136,7 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
 
       results = await structuredSearch(store, structuredQueries, {
         collections: collectionNames.length > 0 ? collectionNames : undefined,
+        filter: opts.filter,
         limit: opts.all ? 500 : (opts.limit || 10),
         minScore: opts.minScore || 0,
         candidateLimit: opts.candidateLimit,
@@ -3079,7 +3144,7 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
         explain: !!opts.explain,
         intent,
         chunkStrategy: opts.chunkStrategy,
-        filter: opts.filter,
+        scope: opts.scope,
         hooks: {
           onEmbedStart: (count) => {
             process.stderr.write(`${c.dim}Embedding ${count} ${count === 1 ? 'query' : 'queries'}...${c.reset}`);
@@ -3101,6 +3166,7 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
       // Standard hybrid query with automatic expansion
       results = await hybridQuery(store, query, {
         collection: collectionSearchFilter(collectionNames),
+        filter: opts.filter,
         limit: opts.all ? 500 : (opts.limit || 10),
         minScore: opts.minScore || 0,
         candidateLimit: opts.candidateLimit,
@@ -3108,7 +3174,7 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
         explain: !!opts.explain,
         intent,
         chunkStrategy: opts.chunkStrategy,
-        filter: opts.filter,
+        scope: opts.scope,
         hooks: {
           onStrongSignal: (score) => {
             process.stderr.write(`${c.dim}Strong BM25 signal (${score.toFixed(2)}) — skipping expansion${c.reset}\n`);
@@ -3162,6 +3228,7 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
       score: r.score,
       context: r.context,
       docid: r.docid,
+      metadata: r.metadata,
       explain: r.explain,
     })), displayQuery, { ...opts, limit: results.length });
   }, { maxDuration: 10 * 60 * 1000, name: 'querySearch' });
@@ -3199,6 +3266,7 @@ function parseCLI() {
       json: { type: "boolean" },
       explain: { type: "boolean" },
       collection: { type: "string", short: "c", multiple: true },  // Filter by collection(s)
+      filter: { type: "string" },  // Metadata filter (JSON AST) for search/vsearch/query
       // Collection options
       name: { type: "string" },  // collection name
       mask: { type: "string" },  // glob pattern
@@ -3305,7 +3373,7 @@ function parseCLI() {
     intent: values.intent as string | undefined,
     chunkStrategy: parseChunkStrategy(values["chunk-strategy"]),
     fullPath: !!values["full-path"],
-    filter: parseDocumentFilter(values),
+    scope: parseDocumentFilter(values),
   };
 
   return {
@@ -3828,6 +3896,8 @@ function showHelp(): void {
   console.log("                                Matched against collection/path, as printed in results");
   console.log("  --since <when>             - Only documents modified at or after (7d, 3h, 2w, 2026-09-01)");
   console.log("  --until <when>             - Only documents modified at or before (same formats)");
+  console.log("  --filter <json>            - Metadata filter (recursive JSON AST; search/vsearch/query)");
+  console.log("                                e.g. '{\"key\":\"status\",\"operator\":\"eq\",\"value\":\"published\"}'");
   console.log("");
   console.log("Grep options:");
   console.log("  -i, --ignore-case          - Match either case (default: smart case)");
@@ -4861,6 +4931,7 @@ if (isMain) {
         console.error("Usage: qmd search [options] <query>");
         process.exit(1);
       }
+      cli.opts.filter = parseCliMetadataFilter(cli.values.filter);
       search(cli.query, cli.opts);
       break;
 
@@ -4882,6 +4953,7 @@ if (isMain) {
       if (!cli.values["min-score"]) {
         cli.opts.minScore = 0.3;
       }
+      cli.opts.filter = parseCliMetadataFilter(cli.values.filter);
       await resolveLocalConfigTrust();
       await vectorSearch(cli.query, cli.opts);
       break;
@@ -4892,6 +4964,7 @@ if (isMain) {
         console.error("Usage: qmd query [options] <query>");
         process.exit(1);
       }
+      cli.opts.filter = parseCliMetadataFilter(cli.values.filter);
       await resolveLocalConfigTrust();
       await querySearch(cli.query, cli.opts);
       break;
