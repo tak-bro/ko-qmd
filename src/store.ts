@@ -2130,7 +2130,8 @@ export async function generateEmbeddings(
         if (!doc.body.trim()) continue;
 
         const title = extractTitle(doc.body, doc.path);
-        const chunks = await chunkDocumentByTokens(
+        const chunks = await chunkDocumentByTokensWithLlm(
+          llm,
           doc.body,
           undefined, undefined, undefined,
           doc.path,
@@ -2644,7 +2645,16 @@ export async function maybeAdoptLegacyEmbeddingFingerprint(store: Store, model: 
   const llm = getLlm(store);
 
   return await withLLMSessionForLlm(llm, async (session) => {
-    const chunks = await chunkDocumentByTokens(sample.body, undefined, undefined, undefined, sample.path, undefined, session.signal);
+    const chunks = await chunkDocumentByTokensWithLlm(
+      llm,
+      sample.body,
+      undefined,
+      undefined,
+      undefined,
+      sample.path,
+      undefined,
+      session.signal,
+    );
     const chunk = chunks[sample.seq];
     if (!chunk) {
       return { checked: true, adopted: 0, reason: `sample chunk ${expectedHashSeq} no longer exists` };
@@ -3305,7 +3315,8 @@ const SEARCH_PATH_OTHER_CHARS_PER_TOKEN = CHUNK_SIZE_CHARS / CHUNK_SIZE_TOKENS;
  * When filepath and chunkStrategy are provided, uses AST-aware break points
  * for supported code files.
  */
-export async function chunkDocumentByTokens(
+async function chunkDocumentByTokensWithLlm(
+  llm: LlamaCpp,
   content: string,
   maxTokens: number = CHUNK_SIZE_TOKENS,
   overlapTokens: number = CHUNK_OVERLAP_TOKENS,
@@ -3314,8 +3325,6 @@ export async function chunkDocumentByTokens(
   chunkStrategy: ChunkStrategy = "regex",
   signal?: AbortSignal
 ): Promise<{ text: string; pos: number; tokens: number }[]> {
-  const llm = getDefaultLlamaCpp();
-
   // Script-aware chars/token estimate from the document's own text: CJK prose
   // measures 1.64 chars/token on Qwen3-Embedding-0.6B-Q8_0 (2026-09-21, ko
   // 1380 chars / 842 tokens) while English measures 6.08 (2680 / 441) but
@@ -3403,6 +3412,27 @@ export async function chunkDocumentByTokens(
   }
 
   return results;
+}
+
+export async function chunkDocumentByTokens(
+  content: string,
+  maxTokens: number = CHUNK_SIZE_TOKENS,
+  overlapTokens: number = CHUNK_OVERLAP_TOKENS,
+  windowTokens: number = CHUNK_WINDOW_TOKENS,
+  filepath?: string,
+  chunkStrategy: ChunkStrategy = "regex",
+  signal?: AbortSignal,
+): Promise<{ text: string; pos: number; tokens: number }[]> {
+  return await chunkDocumentByTokensWithLlm(
+    getDefaultLlamaCpp(),
+    content,
+    maxTokens,
+    overlapTokens,
+    windowTokens,
+    filepath,
+    chunkStrategy,
+    signal,
+  );
 }
 
 // =============================================================================
