@@ -11,7 +11,7 @@ import { describe, test, expect, beforeAll, afterAll } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createStore, type QMDStore } from "../src/index.js";
+import { createStore, type LexSearchOptions, type QMDStore } from "../src/index.js";
 import { countFilteredDocuments, searchFTS, searchVec, DEFAULT_EMBED_MODEL, getEmbeddingFingerprint } from "../src/store.js";
 import { buildDocumentFilter } from "../src/filters.js";
 
@@ -33,10 +33,13 @@ beforeAll(async () => {
   // MIN_RETRIEVAL_BREADTH * 10 = 200 candidates, and every one of these outranks the two
   // journal notes. A filter applied to that pool instead of to the corpus finds nothing left.
   for (let i = 0; i < DECOY_COUNT; i++) {
-    writeFileSync(join(docs, "archive", `decoy-${i}.md`), `# Decoy ${i}\n\nzanzibar zanzibar zanzibar\n`);
+    // decoy-0 carries the same metadata as the 2026 note, so a metadata filter alone keeps a
+    // decoy and only the path scope removes it.
+    const frontmatter = i === 0 ? "---\nqmd:\n  metadata:\n    status: keep\n---\n" : "";
+    writeFileSync(join(docs, "archive", `decoy-${i}.md`), `${frontmatter}# Decoy ${i}\n\nzanzibar zanzibar zanzibar\n`);
   }
-  writeFileSync(join(docs, "journals", "2026", "note.md"), "# Note\n\nzanzibar once\n");
-  writeFileSync(join(docs, "journals", "2024", "old.md"), "# Old\n\nzanzibar once\n");
+  writeFileSync(join(docs, "journals", "2026", "note.md"), "---\nqmd:\n  metadata:\n    status: keep\n---\n# Note\n\nzanzibar once\n");
+  writeFileSync(join(docs, "journals", "2024", "old.md"), "---\nqmd:\n  metadata:\n    status: drop\n---\n# Old\n\nzanzibar once\n");
 
   store = await createStore({
     dbPath: join(root, "index.sqlite"),
@@ -60,7 +63,7 @@ describe("path filters narrow the corpus, not the answer", () => {
   test("a narrow path filter still returns its matches, buried as they are", () => {
     // The two journal notes never enter an unfiltered top-20. A post-filter returns nothing.
     const filter = buildDocumentFilter({ path: ["docs/journals/**"] })!;
-    const hits = searchFTS(store.internal.db, "zanzibar", 10, collectionFor(), filter);
+    const hits = searchFTS(store.internal.db, "zanzibar", 10, collectionFor(), undefined, filter);
     expect(hits.map(h => h.displayPath).sort()).toEqual([
       "docs/journals/2024/old.md",
       "docs/journals/2026/note.md",
@@ -69,46 +72,46 @@ describe("path filters narrow the corpus, not the answer", () => {
 
   test("an exclude beats an include", () => {
     const filter = buildDocumentFilter({ path: ["docs/journals/**", "!docs/journals/2024/**"] })!;
-    const hits = searchFTS(store.internal.db, "zanzibar", 10, collectionFor(), filter);
+    const hits = searchFTS(store.internal.db, "zanzibar", 10, collectionFor(), undefined, filter);
     expect(hits.map(h => h.displayPath)).toEqual(["docs/journals/2026/note.md"]);
   });
 
   test("a bare directory prefix means everything under it", () => {
     const filter = buildDocumentFilter({ path: ["docs/journals"] })!;
-    const hits = searchFTS(store.internal.db, "zanzibar", 10, collectionFor(), filter);
+    const hits = searchFTS(store.internal.db, "zanzibar", 10, collectionFor(), undefined, filter);
     expect(hits).toHaveLength(2);
   });
 
   test("a filter that matches no document returns nothing rather than everything", () => {
     const filter = buildDocumentFilter({ path: ["docs/nowhere/**"] })!;
-    expect(searchFTS(store.internal.db, "zanzibar", 10, collectionFor(), filter)).toEqual([]);
+    expect(searchFTS(store.internal.db, "zanzibar", 10, collectionFor(), undefined, filter)).toEqual([]);
   });
 
   test("the filter never widens a result — words still have to match", () => {
     const filter = buildDocumentFilter({ path: ["docs/**"] })!;
-    expect(searchFTS(store.internal.db, "kilimanjaro", 10, collectionFor(), filter)).toEqual([]);
+    expect(searchFTS(store.internal.db, "kilimanjaro", 10, collectionFor(), undefined, filter)).toEqual([]);
   });
 });
 
 describe("time filters", () => {
   test("`since` in the future removes everything", () => {
     const filter = buildDocumentFilter({ since: "2099-01-01" })!;
-    expect(searchFTS(store.internal.db, "zanzibar", 10, collectionFor(), filter)).toEqual([]);
+    expect(searchFTS(store.internal.db, "zanzibar", 10, collectionFor(), undefined, filter)).toEqual([]);
   });
 
   test("`since` in the past keeps everything", () => {
     const filter = buildDocumentFilter({ since: "2000-01-01" })!;
-    expect(searchFTS(store.internal.db, "zanzibar", 10, collectionFor(), filter)).toHaveLength(10);
+    expect(searchFTS(store.internal.db, "zanzibar", 10, collectionFor(), undefined, filter)).toHaveLength(10);
   });
 
   test("`until` in the past removes everything", () => {
     const filter = buildDocumentFilter({ until: "2000-01-01" })!;
-    expect(searchFTS(store.internal.db, "zanzibar", 10, collectionFor(), filter)).toEqual([]);
+    expect(searchFTS(store.internal.db, "zanzibar", 10, collectionFor(), undefined, filter)).toEqual([]);
   });
 
   test("path and time compose", () => {
     const filter = buildDocumentFilter({ path: ["docs/journals/**"], since: "2000-01-01" })!;
-    expect(searchFTS(store.internal.db, "zanzibar", 10, collectionFor(), filter)).toHaveLength(2);
+    expect(searchFTS(store.internal.db, "zanzibar", 10, collectionFor(), undefined, filter)).toHaveLength(2);
   });
 });
 
@@ -129,8 +132,18 @@ describe("countFilteredDocuments", () => {
 describe("searchLex through the SDK", () => {
   test("passes the filter down", async () => {
     const filter = buildDocumentFilter({ path: ["docs/journals/2026/**"] })!;
-    const hits = await store.searchLex("zanzibar", { collection: collectionNames, limit: 10, filter });
+    const hits = await store.searchLex("zanzibar", { collection: collectionNames, limit: 10, scope: filter });
     expect(hits.map(h => h.displayPath)).toEqual(["docs/journals/2026/note.md"]);
+  });
+
+  test("a metadata filter and a path scope together keep only their intersection", async () => {
+    const scope = buildDocumentFilter({ path: ["docs/journals/**"] })!;
+    const filter = { key: "status", operator: "eq", value: "keep" } as const;
+    const paths = async (opts: Pick<LexSearchOptions, "filter" | "scope">) =>
+      (await store.searchLex("zanzibar", { collection: collectionNames, limit: 10, ...opts })).map(h => h.displayPath).sort();
+    expect(await paths({ scope })).toEqual(["docs/journals/2024/old.md", "docs/journals/2026/note.md"]);
+    expect(await paths({ filter })).toEqual(["docs/archive/decoy-0.md", "docs/journals/2026/note.md"]);
+    expect(await paths({ scope, filter })).toEqual(["docs/journals/2026/note.md"]);
   });
 
   test("reports modified_at, which `--since` is compared against", async () => {
@@ -182,7 +195,7 @@ describe("vector search takes the same filter", () => {
 
   test("a narrow path filter returns the far-away documents it asked for", async () => {
     const filter = buildDocumentFilter({ path: ["docs/journals/**"] })!;
-    const hits = await searchVec(store.internal.db, "ignored", DEFAULT_EMBED_MODEL, 10, collectionFor(), undefined, query, undefined, filter);
+    const hits = await searchVec(store.internal.db, "ignored", DEFAULT_EMBED_MODEL, 10, collectionFor(), undefined, query, undefined, undefined, filter);
     expect(hits.map(h => h.displayPath).sort()).toEqual([
       "docs/journals/2024/old.md",
       "docs/journals/2026/note.md",
@@ -191,19 +204,35 @@ describe("vector search takes the same filter", () => {
 
   test("an exclude beats an include here too", async () => {
     const filter = buildDocumentFilter({ path: ["docs/journals/**", "!docs/journals/2024/**"] })!;
-    const hits = await searchVec(store.internal.db, "ignored", DEFAULT_EMBED_MODEL, 10, collectionFor(), undefined, query, undefined, filter);
+    const hits = await searchVec(store.internal.db, "ignored", DEFAULT_EMBED_MODEL, 10, collectionFor(), undefined, query, undefined, undefined, filter);
     expect(hits.map(h => h.displayPath)).toEqual(["docs/journals/2026/note.md"]);
   });
 
   test("a time filter that excludes everything returns nothing", async () => {
     const filter = buildDocumentFilter({ since: "2099-01-01" })!;
-    const hits = await searchVec(store.internal.db, "ignored", DEFAULT_EMBED_MODEL, 10, collectionFor(), undefined, query, undefined, filter);
+    const hits = await searchVec(store.internal.db, "ignored", DEFAULT_EMBED_MODEL, 10, collectionFor(), undefined, query, undefined, undefined, filter);
     expect(hits).toEqual([]);
+  });
+
+  const keep = { key: "status", operator: "eq", value: "keep" } as const;
+  // No collection: a collection alone already forces the exact scan, which would hide a
+  // metadata filter that failed to.
+  const vecPaths = async (scope?: ReturnType<typeof buildDocumentFilter>) =>
+    (await searchVec(store.internal.db, "ignored", DEFAULT_EMBED_MODEL, 10, undefined, undefined, query, undefined, keep, scope))
+      .map(h => h.displayPath).sort();
+
+  test("a metadata filter alone is exact-scanned too — the far-away note is not starved", async () => {
+    expect(await vecPaths()).toEqual(["docs/archive/decoy-0.md", "docs/journals/2026/note.md"]);
+  });
+
+  test("a metadata filter and a path or time scope keep only their intersection", async () => {
+    expect(await vecPaths(buildDocumentFilter({ path: ["docs/journals/**"] }))).toEqual(["docs/journals/2026/note.md"]);
+    expect(await vecPaths(buildDocumentFilter({ since: "2099-01-01" }))).toEqual([]);
   });
 
   test("a filter matching nothing returns nothing, not the unfiltered neighbours", async () => {
     const filter = buildDocumentFilter({ path: ["docs/nowhere/**"] })!;
-    const hits = await searchVec(store.internal.db, "ignored", DEFAULT_EMBED_MODEL, 10, collectionFor(), undefined, query, undefined, filter);
+    const hits = await searchVec(store.internal.db, "ignored", DEFAULT_EMBED_MODEL, 10, collectionFor(), undefined, query, undefined, undefined, filter);
     expect(hits).toEqual([]);
   });
 });
