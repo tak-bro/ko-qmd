@@ -56,7 +56,8 @@ if (isBun) {
     _sqliteVecLoad = null;
   }
 } else {
-  _Database = (await import("better-sqlite3")).default as unknown as DatabaseConstructor;
+  // Dual-runtime: better-sqlite3 matches Database at runtime; published types do not share an interface with bun:sqlite.
+  _Database = (await import("better-sqlite3")).default as DatabaseConstructor;
   const sqliteVec = await import("sqlite-vec");
   _sqliteVecLoad = (db: LoadableSqliteDatabase) => sqliteVec.load(db as Parameters<typeof sqliteVec.load>[0]);
 }

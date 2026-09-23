@@ -1211,7 +1211,12 @@ describe("MCP HTTP Transport — 2026-07-28 protocol", () => {
   });
 
   async function postMcp(
-    body: object,
+    body: {
+      jsonrpc: string;
+      id?: number | string;
+      method: string;
+      params?: Record<string, unknown>;
+    },
     headers: Record<string, string>,
   ): Promise<{ status: number; json: any; rawHeaders: Headers }> {
     const res = await fetch(`${baseUrl}/mcp`, {
@@ -1741,7 +1746,7 @@ describe("REST /query, MCP query and the query log", () => {
 // =============================================================================
 
 import { mkdirSync, utimesSync } from "node:fs";
-import { createStore } from "../src/index.js";
+import { createStore as createSdkStore } from "../src/index.js";
 
 describe("REST /query refreshes the text index first", () => {
   let handle: HttpServerHandle | undefined;
@@ -1764,7 +1769,7 @@ describe("REST /query refreshes the text index first", () => {
     process.env.INDEX_PATH = dbPath;
     process.env.QMD_CONFIG_DIR = configDir;
     // Index once, as `qmd update` would have, then close so the daemon owns the file.
-    const seed = await createStore({ dbPath, config });
+    const seed = await createSdkStore({ dbPath, config });
     await seed.update();
     await seed.close();
     handle = await startMcpHttpServer(0, { quiet: true, dbPath });
@@ -1828,7 +1833,7 @@ describe("REST /query takes path and time filters", () => {
     writeFileSyncNode(join(configDir, "index.yml"), YAML.stringify(config));
     process.env.INDEX_PATH = dbPath;
     process.env.QMD_CONFIG_DIR = configDir;
-    const seed = await createStore({ dbPath, config });
+    const seed = await createSdkStore({ dbPath, config });
     await seed.update();
     await seed.close();
     handle = await startMcpHttpServer(0, { quiet: true, dbPath });

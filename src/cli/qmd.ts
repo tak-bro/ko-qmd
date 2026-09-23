@@ -2491,17 +2491,12 @@ function getEditorUriTemplate(): string {
   if (envTemplate) return envTemplate;
 
   try {
-    const config = loadConfig() as unknown as {
-      editor_uri?: string;
-      editor_uri_template?: string;
-      editorUri?: string;
-      [key: string]: unknown;
-    };
+    const config = loadConfig();
     const configTemplate = (
       config.editor_uri
       || config.editor_uri_template
       || config.editorUri
-      || (typeof config["editor-uri"] === "string" ? config["editor-uri"] : undefined)
+      || config["editor-uri"]
     )?.trim();
 
     if (configTemplate) return configTemplate;

@@ -2668,7 +2668,14 @@ export function getIndexHealth(db: Database, model: string = DEFAULT_EMBED_MODEL
 // Caching
 // =============================================================================
 
-export function getCacheKey(url: string, body: object): string {
+export type CacheKeyBody = {
+  query?: string;
+  model?: string;
+  chunk?: string;
+  file?: string;
+};
+
+export function getCacheKey(url: string, body: CacheKeyBody): string {
   const hash = createHash("sha256");
   hash.update(url);
   hash.update(JSON.stringify(body));

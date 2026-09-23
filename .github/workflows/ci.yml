@@ -38,6 +38,9 @@ jobs:
 
       - run: npm install
 
+      - name: Lint
+        run: npx oxlint
+
       - name: Tests
         run: npx vitest run --reporter=verbose --testTimeout 60000 test/
         continue-on-error: ${{ matrix.os == 'windows-latest' }}

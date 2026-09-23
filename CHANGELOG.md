@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Oxlint lint fence.
+
 ### Changes
 
 - Plain Hangul lex terms that spell a common technical loanword (`서치`, `웹`,

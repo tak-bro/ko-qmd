@@ -3242,14 +3242,16 @@ describe("cleanupOrphanedVectors atomicity", () => {
   function makeFailingDb(db: Database): Database {
     return {
       prepare: (sql: string) => db.prepare(sql),
-      transaction: (fn: () => unknown) => db.transaction(fn),
+      transaction: (fn) => db.transaction(fn),
       exec: (sql: string) => {
         if (sql.includes("DELETE FROM content_vectors")) {
           throw new Error("injected failure between deletes");
         }
         return db.exec(sql);
       },
-    } as unknown as Database;
+      loadExtension: (path: string) => db.loadExtension(path),
+      close: () => db.close(),
+    };
   }
 
   test("removes orphaned chunks from both tables and returns the count", async () => {

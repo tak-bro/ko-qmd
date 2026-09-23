@@ -28,8 +28,8 @@
   "scripts": {
     "prepare": "node scripts/install-hooks.mjs && node scripts/build.mjs",
     "build": "node scripts/build.mjs",
+    "lint": "oxlint",
     "test": "node scripts/test-all.mjs",
-    "lint": "node ./node_modules/typescript/bin/tsc -p tsconfig.build.json --noEmit",
     "test:types": "node ./node_modules/typescript/bin/tsc -p tsconfig.build.json --noEmit",
     "test:node": "node ./node_modules/vitest/vitest.mjs run --reporter=verbose --testTimeout 60000",
     "test:bun": "bun test --timeout 60000 --preload ./src/test-preload.ts",
@@ -79,7 +79,9 @@
     "sqlite-vec-windows-x64": "0.1.9"
   },
   "devDependencies": {
+    "@oxlint/plugins": "1.78.0",
     "@types/better-sqlite3": "7.6.13",
+    "oxlint": "1.78.0",
     "tsx": "4.23.12",
     "vitest": "3.2.7"
   },
