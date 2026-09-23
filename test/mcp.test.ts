@@ -1031,6 +1031,24 @@ describe.skipIf(!!process.env.CI)("MCP HTTP Transport", () => {
     expect(res.status).toBe(404);
   });
 
+  test("POST /query rejects malformed and non-object JSON with 400", async () => {
+    const malformed = await fetch(`${baseUrl}/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{not valid json",
+    });
+    expect(malformed.status).toBe(400);
+    expect((await malformed.json()).error).toBe("Invalid JSON body");
+
+    const nonObject = await fetch(`${baseUrl}/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "null",
+    });
+    expect(nonObject.status).toBe(400);
+    expect((await nonObject.json()).error).toBe("JSON body must be an object");
+  });
+
   // ---------------------------------------------------------------------------
   // MCP protocol over HTTP (2026-07-28, sessionless)
   // ---------------------------------------------------------------------------
@@ -1669,6 +1687,17 @@ describe("REST /query, MCP query and the query log", () => {
     });
     expect(rows[0].results).toHaveLength(json.results.length);
     expect(typeof rows[0].ms).toBe("number");
+  });
+
+  test("a malformed or non-object body gets 400 and writes no log row", async () => {
+    process.env.QMD_QUERY_LOG = "1";
+    for (const body of ["{", "null", "[]", '"readme"']) {
+      const res = await fetch(`${baseUrl}/query`, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+      expect(res.status).toBe(400);
+      expect(typeof ((await res.json()) as { error: string }).error).toBe("string");
+    }
+    await flushQueryLog();
+    expect(logRows()).toEqual([]);
   });
 
   test("X-QMD-No-Log: 1 is not logged", async () => {
