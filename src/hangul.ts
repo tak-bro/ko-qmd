@@ -125,15 +125,118 @@ function contractions(stem: string): string[] {
  * each of its stems, a bigram phrase (from hangulBigramTail) OR the character
  * phrase (`검색` → `("검색" OR "검 색")`). The character phrase keeps spacing
  * variants matching (`간격반복` over `간격 반복`), which bigrams cannot span; the
- * bigram phrase adds its BM25 weight. Returns null for single syllables and
- * non-Hangul or mixed-script terms, so the caller keeps its default character
+ * bigram phrase adds its BM25 weight. A loanword (hangulLoanwordForms) also ORs
+ * its Latin spelling. Returns null for single syllables with no loanword entry and
+ * for non-Hangul or mixed-script terms, so the caller keeps its default character
  * phrase.
  */
 export function hangulTermQuery(term: string): string | null {
-  if (!HANGUL_WORD_PATTERN.test(term) || Array.from(term).length < 2) return null;
+  if (!HANGUL_WORD_PATTERN.test(term)) return null;
+  const loanwords = hangulLoanwordForms(term).map((form) => `"${form}"`);
+  if (Array.from(term).length < 2) {
+    return loanwords.length > 0 ? `(${[`"${term}"`, ...loanwords].join(" OR ")})` : null;
+  }
   const phrases = (s: string) => [`"${syllableBigrams(s).join(" ")}"`, `"${Array.from(s).join(" ")}"`];
   const stems = hangulStems(term);
-  return `(${[...stems.flatMap(phrases), ...phrases(term)].join(" OR ")})`;
+  return `(${[...stems.flatMap(phrases), ...phrases(term), ...loanwords].join(" OR ")})`;
+}
+
+/**
+ * Hangul loanword spellings of Latin technical vocabulary. Notes name things by their
+ * Latin identifier (`hybrid-search.md`, `lemon-web-core`) while questions spell the same
+ * words in Hangul (`하이브리드 서치`, `레몬 웹 코어`), and neither bigrams nor the vector
+ * list bridge that on the lex side. Hand-written, one entry per line; forms are lowercase
+ * ASCII words separated by single spaces so they are safe inside an FTS5 phrase.
+ */
+const LOANWORDS: Readonly<Record<string, readonly string[]>> = {
+  "가이드": ["guide"],
+  "골든": ["golden"],
+  "그래프": ["graph"],
+  "노트": ["note"],
+  "데몬": ["daemon"],
+  "데이터": ["data"],
+  "데이터셋": ["dataset"],
+  "디바이스": ["device"],
+  "디시전": ["decision"],
+  "랭크": ["rank"],
+  "랭킹": ["ranking"],
+  "레몬": ["lemon"],
+  "레시프로컬": ["reciprocal"],
+  "레코드": ["record"],
+  "로그": ["log"],
+  "리랭커": ["reranker"],
+  "리랭크": ["rerank"],
+  "리랭킹": ["reranking"],
+  "리트리벌": ["retrieval"],
+  "리피티션": ["repetition"],
+  "린트": ["lint"],
+  "마이그레이션": ["migration"],
+  "메타데이터": ["metadata"],
+  "모델": ["model"],
+  "미팅": ["meeting"],
+  "바이그램": ["bigram"],
+  "벡터": ["vector"],
+  "벤치": ["bench"],
+  "벤치마크": ["benchmark"],
+  "서버": ["server"],
+  "서치": ["search"],
+  "세션": ["session"],
+  "스키마": ["schema"],
+  "스킬": ["skill"],
+  "스페이스드": ["spaced"],
+  "싱크": ["sync"],
+  "아카이브": ["archive"],
+  "어펜드": ["append"],
+  "에이전트": ["agent"],
+  "엔그램": ["ngram", "n gram"],
+  "오토메이션": ["automation"],
+  "온리": ["only"],
+  "워크플로": ["workflow"],
+  "워크플로우": ["workflow"],
+  "웹": ["web"],
+  "위키": ["wiki"],
+  "위키링크": ["wikilink"],
+  "유니그램": ["unigram"],
+  "익스팬션": ["expansion"],
+  "인덱스": ["index"],
+  "인버티드": ["inverted"],
+  "인제스트": ["ingest"],
+  "인코더": ["encoder"],
+  "임베딩": ["embedding"],
+  "청크": ["chunk"],
+  "청킹": ["chunking"],
+  "캐시": ["cache"],
+  "컨텍스트": ["context"],
+  "컬렉션": ["collection"],
+  "코어": ["core"],
+  "쿼리": ["query"],
+  "크로스": ["cross"],
+  "클라이언트": ["client"],
+  "템플릿": ["template"],
+  "토크나이제이션": ["tokenization"],
+  "토큰": ["token"],
+  "토픽": ["topic"],
+  "트래킹": ["tracking"],
+  "파이프라인": ["pipeline"],
+  "퓨전": ["fusion"],
+  "프로버넌스": ["provenance"],
+  "프로비넌스": ["provenance"],
+  "프로필": ["profile"],
+  "프론트매터": ["frontmatter"],
+  "프롬프트": ["prompt"],
+  "플러그인": ["plugin"],
+  "필터": ["filter"],
+  "하이브리드": ["hybrid"],
+  "훅": ["hook"],
+};
+
+/**
+ * Latin spellings for a Hangul loanword (`서치` → `search`), looked up on the word and on
+ * its particle-stripped stems so `서치를` bridges too. Empty when nothing matches.
+ */
+export function hangulLoanwordForms(term: string): string[] {
+  const forms = [term, ...hangulStems(term)].flatMap((word) => LOANWORDS[word] ?? []);
+  return [...new Set(forms)];
 }
 
 /**
