@@ -44,7 +44,9 @@ bash scripts/dogfood.sh --check "RESULT bm25_r5=…"   # 게이트 판정만
 
 ### ko-vault 벤치
 
-`bash scripts/bench-ko.sh` (픽스처 `test/fixtures/ko-vault/`, 문서 28·질의 36, 임베딩은 픽스처 `models.yml`의 embeddinggemma로 고정). 표와 run별 수치는 [BASELINE.md](test/fixtures/ko-vault/BASELINE.md).
+`bash scripts/bench-ko.sh` (픽스처 `test/fixtures/ko-vault/`, 문서 28·질의 63, 임베딩은 픽스처 `models.yml`의 Qwen3-Embedding-0.6B-Q8_0으로 고정 — 패키지 기본값과 같다). run별 수치는 [BASELINE.md](test/fixtures/ko-vault/BASELINE.md).
+
+아래 표는 질의 36·embeddinggemma 시절의 단계별 기록이다.
 
 | 단계 | bm25_r5 | vector_r5 | full_r5 |
 |---|---|---|---|
@@ -52,7 +54,7 @@ bash scripts/dogfood.sh --check "RESULT bm25_r5=…"   # 게이트 판정만
 | + 질의 조사 처리 (B2) | 0.6528 | 0.9861 | 1.0000 |
 | + bigram 색인 (B3) | 0.6528 | 0.9861 | 1.0000 |
 
-Qwen3-Embedding 기본값의 벤치 수치는 미측정이다(design §6 라운드 M1).
+Qwen3-Embedding 기본값에서 질의 52는 bm25_r5 0.9519 · vector_r5 1.0000 · full_r5 1.0000이다. 질의 63은 외래어 표기 질의 11건(`하이브리드 서치` → `hybrid-search.md`)을 더한 것으로, 그 11건의 bm25_r5는 BASELINE.md 2026-09-23 절에 따로 적는다.
 
 ## 설치
 
