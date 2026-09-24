@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Changes
+
+- `scripts/dogfood.sh` warms the embedding model with one vec query after
+  every daemon restart (deploy and `--restore`). A fresh daemon's first vec
+  query took 15.5s, so the first KB seam search after a restart hit its 20s
+  limit and fell back to rg. A failed warm-up is a warning, not a failed restart.
+
 ## [2.8.3-ko.4] - 2026-09-24
 
 Korean documents are now chunked at their real token budget, and Hangul

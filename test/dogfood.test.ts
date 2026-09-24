@@ -100,3 +100,54 @@ describe.skipIf(process.platform === "win32")("dogfood.sh deploy gate", () => {
     expect(npmCalls()).not.toMatch(/\bpack\b|\binstall\b/);
   });
 });
+
+describe.skipIf(process.platform === "win32")("dogfood.sh --restore warm-up", () => {
+  let stubDir: string;
+  let curlLog: string;
+
+  beforeEach(() => {
+    stubDir = mkdtempSync(join(tmpdir(), "qmd-dogfood-restore-"));
+    curlLog = join(stubDir, "curl.log");
+    const stub = (name: string, body: string) => {
+      writeFileSync(join(stubDir, name), `#!/usr/bin/env bash\n${body}\n`);
+      chmodSync(join(stubDir, name), 0o755);
+    };
+    stub("npm", "exit 0");
+    stub("launchctl", "exit 0");
+    stub("qmd", 'echo "qmd 0.0.0-test (abc1234)"');
+    // curl stub: records every call; /query fails when CURL_QUERY_FAILS is set.
+    stub("curl", `echo "$*" >> "${curlLog}"\ncase "$*" in *"/query"*) [ -z "$CURL_QUERY_FAILS" ] || exit 7 ;; esac\nexit 0`);
+  });
+
+  afterEach(() => {
+    rmSync(stubDir, { recursive: true, force: true });
+  });
+
+  const restore = (env: Record<string, string> = {}) =>
+    run(["--restore"], {
+      PATH: `${stubDir}:${process.env.PATH}`,
+      // Not stubDir itself: the \`qmd\` stub lives there, and the marker path is $XDG_CACHE_HOME/qmd/.
+      XDG_CACHE_HOME: join(stubDir, "cache"),
+      DOGFOOD_LABEL: "invalid.qmd-dogfood-test",
+      DOGFOOD_URL: "http://127.0.0.1:9",
+      ...env,
+    });
+  const curlCalls = () => readFileSync(curlLog, "utf-8").trim().split("\n");
+
+  test("a vec query follows the health check, so the first seam call finds the model loaded", () => {
+    const out = restore();
+    expect(out.status).toBe(0);
+    const calls = curlCalls();
+    const health = calls.findIndex((c) => c.includes("/health"));
+    const warm = calls.findIndex((c) => c.includes("/query") && c.includes('"type":"vec"'));
+    expect(health).toBeGreaterThanOrEqual(0);
+    expect(warm).toBeGreaterThan(health);
+    expect(out.stderr).toContain("warmed embedding model");
+  });
+
+  test("a failed warm-up is a warning, not a failed restore", () => {
+    const out = restore({ CURL_QUERY_FAILS: "1" });
+    expect(out.status).toBe(0);
+    expect(out.stderr).toContain("warning: warm-up vec query failed");
+  });
+});
