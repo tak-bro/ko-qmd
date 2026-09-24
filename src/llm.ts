@@ -930,6 +930,10 @@ export class LlamaCpp implements LLM {
   private embedModelUri: string;
   private generateModelUri: string;
   private rerankModelUri: string;
+  // QMD_RERANK_MAX_DOC_TOKENS: optional per-doc token cap for rerank input, below the
+  // context budget. Rerank cost grows with input tokens; unset keeps whole chunks.
+  // Read per instance (not a static) so it is set by the env at construction.
+  readonly rerankMaxDocTokens: number | undefined;
   private modelCacheDir: string;
   private expandContextSize: number;
 
@@ -964,6 +968,8 @@ export class LlamaCpp implements LLM {
     this.embedModelUri = resolveEmbedModel({ embed: config.embedModel });
     this.generateModelUri = resolveGenerateModel({ generate: config.generateModel });
     this.rerankModelUri = resolveRerankModel({ rerank: config.rerankModel });
+    const maxDocTokens = parseInt(process.env.QMD_RERANK_MAX_DOC_TOKENS ?? "", 10);
+    this.rerankMaxDocTokens = Number.isFinite(maxDocTokens) && maxDocTokens > 0 ? maxDocTokens : undefined;
     this.modelCacheDir = config.modelCacheDir || MODEL_CACHE_DIR;
     this.expandContextSize = resolveExpandContextSize(config.expandContextSize);
     this.inactivityTimeoutMs = resolveIdleTimeoutOverride()
@@ -1821,9 +1827,11 @@ export class LlamaCpp implements LLM {
     const model = await this.ensureRerankModel();
 
     // Truncate documents that would exceed the rerank context size.
-    // Budget = contextSize - template overhead - query tokens
+    // Budget = contextSize - template overhead - query tokens, lowered to
+    // rerankMaxDocTokens when set.
     const queryTokens = model.tokenize(query).length;
-    const maxDocTokens = LlamaCpp.RERANK_CONTEXT_SIZE - LlamaCpp.RERANK_TEMPLATE_OVERHEAD - queryTokens;
+    const contextBudget = LlamaCpp.RERANK_CONTEXT_SIZE - LlamaCpp.RERANK_TEMPLATE_OVERHEAD - queryTokens;
+    const maxDocTokens = Math.min(contextBudget, this.rerankMaxDocTokens ?? contextBudget);
     const truncationCache = new Map<string, string>();
 
     const truncatedDocs = documents.map((doc) => {

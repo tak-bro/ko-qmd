@@ -847,6 +847,83 @@ describe("LlamaCpp embedding truncation", () => {
   });
 });
 
+describe("LlamaCpp rerank doc token cap (QMD_RERANK_MAX_DOC_TOKENS)", () => {
+  const withEnv = (value: string | undefined) => {
+    const prev = process.env.QMD_RERANK_MAX_DOC_TOKENS;
+    if (value === undefined) delete process.env.QMD_RERANK_MAX_DOC_TOKENS;
+    else process.env.QMD_RERANK_MAX_DOC_TOKENS = value;
+    try {
+      // any: the tests stub private members (_ciMode, ensureRerankContexts, ensureRerankModel)
+      return new LlamaCpp({}) as any;
+    } finally {
+      if (prev === undefined) delete process.env.QMD_RERANK_MAX_DOC_TOKENS;
+      else process.env.QMD_RERANK_MAX_DOC_TOKENS = prev;
+    }
+  };
+
+  // Character tokenizer: one char = one token, so a cap of n keeps the first n chars.
+  const stubRerank = (llm: any) => { // any: stubs private members, see withEnv
+    llm._ciMode = false;
+    const rankAll = vi.fn(async (_query: string, docs: string[]) => docs.map(() => 0.5));
+    llm.touchActivity = vi.fn();
+    llm.ensureRerankContexts = vi.fn().mockResolvedValue([{ rankAll }]);
+    llm.ensureRerankModel = vi.fn().mockResolvedValue({
+      tokenize: (text: string) => Array.from(text),
+      detokenize: (tokens: string[]) => tokens.join(""),
+    });
+    return rankAll;
+  };
+
+  test("a set cap truncates each doc to at most that many tokens", async () => {
+    const llm = withEnv("4");
+    expect(llm.rerankMaxDocTokens).toBe(4);
+    const rankAll = stubRerank(llm);
+
+    await llm.rerank("q", [{ file: "a.md", text: "abcdefgh" }, { file: "b.md", text: "xy" }]);
+
+    expect(rankAll).toHaveBeenCalledWith("q", ["abcd", "xy"]);
+  });
+
+  test("unset, docs go in whole up to the context budget", async () => {
+    const llm = withEnv(undefined);
+    expect(llm.rerankMaxDocTokens).toBeUndefined();
+    const rankAll = stubRerank(llm);
+
+    await llm.rerank("q", [{ file: "a.md", text: "abcdefgh" }]);
+
+    expect(rankAll).toHaveBeenCalledWith("q", ["abcdefgh"]);
+  });
+
+  test("a cap above the context budget cannot raise it", async () => {
+    const llm = withEnv("100000");
+    const rankAll = stubRerank(llm);
+    // Budget = RERANK_CONTEXT_SIZE - RERANK_TEMPLATE_OVERHEAD - query tokens (1 char).
+    const statics = LlamaCpp as any; // any: private statics
+    const contextBudget = statics.RERANK_CONTEXT_SIZE - statics.RERANK_TEMPLATE_OVERHEAD - 1;
+
+    await llm.rerank("q", [{ file: "a.md", text: "x".repeat(contextBudget + 50) }]);
+
+    expect(rankAll.mock.calls[0]![1][0]).toHaveLength(contextBudget);
+  });
+
+  test.each(["0", "-5", "abc", ""])("invalid value %j counts as unset", (value) => {
+    expect(withEnv(value).rerankMaxDocTokens).toBeUndefined();
+  });
+
+  test("docs that share a capped head are scored once and both get the score", async () => {
+    const llm = withEnv("3");
+    const rankAll = stubRerank(llm);
+
+    const result = await llm.rerank("q", [
+      { file: "a.md", text: "abc-one" },
+      { file: "b.md", text: "abc-two" },
+    ]);
+
+    expect(rankAll).toHaveBeenCalledWith("q", ["abc"]);
+    expect(result.results.map((r: { file: string }) => r.file).sort()).toEqual(["a.md", "b.md"]);
+  });
+});
+
 describe("LlamaCpp rerank deduping", () => {
   test("deduplicates identical document texts before scoring", async () => {
     const llm = new LlamaCpp({}) as any;

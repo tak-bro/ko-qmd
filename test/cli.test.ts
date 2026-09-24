@@ -874,6 +874,7 @@ describe("CLI Status Command", () => {
       QMD_EMBED_PARALLELISM: "2",
       QMD_EXPAND_CONTEXT_SIZE: "4096",
       QMD_RERANK_CONTEXT_SIZE: "8192",
+      QMD_RERANK_MAX_DOC_TOKENS: "256",
       QMD_EMBED_CONTEXT_SIZE: "1024",
       QMD_EDITOR_URI: "vscode://file/{file}:{line}:{col}",
       QMD_SKILLS_DIR: "/tmp/qmd-skills",

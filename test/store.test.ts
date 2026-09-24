@@ -1296,6 +1296,42 @@ describe("Caching", () => {
     }
   });
 
+  test("rerank cache keeps capped and uncapped scores apart (QMD_RERANK_MAX_DOC_TOKENS)", async () => {
+    const store = await createTestStore();
+    const query = "rerank cap cache split";
+    const docs = [{ file: "doc.md", text: "chunk" }];
+    const modelName = "hf:example/cap/cap.gguf";
+
+    const makeMock = (score: number, rerankMaxDocTokens?: number) => {
+      const spy = vi.fn(async (_query: string, scoredDocs: { file: string; text: string }[]) => ({
+        results: scoredDocs.map((doc, index) => ({ file: doc.file, score, index })),
+        model: modelName,
+      }));
+      return { spy, llm: { rerank: spy, rerankModelName: modelName, rerankMaxDocTokens } };
+    };
+
+    // `as any` below: the mocks implement only the LlamaCpp members rerank() reads.
+    const uncapped = makeMock(0.3);
+    const capped = makeMock(0.8, 128);
+    const uncappedAgain = makeMock(0.9);
+
+    try {
+      store.llm = uncapped.llm as any;
+      expect((await store.rerank(query, docs))[0]!.score).toBe(0.3);
+
+      store.llm = capped.llm as any;
+      expect((await store.rerank(query, docs))[0]!.score).toBe(0.8);
+      expect(capped.spy).toHaveBeenCalledTimes(1);
+      expect(capped.spy.mock.calls[0]![2]).toEqual({ model: modelName });
+
+      store.llm = uncappedAgain.llm as any;
+      expect((await store.rerank(query, docs))[0]!.score).toBe(0.3);
+      expect(uncappedAgain.spy).not.toHaveBeenCalled();
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
   test("rerank cache key follows store.llm.rerankModelName (#764)", async () => {
     const store = await createTestStore();
     const query = "store.llm model swap";

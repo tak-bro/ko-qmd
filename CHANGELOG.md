@@ -4,6 +4,13 @@
 
 ### Changes
 
+- `QMD_RERANK_MAX_DOC_TOKENS` caps the tokens of each document sent to the
+  reranker, below the context budget. Unset keeps today's behaviour. On the KB
+  goldset (40 queries, candidateLimit 15), a cap of 128 keeps quality at
+  Hit@5 0.97 / Recall@5 0.77 against 0.95 / 0.76 uncapped. It cuts cold p90 from
+  3623ms to 897ms on an M3 Max and from 4720ms to 2192ms on another Apple Silicon
+  Mac. The cap is part of the rerank cache key, so capped and uncapped scores
+  never mix. Listed in `qmd doctor`.
 - `scripts/dogfood.sh` warms the embedding model with one vec query after
   every daemon restart (deploy and `--restore`). A fresh daemon's first vec
   query took 15.5s, so the first KB seam search after a restart hit its 20s
