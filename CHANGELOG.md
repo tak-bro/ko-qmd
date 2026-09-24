@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+Rerank gets an input cap. Truncating each document to 128 tokens keeps KB
+goldset quality (Hit@5 0.97 / Recall@5 0.77) while cutting cold rerank p90 from
+3.6s to 0.9s on an M3 Max. The cap can be set daemon-wide
+(`QMD_RERANK_MAX_DOC_TOKENS`) or per request (`rerankMaxDocTokens` on REST
+`/query` and SDK `search()`). The README is now a Korean guide to ko-qmd itself,
+and the English reference lives in `docs/REFERENCE.md`.
+
 ### Changes
 
 - README.md is rewritten in Korean around ko-qmd itself: what differs from
