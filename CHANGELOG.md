@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.8.3-ko.4] - 2026-09-24
+
 Korean documents are now chunked at their real token budget, and Hangul
 spellings of technical loanwords (`서치`, `웹 코어`) reach notes written in Latin
 script. This release also syncs tobi/qmd up to `04e4dbd` — metadata filtering,
