@@ -15,7 +15,6 @@ texts/
 !skills/**/*.md
 !finetune/*.md
 !docs/*.md
-!README.ko.md
 !docs/vault-search/**/*.md
 !test/fixtures/ko-vault/**/*.md
 finetune/outputs/
