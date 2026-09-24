@@ -8,6 +8,10 @@
   every daemon restart (deploy and `--restore`). A fresh daemon's first vec
   query took 15.5s, so the first KB seam search after a restart hit its 20s
   limit and fell back to rg. A failed warm-up is a warning, not a failed restart.
+- `scripts/dogfood.sh` waits for the *restarted* daemon. `launchctl kickstart -k`
+  returns while the old process is still shutting down and answering `/health`,
+  so the restart looked done ~9s before the new process listened. A `/health`
+  whose `uptime` predates the kickstart is now treated as the old process.
 
 ## [2.8.3-ko.4] - 2026-09-24
 

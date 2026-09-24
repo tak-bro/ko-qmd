@@ -115,8 +115,21 @@ describe.skipIf(process.platform === "win32")("dogfood.sh --restore warm-up", ()
     stub("npm", "exit 0");
     stub("launchctl", "exit 0");
     stub("qmd", 'echo "qmd 0.0.0-test (abc1234)"');
-    // curl stub: records every call; /query fails when CURL_QUERY_FAILS is set.
-    stub("curl", `echo "$*" >> "${curlLog}"\ncase "$*" in *"/query"*) [ -z "$CURL_QUERY_FAILS" ] || exit 7 ;; esac\nexit 0`);
+    // curl stub: records every call; /query fails when CURL_QUERY_FAILS is set. /health answers
+    // uptime 0 (a fresh daemon), except for the first STALE_HEALTH calls, which answer the way the
+    // old process does while it shuts down — up for a day — and the next DOWN_HEALTH calls, which
+    // fail to connect the way the port does between the two processes.
+    stub("curl", [
+      `echo "$*" >> "${curlLog}"`,
+      'case "$*" in',
+      '  *"/query"*) [ -z "$CURL_QUERY_FAILS" ] || exit 7 ;;',
+      `  *"/health"*) n=$(grep -c /health "${curlLog}")`,
+      '    if [ "$n" -le "${STALE_HEALTH:-0}" ]; then echo \'{"status":"ok","uptime":86400}\';',
+      '    elif [ "$n" -le $(( ${STALE_HEALTH:-0} + ${DOWN_HEALTH:-0} )) ]; then exit 7;',
+      '    else echo \'{"status":"ok","uptime":0}\'; fi ;;',
+      "esac",
+      "exit 0",
+    ].join("\n"));
   });
 
   afterEach(() => {
@@ -142,6 +155,16 @@ describe.skipIf(process.platform === "win32")("dogfood.sh --restore warm-up", ()
     const warm = calls.findIndex((c) => c.includes("/query") && c.includes('"type":"vec"'));
     expect(health).toBeGreaterThanOrEqual(0);
     expect(warm).toBeGreaterThan(health);
+    expect(out.stderr).toContain("warmed embedding model");
+  });
+
+  test("the old daemon answering /health mid-shutdown does not count as restarted", () => {
+    const out = restore({ STALE_HEALTH: "1", DOWN_HEALTH: "1" });
+    expect(out.status).toBe(0);
+    const calls = curlCalls();
+    const warm = calls.findIndex((c) => c.includes("/query"));
+    // A stale answer and a refused connection are both waited out; the warm-up follows the third, fresh one.
+    expect(calls.slice(0, warm).filter((c) => c.includes("/health"))).toHaveLength(3);
     expect(out.stderr).toContain("warmed embedding model");
   });
 

@@ -56,15 +56,24 @@ check_gate() { # check_gate <RESULT line> — 0 pass, 3 regression or unparsable
   say "gate: ok bm25_r5=$now (baseline $base)"
 }
 
-restart_daemon() { # restart_daemon — kickstart the launchd job, wait up to 30s for /health
+# restart_daemon — kickstart the launchd job, wait up to 30s for the *new* process's /health.
+# `kickstart -k` returns while the old process is still shutting down, and it keeps answering
+# /health until it exits (2026-09-24: answered 1ms, then the port was closed ~9s before the new
+# one listened). A /health whose uptime predates the kickstart is the old process.
+restart_daemon() {
+  local kicked=$SECONDS _ uptime
   launchctl kickstart -k "gui/$(id -u)/$LABEL" >/dev/null \
     || { say "launchctl kickstart $LABEL failed — is the job loaded?"; return 1; }
-  local _
   for _ in $(seq 1 30); do
-    curl -fsS -m 2 "$URL/health" >/dev/null 2>&1 && { warm_models; return 0; }
+    # `|| true`: a refused connection is the normal gap between the two processes, not an error
+    uptime="$(curl -fsS -m 2 "$URL/health" 2>/dev/null | sed -nE 's/.*"uptime":([0-9]+).*/\1/p' || true)"
+    if [ -n "$uptime" ] && [ "$uptime" -le $((SECONDS - kicked + 1)) ]; then
+      warm_models
+      return 0
+    fi
     sleep 1
   done
-  say "daemon did not answer $URL/health within 30s"
+  say "a restarted daemon did not answer $URL/health within 30s"
   return 1
 }
 
