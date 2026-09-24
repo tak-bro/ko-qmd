@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+Korean documents are now chunked at their real token budget, and Hangul
+spellings of technical loanwords (`서치`, `웹 코어`) reach notes written in Latin
+script. This release also syncs tobi/qmd up to `04e4dbd` — metadata filtering,
+the oxlint fence and the REST JSON body guard — and adds `qmd grep`, `path`/
+`since`/`until` scoping on MCP and REST, and a daemon that keeps the text index
+fresh on its own. Existing indexes need one `qmd embed` run to pick up the new
+chunking, and SDK callers that passed `filter` for path/time scoping must rename
+it to `scope`.
+
 ### Breaking
 
 - SDK: ko-qmd's path/time narrowing option is now `scope` (was `filter`) on
