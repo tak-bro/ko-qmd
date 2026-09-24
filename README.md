@@ -1,1564 +1,245 @@
-> **ko-qmd** (`npm i -g ko-qmd`) — a Korean-language distribution of [tobi/qmd](https://github.com/tobi/qmd) (MIT).
-> Hangul particle stripping and syllable-bigram FTS in the lex path, Qwen3-Embedding-0.6B as the
-> default embedding model. Everything below is upstream's README and still applies: the CLI, the MCP
-> server and the package binary are all called `qmd`. Where it says `@tobilu/qmd` — install commands,
-> SDK `import`s — use `ko-qmd`; the upstream name installs upstream, with none of the Hangul patches.
-> Korean notes, install and release process: [README.ko.md](README.ko.md).
+# ko-qmd
 
-# QMD - Query Markup Documents
+한국어 마크다운 노트를 위한 로컬 검색 엔진. [tobi/qmd](https://github.com/tobi/qmd)(MIT)의 한국어 배포판이다.
+노트·회의록·문서를 색인해 키워드로도 자연어로도 찾고, 에이전트가 CLI·MCP·REST·SDK 로 쓴다.
+모든 모델은 [node-llama-cpp](https://github.com/withcatai/node-llama-cpp) 로 로컬에서 돈다(GGUF, 네트워크 호출 없음).
 
-An on-device search engine for everything you need to remember. Index your markdown notes, meeting transcripts, documentation, and knowledge bases. Search with keywords or natural language. Ideal for your agentic flows.
-
-QMD combines BM25 full-text search, vector semantic search, and LLM re-ranking—all running locally via node-llama-cpp with GGUF models.
+- 패키지: `ko-qmd` (npm). 실행 파일과 MCP 서버 이름은 업스트림과 같은 `qmd`
+- 버전: `<업스트림 버전>-ko.N` (예: `2.8.3-ko.4`)
+- 영어 레퍼런스(전체 CLI 옵션·MCP 툴 파라미터·SDK API·점수 계산): [docs/REFERENCE.md](docs/REFERENCE.md)
+- 변경 이력: [CHANGELOG.md](CHANGELOG.md)
 
 ```mermaid
 flowchart LR
-  Q[User Query] --> X[Query Expansion]
-  Q --> FTS[BM25 Search]
-  Q --> VS[Vector Search]
-  X --> HYDE[HyDE]
-  X --> VEC[Vec dense sentences]
-  X --> LEX[Lex BM25 keywords]
-  HYDE --> VS
-  VEC --> VS
-  LEX --> FTS
-  VS --> RRF[Reciprocal Rank Fusion]
-  FTS --> RRF
-  RRF --> RR[LLM Reranker]
-  RR --> OUT[Final ranked results]
+  Q[질의] --> H[한글 처리<br/>조사·어미 제거 · 외래어 다리]
+  H --> FTS[BM25<br/>FTS5 + 음절 bigram]
+  Q --> VS[벡터 검색<br/>Qwen3-Embedding]
+  FTS --> RRF[RRF 융합]
+  VS --> RRF
+  RRF --> RR[리랭크<br/>Qwen3-Reranker]
+  RR --> OUT[결과]
 ```
 
-Typed expansions are routed exclusively: `lex` → BM25/FTS, `vec` and `hyde` → vector search. The original query is sent to both backends, then fused with RRF and reranked.
+## 업스트림과 다른 점
 
-You can read more about QMD's progress in the [CHANGELOG](CHANGELOG.md).
+### 한국어 키워드 검색 (lex)
 
-## Quick Start
+- **조사·어미 제거** — 따옴표 없는 한글 단어는 어간도 매칭한다. 끝 조사 하나(`검색을` → `검색`), 두 조사 연쇄(`청킹에서의` → `청킹`),
+  동사·명사화 어미(`토큰화하는` → `토큰화`, `검색하기` → `검색`), `한`/`된` 어미(`필요한` → `필요`), 하↔해 축약(`더하` ↔ `더해`).
+  따옴표 구문·한자·가나는 그대로 둔다.
+- **외래어 다리** — 기술 용어의 한글 표기(`서치`·`웹`·`코어`·`마이그레이션` 등 약 80개 내장 표)는 영문 표기도 함께 찾는다.
+  `하이브리드 서치`가 `hybrid-search` 노트를, `레몬 웹 코어`가 `lemon-web-core`를 찾는다. 질의 쪽만 바뀌므로 재색인은 필요 없다.
+- **문자 체계가 섞인 토큰 분리** — `SKILL.md계약의핵심`은 `skill` AND `md` AND `계약의핵심`으로 나눈다.
+- **긴 질의 완화** — 세 단어 이상 질의가 AND 로 한 건도 안 맞으면 같은 단어를 OR 로 다시 찾는다. 자연어 문장 질의가 0건이 되지 않는다.
+- **음절 bigram 색인** — 한글 구간의 음절 bigram 을 FTS 필드에 덧붙인다. 붙여 쓴 복합어 안의 단어도 걸린다.
+  기존 인덱스는 처음 열 때 FTS 를 한 번 다시 만든다.
+
+### 기본 모델과 청킹
+
+| 역할 | 기본 모델 | 업스트림 |
+|---|---|---|
+| 임베딩 | `Qwen3-Embedding-0.6B` (Q8_0) | embeddinggemma-300M |
+| 리랭크 | `Qwen3-Reranker-0.6B` (Q8_0) | 같음 |
+| 질의 확장 | `qmd-query-expansion-1.7B` | 같음 |
+
+- 한국어 문서는 실제 토큰 예산으로 청킹한다. 한글은 글자당 토큰이 영어보다 훨씬 많다(Qwen3-Embedding 실측 ko 1.64 / en 6.08 chars/token).
+  그래서 청크 크기는 한글·기타 문자의 조화 평균으로 잡는다. 영어 문서의 청크 경계는 업스트림과 같다.
+- 하이브리드 RRF 가중치를 한국어에 맞게 조정했다. 벡터 목록은 절반, OR 로 완화한 lex 목록은 다시 절반, 확장 질의 목록은 0.75 로 센다.
+- 리랭커가 실제로 1위를 바꿀 수 있게 점수 블렌드를 고쳤다. 검색 순위 항은 블렌드의 10% 인 선형 감쇠다.
+  이전 블렌드에서는 리랭크 점수와 상관없이 검색 1위가 그대로 남았다.
+
+### 검색 범위와 도구
+
+- **경로·시간 범위** — CLI `--path`·`--since`·`--until`, REST·MCP `path`·`since`·`until`, SDK `scope`.
+  걸러진 코퍼스 안에서 순위를 매긴다(전역 top-K 를 뽑은 뒤 거르는 방식이 아니다). metadata 필터(`filter`)와 같이 주면 AND 다.
+- **`qmd grep`** — 색인된 본문을 문자열이나 정규식으로 정확히 찾는다(순위 없음). 토크나이저가 못 만든 한국어 표기를 찾을 때 쓴다.
+- **`limit` 과 검색 폭 분리** — `limit` 은 돌려줄 개수만 정한다. 검색은 최소 20 문서를 본다.
+
+### 데몬(HTTP MCP 서버) 기능
+
+- **색인 자동 갱신** — 검색 전에 대상 컬렉션을 확인하고(컬렉션당 30초에 한 번) 바뀐 파일을 다시 색인한다.
+  데몬이 도는 중에 쓴 노트가 `qmd update` 없이 다음 검색에서 키워드로 잡힌다. 벡터는 `qmd embed` 뒤에 반영된다.
+- **질의 로그** — `QMD_QUERY_LOG=1` 이면 REST `/query` 와 HTTP MCP `query` 호출마다 `~/.cache/qmd/queries-YYYY-MM.jsonl` 에 한 줄을 남긴다
+  (결과 경로·점수·소요 시간, 스니펫 없음). 헤더 `X-QMD-Tag`·`X-QMD-Qid`·`X-QMD-Role`·`X-QMD-No-Log` 로 행에 표시를 단다.
+  계약: [docs/REFERENCE.md § Query log](docs/REFERENCE.md#query-log-ko-qmd).
+- **원시 점수** — `rerank:false` 응답의 결과마다 `vec_score`(코사인 유사도)·`fts_score`(정규화 BM25)가 붙는다.
+  그 경로의 `score` 는 1/순위라 임계값을 걸 수 없기 때문이다.
+- **모델 상주** — `QMD_LLM_IDLE_TIMEOUT_MS=0` 이면 모델을 내리지 않는다. 기본은 5분 idle 뒤 내린다.
+- **리랭크 입력 cap** — 리랭커에 보내는 문서당 토큰을 자른다. 데몬 전체는 `QMD_RERANK_MAX_DOC_TOKENS`,
+  요청 하나는 REST `rerankMaxDocTokens` 로 건다(요청 값이 우선). KB 골드셋에서 128토큰 cap 은 품질을 지키면서
+  콜드 p90 을 3.6s → 0.9s 로 줄였다(Apple M3 Max, 후보 15).
+
+## 설치
 
 ```sh
-# Install globally (Node or Bun)
-npm install -g @tobilu/qmd
-# or
-bun install -g @tobilu/qmd
-
-# Or run directly
-npx @tobilu/qmd ...
-bunx @tobilu/qmd ...
-
-# Create collections for your notes, docs, and meeting transcripts
-qmd collection add ~/notes --name notes
-qmd collection add ~/Documents/meetings --name meetings
-qmd collection add ~/work/docs --name docs
-
-# Add context to help with search results, each piece of context will be returned when matching sub documents are returned. This works as a tree. This is the key feature of QMD as it allows LLMs to make much better contextual choices when selecting documents. Don't sleep on it!
-qmd context add qmd://notes "Personal notes and ideas"
-qmd context add qmd://meetings "Meeting transcripts and notes"
-qmd context add qmd://docs "Work documentation"
-
-# Generate embeddings for semantic search
-qmd embed
-
-# Search across everything
-qmd search "project timeline"           # Fast keyword search
-qmd vsearch "how to deploy"             # Semantic search
-qmd query "quarterly planning process"  # Hybrid + reranking (best quality)
-
-# Get a specific document
-qmd get "meetings/2024-01-15.md"
-
-# Get a document by docid (shown in search results)
-qmd get "#abc123"
-
-# Get multiple documents by glob pattern
-qmd multi-get "journals/2025-05*.md"
-
-# Search within a specific collection
-qmd search "API" -c notes
-
-# Export all matches for an agent
-qmd search "API" --all --files --min-score 0.3
+npm install -g ko-qmd            # 또는 버전 핀: ko-qmd@2.8.3-ko.4
 ```
 
-### Using with AI Agents
+- 업스트림 `@tobilu/qmd` 와 실행 파일 이름이 같아 함께 둘 수 없다. `npm uninstall -g @tobilu/qmd` 뒤 설치한다.
+- 버전이 prerelease(`-ko.N`)라 `^`·`~` 범위는 같은 `major.minor.patch` 의 `-ko.*` 안에서만 움직인다. 앱에서는 정확한 버전으로 핀한다.
+- 미발행 커밋은 `npm i github:tak-bro/ko-qmd#<sha>` 로 받는다. `prepare` 가 `tsc` 로 `dist/` 를 만든다. 설치에는 node 와 tsc 만 필요하다.
+- 요구 사항: Node.js 22+ 또는 Bun, macOS 는 Homebrew SQLite(확장 로드용). 모델은 첫 사용 때 `~/.cache/qmd/models/` 로 내려받는다.
 
-QMD's `--json` and `--files` output formats are designed for agentic workflows:
+## 빠른 시작
 
 ```sh
-# Get structured results for an LLM
-qmd search "authentication" --json -n 10
+qmd collection add ~/notes --name notes          # 컬렉션 등록 + 색인
+qmd context add qmd://notes "개인 개발 노트"       # 검색 결과와 함께 돌려줄 설명
+qmd embed                                         # 벡터 임베딩 (처음 한 번, 이후 변경분만)
 
-# List all relevant files above a threshold
-qmd query "error handling" --all --files --min-score 0.4
+qmd query "하이브리드 서치 설계 결정"               # 확장 + 융합 + 리랭크 (권장)
+qmd search "리랭크"                               # BM25 만 (빠름, 모델 없음)
+qmd vsearch "검색 지연을 줄인 방법"                 # 벡터만
+qmd grep "QMD_QUERY_LOG"                          # 본문 정확 일치
 
-# Retrieve full document content
-qmd get "docs/api-reference.md" --full
+qmd get "#abc123"                                 # docid 로 문서 가져오기
+qmd get notes/plan.md:100:40                      # 100행부터 40행
 ```
 
-### MCP Server
+자주 쓰는 옵션: `-c <컬렉션>` · `-n <개수>` · `--min-score <점수>` · `--full` · `--intent "<찾는 것>"` · `--no-rerank` ·
+`--format json|csv|md|xml|files` · `--path`·`--since`·`--until`.
+전체 명령은 `qmd --help` 와 [docs/REFERENCE.md § Usage](docs/REFERENCE.md#usage).
 
-Although the tool works perfectly fine when you just tell your agent to use it on the command line, it also exposes an MCP (Model Context Protocol) server for tighter integration.
+컬렉션·모델 설정은 `~/.config/qmd/index.yml` 에 둔다. 프로젝트별 인덱스는 `qmd init` 으로 `.qmd/` 를 만든다.
+기본 임베딩을 바꾸면 벡터가 호환되지 않으므로 `qmd embed -f` 로 전부 다시 임베딩한다.
 
-**Tools exposed:**
-- `query` — Search with typed sub-queries (`lex`/`vec`/`hyde`), combined via RRF + reranking
-- `get` — Retrieve a document by path or docid (with fuzzy matching suggestions)
-- `multi_get` — Batch retrieve by glob pattern, comma-separated list, or docids
-- `status` — Index health and collection info
+## 에이전트에서 쓰기
 
-**Claude Desktop configuration** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
-
-```json
-{
-  "mcpServers": {
-    "qmd": {
-      "command": "qmd",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-
-**Claude Code** — Install the plugin (recommended):
-
-```bash
-claude plugin marketplace add tak-bro/ko-qmd
-claude plugin install qmd@qmd
-```
-
-Or configure MCP manually in `~/.claude/settings.json`:
-
-```json
-{
-  "mcpServers": {
-    "qmd": {
-      "command": "qmd",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-
-#### HTTP Transport
-
-By default, QMD's MCP server uses stdio (launched as a subprocess by each client). For a shared, long-lived server that avoids repeated model loading, use the HTTP transport:
+### MCP 서버
 
 ```sh
-# Foreground (Ctrl-C to stop)
-qmd mcp --http                    # localhost:8181
-qmd mcp --http --port 8080        # custom port
-qmd mcp --http --host 0.0.0.0     # bind all interfaces (e.g. container probes)
-
-# Background daemon
-qmd mcp --http --daemon           # start, writes PID to ~/.cache/qmd/mcp.pid
-qmd mcp stop                      # stop via PID file
-qmd status                        # shows "MCP: running (PID ...)" when active
+qmd mcp                          # stdio (Claude Desktop·Claude Code 등)
+qmd mcp --http                   # HTTP, 기본 포트 8181 — 모델을 한 번만 올리고 여러 세션이 공유
+qmd mcp --http --daemon          # 백그라운드, 끄기는 qmd mcp stop
 ```
 
-The server binds to `localhost` by default. Pass `--host` (or set the `QMD_HOST`
-environment variable) to override — `--host 0.0.0.0` is useful when the server
-runs in a container and a liveness probe connects from a non-loopback address.
+HTTP 데몬은 `POST /mcp`(MCP Streamable HTTP), `POST /query`(REST), `GET /health` 를 연다.
+툴 목록과 파라미터는 [docs/REFERENCE.md § MCP Server](docs/REFERENCE.md#mcp-server).
+에이전트용 검색 지침은 스킬 `skills/qmd/SKILL.md` 에 있다. 한국어 질의 절이 따로 있다: `lex:` 에는 어간·영문 용어, `vec:` 에는 한국어 패러프레이즈.
 
-The HTTP server exposes two endpoints:
-- `POST /mcp` — MCP Streamable HTTP (JSON responses, stateless)
-- `POST /query` (alias `/search`) — structured search without the MCP protocol. Accepts the same optional `filter` object as the `query` tool (invalid filters return `400`); see [Metadata Filtering](#metadata-filtering)
-- `GET /health` — liveness check with uptime
-
-##### Index refresh (ko-qmd)
-
-Before each search, the daemon checks the collections that search covers and
-re-indexes the ones that changed on disk, so a note written a minute ago is
-findable without running `qmd update`. Each collection is checked at most once
-every 30 seconds. The refresh updates the text index only: a new or edited note
-is found by keyword search right away and by vector search after the next
-`qmd embed`. It never runs a collection's `update:` command, never clears the
-LLM cache, and leaves a collection alone when its folder has vanished or turned
-up empty — an unmounted drive is not a reason to drop its documents. Collections
-outside the project of a project-local `.qmd` config are never refreshed.
-CLI searches do not refresh; run `qmd update` there.
-
-##### Query log (ko-qmd)
-
-Start the daemon with `QMD_QUERY_LOG=1` (`true`/`yes` also work; anything else
-is off) and every search it serves — `POST /query`, `/search`, and the MCP
-`query` tool over HTTP — is appended as one JSON line to
-`$XDG_CACHE_HOME/qmd/queries-YYYY-MM.jsonl` (default `~/.cache/qmd`, one file
-per local month, mode `0600`, never pruned). CLI searches are not logged, and
-neither is an MCP call over stdio: it carries no request to annotate.
-
-A row records the qmd version and commit, an index fingerprint (document count
-and last update), `via` (`rest` or `mcp`), the searches (a plain MCP `query`
-argument is recorded as one search of type `auto`), collections, limit, rerank
-flag, each result's
-`<collection>/<path>`, score and rank, and the elapsed milliseconds — no
-snippets or document text. On `rerank:false` rows each result also carries the
-raw backend scores the response returned, `vec_score` (cosine similarity) and
-`fts_score` (normalized BM25), since `score` there is only the 1/rank fusion
-position; each is absent, never 0, when that backend did not return the hit,
-and the row schema stays `v: 1`. Clients can annotate rows with request headers:
-
-| Header | Row field |
-|--------|-----------|
-| `X-QMD-Tag` | `client.tag` (first 32 characters) |
-| `X-QMD-Qid` | `client.qid` (first 64 characters) — groups the requests of one lookup |
-| `X-QMD-Role` | `client.role` — `primary`, `probe`, `canary` or `replay`; anything else is `null` |
-| `X-QMD-No-Log` | `1` skips the row (tests, evaluation runs) |
-
-Writes happen after the response and never fail a search. `qmd status` shows
-the newest log file; the daemon's MCP `status` tool also shows whether logging
-is on and the last write error.
-
-
-##### Origin and Host validation
-
-Every request is screened before routing: a request carrying an `Origin` header
-that does not name a loopback address is rejected with `403`, as is a `Host`
-header naming something other than the address the server is bound to. This is
-what stops a web page you visit from reading your index through DNS rebinding —
-loopback binding alone does not, since the browser makes the request from your
-own machine.
-
-Requests without an `Origin` header — curl, MCP clients, editors — are
-unaffected, which covers every normal local client.
-
-| Variable | Effect |
-|----------|--------|
-| `QMD_ALLOWED_ORIGINS` | Comma-separated origins to accept in addition to loopback, e.g. `https://notes.internal`. Set to `*` to disable the check entirely. |
-| `QMD_ALLOWED_HOSTS` | Comma-separated `Host` values to accept in addition to loopback and the bind address. |
-
-`--host 0.0.0.0` cannot know which `Host` values are legitimate, so it skips the
-host check and warns at startup. Set `QMD_ALLOWED_HOSTS` to re-enable it, and
-remember the endpoints are unauthenticated — put your own auth in front of a
-server that is reachable off-host.
-
-LLM models stay loaded in VRAM across requests. Embedding/reranking contexts are disposed after 5 min idle and transparently recreated on the next request (~1s penalty, models remain loaded).
-
-Point any MCP client at `http://localhost:8181/mcp` to connect.
-
-#### MCP Tool Parameters
-
-| Tool | Parameter | Type | Notes |
-|------|-----------|------|-------|
-| `query` | `searches` | array | Typed sub-queries (`lex`/`vec`/`hyde`), 1–10. **Required.** First gets 2x weight. |
-| `query` | `collections` | string[] | Filter by collection names (OR). **Array only** — singular `collection` is silently ignored. |
-| `query` | `filter` | object | Metadata filter (recursive `operator`-discriminated JSON AST; see [Metadata Filtering](#metadata-filtering)) |
-| `query` | `intent` | string | Disambiguation context (does not search on its own) |
-| `query` | `limit` | number | Max results (default 10) |
-| `query` | `minScore` | number | Minimum relevance 0–1 (default 0) |
-| `query` | `candidateLimit` | number | Max candidates to rerank (default 40) |
-| `query` | `rerank` | boolean | Run LLM reranking (default **true**); set false for RRF-only |
-| `query` | `path` | string[] | ko-qmd: globs against `collection/path`; `!` prefix excludes |
-| `query` | `since` | string | ko-qmd: span (`7d`) or date — documents modified at or after |
-| `query` | `until` | string | ko-qmd: same formats — documents modified at or before |
-| `get` | `file` | string | Path, docid (`#abc123`), or `path:from:count` (e.g. `#abc123:120:40`) |
-| `get` | `fromLine` | number | Start line (1-indexed); overrides the `:from` suffix |
-| `get` | `maxLines` | number | Limit returned lines |
-| `get` | `lineNumbers` | boolean | Prefix lines with numbers (default **true**) |
-| `multi_get` | `pattern` | string | Glob pattern or comma-separated list |
-| `multi_get` | `maxBytes` | number | Skip files larger than N (default 10240) |
-| `multi_get` | `maxLines` | number | Limit lines per file |
-| `multi_get` | `lineNumbers` | boolean | Prefix lines with numbers (default **true**) |
-| `grep` | `pattern` | string | ko-qmd: regex, or a literal when `fixedString` is set. **Required.** |
-| `grep` | `collections` | string[] | Filter by collection names (OR) |
-| `grep` | `path` / `since` / `until` | — | Same as on `query` |
-| `grep` | `limit` | number | Max files (default 20) |
-| `grep` | `maxLinesPerFile` | number | Max reported lines per file (default 20) |
-| `grep` | `caseSensitive` | boolean | Override smart case |
-| `grep` | `fixedString` | boolean | Treat the pattern as a literal string |
-
-Unknown parameters are silently ignored (not rejected) — double-check names if
-results seem unscoped. The HTTP `/query` and `/search` endpoints return
-`qmd://collection/path` URIs in the `file` field, matching the CLI and MCP output.
-
-`path`, `since` and `until` are the MCP side of the CLI's filtering flags —
-see [Path and Time Filtering](#path-and-time-filtering-ko-qmd) for their
-semantics. They narrow the corpus before ranking, so a narrow filter returns
-its own best matches rather than whatever survived the global top-K. A `since`
-or `until` that does not parse is an error (a tool error on MCP, HTTP 400 on
-`/query`) rather than a dropped filter, and an empty result under a filter
-reports how much corpus the filter left so an agent can tell "nothing matched"
-from "nothing to match against". The REST endpoints accept the same three.
-
-### SDK / Library Usage
-
-Use QMD as a library in your own Node.js or Bun applications.
-
-#### Installation
+### REST `/query`
 
 ```sh
-npm install @tobilu/qmd
-```
-
-#### Quick Start
-
-```typescript
-import { createStore } from '@tobilu/qmd'
-
-const store = await createStore({
-  dbPath: './my-index.sqlite',
-  config: {
-    collections: {
-      docs: { path: '/path/to/docs', pattern: '**/*.md' },
-    },
-  },
-})
-
-const results = await store.search({ query: "authentication flow" })
-console.log(results.map(r => `${r.title} (${Math.round(r.score * 100)}%)`))
-
-await store.close()
-```
-
-#### Store Creation
-
-`createStore()` accepts three modes:
-
-```typescript
-import { createStore } from '@tobilu/qmd'
-
-// 1. Inline config — no files needed besides the DB
-const store = await createStore({
-  dbPath: './index.sqlite',
-  config: {
-    collections: {
-      docs: { path: '/path/to/docs', pattern: '**/*.md' },
-      notes: { path: '/path/to/notes' },
-    },
-  },
-})
-
-// 2. YAML config file — collections defined in a file
-const store2 = await createStore({
-  dbPath: './index.sqlite',
-  configPath: './qmd.yml',
-})
-
-// 3. DB-only — reopen a previously configured store
-const store3 = await createStore({ dbPath: './index.sqlite' })
-```
-
-#### Search
-
-The unified `search()` method handles both simple queries and pre-expanded structured queries:
-
-```typescript
-// Simple query — auto-expanded via LLM, then BM25 + vector + reranking
-const results = await store.search({ query: "authentication flow" })
-
-// With options
-const results2 = await store.search({
-  query: "rate limiting",
-  intent: "API throttling and abuse prevention",
-  collection: "docs",
-  limit: 5,
-  minScore: 0.3,
-  explain: true,
-})
-
-// Pre-expanded queries — skip auto-expansion, control each sub-query
-const results3 = await store.search({
-  queries: [
-    { type: 'lex', query: '"connection pool" timeout -redis' },
-    { type: 'vec', query: 'why do database connections time out under load' },
-  ],
-  collections: ["docs", "notes"],
-})
-
-// Skip reranking for faster results
-const fast = await store.search({ query: "auth", rerank: false })
-
-// Metadata filter — every returned result satisfies it (also available on
-// searchLex() and searchVector()); results expose indexed metadata via
-// r.metadata. See "Metadata Filtering" for the full grammar.
-const published = await store.search({
-  query: "authentication flow",
-  filter: {
-    operator: "and",
-    operands: [
-      { key: "topics", operator: "all", value: ["typescript"] },
-      { key: "status", operator: "ne", value: "draft" },
-    ],
-  },
-})
-```
-
-For direct backend access:
-
-```typescript
-// BM25 keyword search (fast, no LLM)
-const lexResults = await store.searchLex("auth middleware", { limit: 10 })
-
-// Vector similarity search (embedding model, no reranking)
-const vecResults = await store.searchVector("how users log in", { limit: 10 })
-
-// Manual query expansion for full control
-const expanded = await store.expandQuery("auth flow", { intent: "user login" })
-const results4 = await store.search({ queries: expanded })
-```
-
-#### Retrieval
-
-```typescript
-// Get a document by path or docid
-const doc = await store.get("docs/readme.md")
-const byId = await store.get("#abc123")
-
-if (!("error" in doc)) {
-  console.log(doc.title, doc.displayPath, doc.context)
-}
-
-// Get document body with line range
-const body = await store.getDocumentBody("docs/readme.md", {
-  fromLine: 50,
-  maxLines: 100,
-})
-
-// Batch retrieve by glob or comma-separated list
-const { docs, errors } = await store.multiGet("docs/**/*.md", {
-  maxBytes: 20480,
-})
-```
-
-#### Collections
-
-```typescript
-// Add a collection
-await store.addCollection("myapp", {
-  path: "/src/myapp",
-  pattern: "**/*.ts",
-  ignore: ["node_modules/**", "*.test.ts"],
-})
-
-// List collections with document stats
-const collections = await store.listCollections()
-// => [{ name, pwd, glob_pattern, doc_count, active_count, last_modified, includeByDefault }]
-
-// Get names of collections included in queries by default
-const defaults = await store.getDefaultCollectionNames()
-
-// Remove / rename
-await store.removeCollection("myapp")
-await store.renameCollection("old-name", "new-name")
-```
-
-#### Context
-
-Context adds descriptive metadata that improves search relevance and is returned alongside results:
-
-```typescript
-// Add context for a path within a collection
-await store.addContext("docs", "/api", "REST API reference documentation")
-
-// Set global context (applies to all collections)
-await store.setGlobalContext("Internal engineering documentation")
-
-// List all contexts
-const contexts = await store.listContexts()
-// => [{ collection, path, context }]
-
-// Remove context
-await store.removeContext("docs", "/api")
-await store.setGlobalContext(undefined)  // clear global
-```
-
-#### Indexing
-
-```typescript
-// Re-index collections by scanning the filesystem
-const result = await store.update({
-  collections: ["docs"],  // optional — defaults to all
-  onProgress: ({ collection, file, current, total }) => {
-    console.log(`[${collection}] ${current}/${total} ${file}`)
-  },
-})
-// => { collections, indexed, updated, unchanged, removed, needsEmbedding }
-
-// Generate vector embeddings
-const embedResult = await store.embed({
-  force: false,           // true to re-embed everything
-  chunkStrategy: "auto",  // "regex" (default) or "auto" (AST for code files)
-  onProgress: ({ current, total, collection }) => {
-    console.log(`Embedding ${current}/${total}`)
-  },
-})
-```
-
-#### Types
-
-Key types exported for SDK consumers:
-
-```typescript
-import type {
-  QMDStore,            // The store interface
-  SearchOptions,       // Options for search()
-  LexSearchOptions,    // Options for searchLex()
-  VectorSearchOptions, // Options for searchVector()
-  HybridQueryResult,   // Search result with score, snippet, context
-  SearchResult,        // Result from searchLex/searchVector
-  ExpandedQuery,       // Typed sub-query { type: 'lex'|'vec'|'hyde', query }
-  DocumentResult,      // Document metadata + body
-  DocumentNotFound,    // Error with similarFiles suggestions
-  MultiGetResult,      // Batch retrieval result
-  UpdateProgress,      // Progress callback info for update()
-  UpdateResult,        // Aggregated update result
-  EmbedProgress,       // Progress callback info for embed()
-  EmbedResult,         // Embedding result
-  StoreOptions,        // createStore() options
-  CollectionConfig,    // Inline config shape
-  IndexStatus,         // From getStatus()
-  IndexHealthInfo,     // From getIndexHealth()
-} from '@tobilu/qmd'
-```
-
-Utility exports:
-
-```typescript
-import {
-  extractSnippet,              // Extract a relevant snippet from text
-  addLineNumbers,              // Add line numbers to text
-  DEFAULT_MULTI_GET_MAX_BYTES, // Default max file size for multiGet (64KB)
-  Maintenance,                 // Database maintenance operations
-} from '@tobilu/qmd'
-```
-
-#### Lifecycle
-
-```typescript
-// Close the store — disposes LLM models and DB connection
-await store.close()
-```
-
-The SDK requires explicit `dbPath` — no defaults are assumed. This makes it safe to embed in any application without side effects.
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         QMD Hybrid Search Pipeline                          │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-                              ┌─────────────────┐
-                              │   User Query    │
-                              └────────┬────────┘
-                                       │
-                        ┌──────────────┴──────────────┐
-                        ▼                             ▼
-               ┌────────────────┐            ┌────────────────┐
-               │ Query Expansion│            │  Original Query│
-               │  (fine-tuned)  │            │   (×2 weight)  │
-               └───────┬────────┘            └───────┬────────┘
-                       │                             │
-                       │ 2 alternative queries       │
-                       └──────────────┬──────────────┘
-                                      │
-              ┌───────────────────────┼───────────────────────┐
-              ▼                       ▼                       ▼
-     ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-     │ Original Query  │     │ Expanded Query 1│     │ Expanded Query 2│
-     └────────┬────────┘     └────────┬────────┘     └────────┬────────┘
-              │                       │                       │
-      ┌───────┴───────┐       ┌───────┴───────┐       ┌───────┴───────┐
-      ▼               ▼       ▼               ▼       ▼               ▼
-  ┌───────┐       ┌───────┐ ┌───────┐     ┌───────┐ ┌───────┐     ┌───────┐
-  │ BM25  │       │Vector │ │ BM25  │     │Vector │ │ BM25  │     │Vector │
-  │(FTS5) │       │Search │ │(FTS5) │     │Search │ │(FTS5) │     │Search │
-  └───┬───┘       └───┬───┘ └───┬───┘     └───┬───┘ └───┬───┘     └───┬───┘
-      │               │         │             │         │             │
-      └───────┬───────┘         └──────┬──────┘         └──────┬──────┘
-              │                        │                       │
-              └────────────────────────┼───────────────────────┘
-                                       │
-                                       ▼
-                          ┌───────────────────────┐
-                          │   RRF Fusion + Bonus  │
-                          │  Original query: ×2   │
-                          │  Top-rank bonus: +0.05│
-                          │     Top 30 Kept       │
-                          └───────────┬───────────┘
-                                      │
-                                      ▼
-                          ┌───────────────────────┐
-                          │    LLM Re-ranking     │
-                          │  (qwen3-reranker)     │
-                          │  Yes/No + logprobs    │
-                          └───────────┬───────────┘
-                                      │
-                                      ▼
-                          ┌───────────────────────┐
-                          │  Position-Aware Blend │
-                          │  Top 1-3:  75% RRF    │
-                          │  Top 4-10: 60% RRF    │
-                          │  Top 11+:  40% RRF    │
-                          └───────────────────────┘
-```
-
-## Score Normalization & Fusion
-
-### Search Backends
-
-| Backend | Raw Score | Conversion | Range |
-|---------|-----------|------------|-------|
-| **FTS (BM25)** | SQLite FTS5 BM25 | `Math.abs(score)` | 0 to ~25+ |
-| **Vector** | Cosine distance | `1 / (1 + distance)` | 0.0 to 1.0 |
-| **Reranker** | LLM 0-10 rating | `score / 10` | 0.0 to 1.0 |
-
-### Fusion Strategy
-
-The `query` command uses **Reciprocal Rank Fusion (RRF)** with position-aware blending:
-
-1. **Query Expansion**: Original query (×2 for weighting) + 1 LLM variation
-2. **Parallel Retrieval**: Each query searches both FTS and vector indexes
-3. **RRF Fusion**: Combine all result lists using `score = Σ(1/(k+rank+1))` where k=60
-4. **Top-Rank Bonus**: Documents ranking #1 in any list get +0.05, #2-3 get +0.02
-5. **Top-K Selection**: Take top 30 candidates for reranking
-6. **Re-ranking**: LLM scores each document (yes/no with logprobs confidence)
-7. **Position-Aware Blending**:
-   - RRF rank 1-3: 75% retrieval, 25% reranker (preserves exact matches)
-   - RRF rank 4-10: 60% retrieval, 40% reranker
-   - RRF rank 11+: 40% retrieval, 60% reranker (trust reranker more)
-
-**Why this approach**: Pure RRF can dilute exact matches when expanded queries don't match. The top-rank bonus preserves documents that score #1 for the original query. Position-aware blending prevents the reranker from destroying high-confidence retrieval results.
-
-### Score Interpretation
-
-| Score | Meaning |
-|-------|---------|
-| 0.8 - 1.0 | Highly relevant |
-| 0.5 - 0.8 | Moderately relevant |
-| 0.2 - 0.5 | Somewhat relevant |
-| 0.0 - 0.2 | Low relevance |
-
-## Requirements
-
-### System Requirements
-
-- **Node.js** >= 22
-- **Bun** >= 1.0.0
-- **macOS**: Homebrew SQLite (for extension support)
-  ```sh
-  brew install sqlite
-  ```
-
-### GGUF Models (via node-llama-cpp)
-
-QMD uses three local GGUF models (auto-downloaded on first use):
-
-| Model | Purpose | Size |
-|-------|---------|------|
-| `Qwen3-Embedding-0.6B-Q8_0` | Vector embeddings (default) | ~640MB |
-| `qwen3-reranker-0.6b-q8_0` | Re-ranking | ~640MB |
-| `qmd-query-expansion-1.7B-q4_k_m` | Query expansion (fine-tuned) | ~1.3GB |
-
-Models are downloaded from HuggingFace and cached in `~/.cache/qmd/models/`.
-
-### Custom Embedding Model
-
-The default is Qwen3-Embedding-0.6B — multilingual (119 languages including CJK),
-MTEB top-ranked. Override it via the `QMD_EMBED_MODEL` environment variable, for
-example to fall back to embeddinggemma-300M's smaller footprint on an English-only
-corpus:
-
-```sh
-export QMD_EMBED_MODEL="hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf"
-
-# After changing the model, re-embed all collections:
-qmd embed -f
-```
-
-Supported model families:
-- **Qwen3-Embedding** (default) — Multilingual (119 languages including CJK), MTEB top-ranked
-- **embeddinggemma** — English-optimized, small footprint
-
-> **Note:** When switching embedding models, you must re-index with `qmd embed -f`
-> since vectors are not cross-compatible between models. The prompt format is
-> automatically adjusted for each model family.
-
-## Installation
-
-```sh
-npm install -g @tobilu/qmd
-# or
-bun install -g @tobilu/qmd
-```
-
-### Development
-
-```sh
-git clone https://github.com/tak-bro/ko-qmd
-cd ko-qmd
-npm install
-npm link
-```
-
-## Usage
-
-### Collection Management
-
-```sh
-# Create a collection from current directory
-qmd collection add . --name myproject
-
-# Create a collection with explicit path and custom glob mask
-qmd collection add ~/Documents/notes --name notes --mask "**/*.md"
-
-# Comma-separated masks are a union (brace form `{a,b}` also works)
-qmd collection add ~/notes --name notes --mask "sources/**/*.md,CO - *.md"
-
-# List all collections
-qmd collection list
-
-# Remove a collection
-qmd collection remove myproject
-
-# Rename a collection
-qmd collection rename myproject my-project
-
-# List files in a collection
-qmd ls notes
-qmd ls notes/subfolder
-
-# Show collection details (path, glob mask, include status, context count)
-qmd collection show notes
-
-# Include or exclude a collection from default (unscoped) queries
-qmd collection include notes
-qmd collection exclude notes
-
-# Run a command before every `qmd update` (e.g. git pull); empty arg clears it
-qmd collection update-cmd notes 'git pull --rebase'
-qmd collection update-cmd notes
-```
-
-### Generate Vector Embeddings
-
-```sh
-# Embed all indexed documents (900 tokens/chunk, 15% overlap)
-qmd embed
-
-# Force re-embed everything
-qmd embed -f
-
-# Enable AST-aware chunking for code files (TS, JS, Python, Go, Rust)
-qmd embed --chunk-strategy auto
-
-# Also works with query for consistent chunk selection
-qmd query "auth flow" --chunk-strategy auto
-
-# Memory control for large corpora / constrained systems
-qmd embed --max-docs-per-batch 50   # cap docs per embedding batch
-qmd embed --max-batch-mb 64         # cap batch size in MB
-```
-
-**AST-aware chunking** (`--chunk-strategy auto`) uses tree-sitter to chunk code
-files at function, class, and import boundaries instead of arbitrary text
-positions. This produces higher-quality chunks and better search results for
-codebases. Markdown and other file types always use regex-based chunking
-regardless of strategy.
-
-The default is `regex` (existing behavior). Use `--chunk-strategy auto` to
-opt in. Run `qmd status` to verify which grammars are available.
-
-> **Note:** Tree-sitter grammars are optional dependencies. If they are not
-> installed, `--chunk-strategy auto` falls back to regex-only chunking
-> automatically. Tested on both Node.js and Bun.
-
-### Context Management
-
-Context adds descriptive metadata to collections and paths, helping search understand your content.
-
-```sh
-# Add context to a collection (using qmd:// virtual paths)
-qmd context add qmd://notes "Personal notes and ideas"
-qmd context add qmd://docs/api "API documentation"
-
-# Add context from within a collection directory
-cd ~/notes && qmd context add "Personal notes and ideas"
-cd ~/notes/work && qmd context add "Work-related notes"
-
-# Add global context (applies to all collections)
-qmd context add / "Knowledge base for my projects"
-
-# List all contexts
-qmd context list
-
-# Remove context
-qmd context rm qmd://notes/old
-```
-
-### Configuring `index.yml`
-
-The `collection` and `context` commands above all read and write a single YAML
-config file — you can also edit it directly. Everything QMD knows about your
-collections (paths, masks, exclusions, per-collection update hooks, contexts, and
-optional model overrides) lives here. A fully-commented starter template ships as
-[`example-index.yml`](example-index.yml) in this repo.
-
-**Location:** `~/.config/qmd/index.yml` by default. The directory honors
-`XDG_CONFIG_HOME` (→ `$XDG_CONFIG_HOME/qmd/index.yml`) and `QMD_CONFIG_DIR`. A
-named index uses `{name}.yml` — `qmd --index work …` reads/writes `work.yml`.
-A **project-local** index created with `qmd init` lives at `.qmd/index.yml`
-(`.qmd/index.yaml` is also accepted) alongside a project-local `index.sqlite`,
-so config and index stay inside the project instead of `~/.config` / `~/.cache`.
-
-```yaml
-# ~/.config/qmd/index.yml
-
-# Context applied to every collection (system-message style). Optional.
-global_context: "Knowledge base for my projects"
-
-# Terminal hyperlink template for search results. Optional.
-# Overridden by the QMD_EDITOR_URI env var. See "Editor Links" below.
-editor_uri: "vscode://file{path}:{line}:{col}"
-
-# Override the default GGUF models per role. Optional — omit to use the
-# built-in defaults. `qmd init` writes this block pre-filled with the
-# resolved defaults. See "Model Configuration" for the default URIs.
-models:
-  embed: "hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf"
-  rerank: "hf:ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF/qwen3-reranker-0.6b-q8_0.gguf"
-  generate: "hf:tobil/qmd-query-expansion-1.7B-gguf/qmd-query-expansion-1.7B-q4_k_m.gguf"
-
-# One entry per collection. The key is the collection name.
-collections:
-  notes:
-    path: /Users/me/notes        # absolute path to index (required)
-    pattern: "**/*.md"           # glob mask (default: **/*.md)
-    ignore:                      # glob patterns to exclude from indexing
-      - "Archive/**"
-      - "**/drafts/**"
-    update: "git pull --rebase"  # bash command run before each `qmd update`
-    includeByDefault: true       # include in unscoped queries (default: true)
-    context:                     # path prefix → description; longest match wins
-      "/": "Personal notes and ideas"
-      "/work": "Work-related notes"
-```
-
-| Key | Scope | Purpose |
-|-----|-------|---------|
-| `global_context` | top-level | Context prepended for every collection. Set via `qmd context add /`. |
-| `editor_uri` (alias `editor_uri_template`) | top-level | Hyperlink template for clickable result paths; `QMD_EDITOR_URI` overrides. |
-| `models.embed` / `.rerank` / `.generate` | top-level | HuggingFace GGUF URIs (`hf:<user>/<repo>/<file>`) overriding the built-in defaults per role. |
-| `collections.<name>.path` | per-collection | Absolute directory to index. |
-| `collections.<name>.pattern` | per-collection | Glob mask. Set via `qmd collection add --mask`. Default `**/*.md`. Comma-separated lists and brace groups (`{a,b}`) are a union of patterns. |
-| `collections.<name>.ignore` | per-collection | Glob patterns excluded from indexing — useful to stop nested collections double-indexing. **YAML-only — no CLI command sets this.** Additive with QMD's built-in exclusions (`node_modules`, `.git`, `.cache`, `vendor`, `dist`, `build`), which you cannot un-ignore. |
-| `collections.<name>.update` | per-collection | Bash command run before `qmd update` re-indexes this collection. Set via `qmd collection update-cmd`. |
-| `collections.<name>.includeByDefault` | per-collection | Whether unscoped queries search it. Toggle with `qmd collection include`/`exclude`. Default `true`. |
-| `collections.<name>.context` | per-collection | Path-prefix → description map; the most specific (longest) matching prefix wins. Set via `qmd context add`. |
-
-> **Note:** Editing `index.yml` changes which directories and models QMD *uses*,
-> but does not re-index on its own. Run `qmd update` after changing `path`,
-> `pattern`, or `ignore`, and `qmd embed` after changing `models.embed`.
-
-#### Automatic update commands
-
-A collection's `update` field is QMD's built-in refresh hook: when you run
-`qmd update`, each collection's `update` command runs **first**, then the
-collection is re-indexed. This keeps a collection in sync with an upstream source
-(a git remote, a sync script) without wrapping `qmd` yourself.
-
-```yaml
-collections:
-  wiki:
-    path: ~/reference/wiki
-    update: "git pull --ff-only"
-```
-
-    $ qmd update
-    [1/3] wiki (**/*.md)
-        Running update command: git pull --ff-only
-        Already up to date.
-    Collection: ~/reference/wiki (**/*.md)
-    Indexed: 0 new, 2 updated, 340 unchanged, 0 removed
-
-The command runs via `bash -c` in the collection's own directory (its `path`), not
-your current working directory. If it exits non-zero, `qmd update` prints the
-failure and **aborts the entire run** — collections after the failing one are not
-re-indexed. Set or clear it from the CLI instead of editing YAML by hand:
-
-```sh
-qmd collection update-cmd wiki 'git pull --ff-only'   # set
-qmd collection update-cmd wiki                         # clear
-```
-
-##### Checked-in `.qmd` config is not trusted by default
-
-A project-local `.qmd/index.yml` travels with a `git clone`, and QMD adopts it
-automatically for any command run inside the tree. Three fields in that file can
-reach outside the project, and QMD will not use them unattended:
-
-- `update` commands — somebody else's shell script, run by `qmd update`
-- `collections.*.path` pointing **outside** the project directory
-- `models.embed` / `models.rerank` / `models.generate` other than the built-in
-  defaults (any `hf:` repo or local GGUF path)
-
-In-project collection paths (for example `./docs`) still index. On a terminal
-`qmd update` (and `qmd embed` / `qmd pull` / `qmd query`) lists the gated
-fields and asks. Approving records the approval in `~/.config/qmd/trusted.json`.
-With no terminal to ask — agents, CI, MCP — those fields are **skipped** and
-in-project indexing continues.
-
-Approvals cover the exact gated set you saw. Editing a command, pointing a
-collection outside the project, or changing a custom model URI asks again.
-
-```sh
-qmd trust           # review and approve this project's gated fields
-qmd trust list      # show every approved project config
-qmd trust revoke    # drop the approval for this project
-```
-
-Set `QMD_TRUST_LOCAL_CONFIG=1` (or `QMD_TRUST_UPDATE_HOOKS=1`) for CI that
-should allow them unattended. Your own `~/.config/qmd/*.yml` — including
-anything `qmd collection update-cmd` or `qmd collection add` writes — is
-never gated.
-
-### Search Commands
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                        Search Modes                              │
-├──────────┬───────────────────────────────────────────────────────┤
-│ search   │ BM25 full-text search only                           │
-│ vsearch  │ Vector semantic search only                          │
-│ query    │ Hybrid: FTS + Vector + Query Expansion + Re-ranking  │
-└──────────┴───────────────────────────────────────────────────────┘
-```
-
-```sh
-# Full-text search (fast, keyword-based)
-qmd search "authentication flow"
-
-# Vector search (semantic similarity)
-qmd vsearch "how to login"
-
-# Hybrid search with re-ranking (best quality)
-qmd query "user authentication"
-```
-
-Two aliases exist for the semantic/hybrid modes: `vector-search` (→ `vsearch`)
-and `deep-search` (→ `query`).
-
-### Options
-
-```sh
-# Search options
--n <num>           # Number of results (default: 5, or 20 for --files/--json)
--c, --collection   # Restrict search to a specific collection
---all              # Return all matches (use with --min-score to filter)
---min-score <num>  # Minimum score threshold (default: 0)
---full             # Show full document content
---line-numbers     # Add line numbers to output
---explain          # Include retrieval score traces (query, JSON/CLI output)
-                   # ko-qmd: also lists each sub-query's own rank for the result
---filter <json>    # Metadata filter (recursive JSON AST; see Metadata Filtering)
---index <name>     # Use named index
---intent "<text>"  # Disambiguation context (e.g. "web page load times")
---path <glob>      # ko-qmd: only documents matching the glob (repeatable)
---since <when>     # ko-qmd: only documents modified at or after this point
---until <when>     # ko-qmd: only documents modified at or before this point
---no-rerank        # Skip LLM reranking (RRF scores only; faster on CPU)
--C, --candidate-limit <n>  # Max candidates to rerank (default: 40)
---full-path        # Emit on-disk filesystem paths instead of qmd:// URIs
-                   # (a result whose file has moved or been deleted since
-                   #  indexing keeps its qmd:// URI + docid, and a notice is
-                   #  printed to stderr — run `qmd update` to refresh)
-
-# Output formats (for search and multi-get)
---format <kind>    # cli (default) | json | csv | md | xml | files
-                   # (--json, --csv, --md, --xml, --files are legacy aliases)
-
-# Get options
-qmd get <file>[:from[:count]]  # Get document; optional start line and count
--l <num>                       # Maximum lines to return
---from <num>                   # Start line (overrides the :from suffix)
---no-line-numbers              # Disable line numbering (on by default)
-
-# Multi-get options
--l <num>           # Maximum lines per file
---max-bytes <num>  # Skip files larger than N bytes (default: 64KB)
-```
-
-### Collection Filtering
-
-The `-c`/`--collection` flag filters results by collection **name** (as shown by
-`qmd collection list`). Collections are a global registry — you can search any
-collection from any directory:
-
-```sh
-qmd search "auth" -c notes           # single collection
-qmd search "auth" -c notes -c docs   # multiple collections (OR)
-```
-
-With no `-c` flag, all default-included collections are searched. Collections
-marked excluded (`qmd collection exclude <name>`) are skipped unless named
-explicitly with `-c`.
-
-> **Note:** With multiple `-c` flags, results come from a global top-K pool and are
-> then filtered. If one collection dominates the rankings, matches from smaller
-> collections may not appear at the default limit — raise `-n` or use `--all`.
-
-### Reading `--explain` (ko-qmd)
-
-`qmd query <q> --explain` prints, under the fused score, one line per expansion
-sub-query that placed the document — with that sub-query's own rank, its RRF
-contribution, its backend score and the text it actually ran:
-
-```
-Explain: fts=[0.6700, 0.5100] vec=[0.4400]
-  RRF: total=0.0889 base=0.0389 bonus=0.0500 rank=1
-  Blend: 75%*1.0000 + 25%*0.8200 = 0.9550
-  Sub-query ranks (3 of the expansion's lists placed this document):
-    fts/original   #1  rrf=0.0328 backend=0.6700  한글 토큰화
-    vec/hyde       #2  rrf=0.0161 backend=0.4400  형태소 분석기는 어절을 나눌 때...
-    fts/lex        #9  rrf=0.0061 backend=0.5100  토큰화 형태소
-```
-
-Expansion turns one query into a dozen and reports one number. That number
-cannot distinguish "first in the hyde list and nowhere else" from "middling
-everywhere", and those two call for different fixes — the first says the
-expansion invented a good query, the second says the document is broadly
-relevant. Previously only the top three contributions were shown, collapsed
-onto one line without the sub-query text.
-
-### `qmd grep` (ko-qmd)
-
-```sh
-qmd grep 'TODO'                          # smart case: lowercase matches either
-qmd grep 'TODO: (call|ship)'             # a regular expression
-qmd grep 'v2.8.3-ko' -F                  # a literal string, regex chars and all
-qmd grep '놓친 문자열' --path 'journals/**'
-```
-
-Exact string and regular-expression matching over indexed document bodies: no
-ranking, no LLM, every matching line grouped by file with line numbers that
-`qmd get <file>:<n>:<count>` accepts.
-
-This is the escape hatch for a query that finds nothing because tokenization
-never produced the term the document contains — the failure Korean text keeps
-hitting — and the way to find an identifier, error string or config key
-verbatim. Ranked search answers "what is this about"; grep answers "where does
-this string appear".
-
-It is not a replacement for ripgrep. At a terminal with a shell, ripgrep is
-usually the right tool and faster. `qmd grep` earns its place for the caller
-with no shell — an MCP client whose only tools are `query`, `get` and
-`multi_get` — and for the caller who wants one corpus definition: it searches
-exactly what the index holds, honours collection exclusion and the `--path` /
-`--since` / `--until` filters, and returns `qmd://` paths and docids the rest
-of qmd accepts.
-
-Smart case: a pattern containing an uppercase letter matches case-sensitively,
-otherwise either case. Hangul has no case, so Korean patterns are unaffected
-either way. `-i` and `-S` override it, `-F` treats the pattern as a literal
-string, `--max-lines` caps reported lines per file, and `-n` caps files.
-
-Patterns are capped at 1000 characters and matched line by line, with long
-lines tested in overlapping slices. That bound is what keeps a pathological
-pattern from hanging the daemon: a catastrophic backtrack blocks the only
-thread, so a timeout could never fire to stop it.
-
-### Path and Time Filtering (ko-qmd)
-
-`--path`, `--since` and `--until` narrow the corpus a search runs against, on
-`search`, `vsearch` and `query` alike. They are not a filter over the results:
-the documents they exclude are gone before anything is ranked, so a narrow
-filter returns its own best matches rather than whatever survived the global
-top-K.
-
-```sh
-qmd query "retry policy" --since 7d                  # touched in the last week
-qmd query "retry policy" --since 2026-09-01          # or an explicit date
-qmd search "auth" --path 'notes/journals/**'         # only under this path
-qmd search "auth" --path 'notes/**' --path '!notes/archive/**'
-```
-
-`--path` matches globs against `collection/path` — the same string results
-print — and is repeatable. A `!` prefix excludes, and an exclude beats an
-include. A bare directory (`--path notes/journals`) means everything under it.
-
-`--since` / `--until` take either a span back from now (`30m`, `3h`, `7d`,
-`2w`, `6mo`, `1y`) or a date (`2026-09-01`, or a full ISO timestamp). A bare
-date starts at that local day. Anything else is an error rather than a silently
-ignored filter, because a search that quietly dropped your filter returns a
-full-corpus answer that looks exactly like a narrow one.
-
-They compare against the index's `modified_at`, which is when the document was
-last indexed with changed content — not the file's mtime. The daemon's index
-refresh keeps those within 30 seconds of each other; for CLI searches, `--since`
-is only as current as your last `qmd update`.
-
-When a filter leaves nothing to search, the empty result says so rather than
-looking like "no match":
-
-```
-No results found — path 'notes/nowhere/**' matched 0 of 232 documents.
-No results found in the 4 of 232 documents matching since 2026-09-13T12:00:00.000Z.
-```
-
-These flags combine with `--filter` (Metadata Filtering, below): a result has to
-pass both. In the SDK the path/time narrowing is the `scope` option (build it
-with `buildDocumentFilter`), because `filter` is upstream's metadata filter; the
-REST and MCP `path` / `since` / `until` parameters are unchanged.
-
-### Metadata Filtering
-
-Documents can opt into typed metadata through a namespaced frontmatter block. A document without `qmd.metadata` behaves exactly as before, and the frontmatter stays ordinary searchable content (no chunking, embedding, or line-number changes):
-
-```markdown
----
-qmd:
-  metadata:
-    topics:
-      - typescript
-      - programming
-    status: published
-    priority: 3
-    reviewed: true
----
-
-# Document body starts here
-```
-
-Supported values are strings, numbers, booleans, and flat homogeneous arrays of one of those. Nested objects, nulls, empty arrays, and mixed-type arrays are rejected (the document still indexes; it is excluded from filtered search until corrected). Metadata keys are user-defined data — `tags`, `topics`, and `labels` are all ordinary keys with no special semantics.
-
-Every search surface (CLI, SDK, MCP, HTTP) accepts the same recursive filter, a JSON AST discriminated by `operator`:
-
-```sh
-# One condition
-qmd search "authentication" \
-  --filter '{"key":"status","operator":"eq","value":"published"}'
-
-# Composed conditions — works with search, vsearch, and query
-qmd query "dependency injection" --filter '{
-  "operator": "and",
-  "operands": [
-    { "key": "topics", "operator": "all", "value": ["typescript", "programming"] },
-    { "key": "status", "operator": "nin", "value": ["draft", "archived"] },
-    { "operator": "or", "operands": [
-      { "key": "priority", "operator": "gte", "value": 3 },
-      { "key": "reviewed", "operator": "eq", "value": true }
-    ] },
-    { "operator": "not", "operand": { "key": "audience", "operator": "eq", "value": "internal" } }
-  ]
+curl -s http://127.0.0.1:8181/query -H 'Content-Type: application/json' -d '{
+  "searches": [{"type": "vec", "query": "리랭크 지연"}, {"type": "lex", "query": "리랭크 지연"}],
+  "collections": ["notes"], "limit": 10,
+  "rerank": true, "candidateLimit": 15, "rerankMaxDocTokens": 128
 }'
 ```
 
-| Node | Shape |
-|------|-------|
-| Logical group | `{ "operator": "and" \| "or", "operands": […] }` |
-| Negation | `{ "operator": "not", "operand": {…} }` |
-| Comparison | `{ "key", "operator": "eq" \| "ne" \| "gt" \| "gte" \| "lt" \| "lte", "value" }` |
-| Membership | `{ "key", "operator": "in" \| "nin" \| "all", "value": […] }` |
-| Presence | `{ "key", "operator": "exists", "value": true \| false }` |
+| 필드 | 뜻 |
+|---|---|
+| `searches` | `{type: lex\|vec\|hyde, query}` 목록 (필수). 질의 확장은 하지 않는다 |
+| `collections` · `limit` · `minScore` | 범위·개수·최소 점수 |
+| `rerank` · `candidateLimit` | 리랭크 여부(기본 켜짐)·리랭크할 후보 수(기본 40) |
+| `rerankMaxDocTokens` | 이 요청의 리랭크 문서당 토큰 cap. 양의 정수만 받고 나머지는 무시 |
+| `path` · `since` · `until` · `filter` · `intent` | 경로·시간 범위, metadata 필터, 의도 힌트 |
 
-Semantics:
+### SDK
 
-- Matching is typed and exact — no string/number/boolean coercion, and a type mismatch never matches (including `ne` and `nin`).
-- Array-valued metadata is a set: a condition matches when any element satisfies it, `all` requires every filter value to be present.
-- Missing keys do not match `ne`/`nin`; combine with `{ "operator": "exists", "value": false }` in an `or` group to include them.
-- Multiple conditions require an explicit `and` group — there is no implicit AND, and no `$`-prefixed shorthand.
+```ts
+const { createStore } = await import('ko-qmd')   // ESM 전용 — require() 는 안 된다
 
-Guarantees and limits:
-
-- Every returned result satisfies the filter, before RRF fusion and reranking.
-- Like collection filtering, highly selective filters are best-effort for top-K completeness: backends over-fetch and post-filter, so a very selective filter can return fewer than `limit` results. (ko-qmd: a metadata filter takes the same full-scan / exact-scan path as `--path`, so a selective filter still returns its own best matches.)
-- Filtered search only considers documents whose metadata has been extracted (run `qmd update` after upgrading; `qmd status` shows the pending count).
-
-JSON output (`--format json`), the SDK, MCP structured results, and the HTTP endpoints include each result's indexed metadata.
-
-### Output Format
-
-Default output is colorized CLI format (respects `NO_COLOR` env).
-
-When stdout is a TTY, result paths are emitted as clickable terminal hyperlinks (OSC 8). Clicking a path opens the file in your editor using an editor URI template.
-
-When stdout is not a TTY (for example piped to another command or redirected to a file), QMD emits plain text paths with no escape sequences.
-
-TTY example:
-
-```
-docs/guide.md:42 #a1b2c3
-Title: Software Craftsmanship
-Context: Work documentation
-Score: 93%
-
-This section covers the **craftsmanship** of building
-quality software with attention to detail.
-See also: engineering principles
-
-
-notes/meeting.md:15 #d4e5f6
-Title: Q4 Planning
-Context: Personal notes and ideas
-Score: 67%
-
-Discussion about code quality and craftsmanship
-in the development process.
+const store = await createStore({ dbPath: './index.sqlite', configPath: `${process.env.HOME}/.config/qmd/index.yml` })
+const results = await store.search({
+  queries: [{ type: 'vec', query: '리랭크 지연' }, { type: 'lex', query: '리랭크 지연' }],
+  collection: 'notes', limit: 10, rerank: true, candidateLimit: 15, rerankMaxDocTokens: 128,
+})
+await store.close()
 ```
 
-Configure the editor link target with `QMD_EDITOR_URI` (or `editor_uri` in config):
+API 전체: [docs/REFERENCE.md § SDK / Library Usage](docs/REFERENCE.md#sdk--library-usage).
+
+## 환경 변수
+
+| 변수 | 효과 |
+|---|---|
+| `QMD_QUERY_LOG` | `1`/`true`/`yes` 면 HTTP 데몬이 검색마다 질의 로그를 남긴다 |
+| `QMD_LLM_IDLE_TIMEOUT_MS` | 모델을 내리기까지 idle ms (`0` = 내리지 않음) |
+| `QMD_RERANK_MAX_DOC_TOKENS` | 리랭커에 보내는 문서당 토큰 cap (요청의 `rerankMaxDocTokens` 가 우선) |
+| `QMD_RERANK_CONTEXT_SIZE` · `QMD_EMBED_CONTEXT_SIZE` · `QMD_EXPAND_CONTEXT_SIZE` | 역할별 context 크기 |
+| `QMD_EMBED_PARALLELISM` | 병렬 context 수 (높으면 RAM/VRAM 고갈) |
+| `QMD_LLAMA_GPU` · `QMD_FORCE_CPU` | GPU 백엔드 선택·끄기 |
+| `QMD_CONFIG_DIR` | 설정 디렉터리 (XDG_CONFIG_HOME 보다 우선) |
+| `QMD_EDITOR_URI` | 터미널 결과의 에디터 링크 템플릿 |
+
+설정된 값과 그 영향은 `qmd doctor` 가 보여 준다.
+
+## 아키텍처
+
+- SQLite FTS5(BM25) + 한글 음절 bigram, sqlite-vec(벡터), RRF 융합, 리랭크 블렌드
+- 청킹: 약 900토큰·15% 겹침, 마크다운 제목을 경계로 선호. 코드 파일은 `--chunk-strategy auto` 로 tree-sitter AST 경계(TS·JS·Python·Go·Rust)
+- 인덱스: `~/.cache/qmd/index.sqlite`. LLM 결과 캐시(`llm_cache`)도 여기에 있다
+- 점수 계산과 백엔드별 해석: [docs/REFERENCE.md § Score Normalization & Fusion](docs/REFERENCE.md#score-normalization--fusion)
+
+## 개발
 
 ```sh
-# VS Code (default)
-export QMD_EDITOR_URI="vscode://file/{path}:{line}:{col}"
-
-# Cursor
-export QMD_EDITOR_URI="cursor://file/{path}:{line}:{col}"
-
-# Zed
-export QMD_EDITOR_URI="zed://file/{path}:{line}:{col}"
-
-# Sublime Text
-export QMD_EDITOR_URI="subl://open?url=file://{path}&line={line}"
+bun install
+bun src/cli/qmd.ts <명령>        # 소스에서 실행
+bun run lint                     # oxlint
+bun run test:types               # tsc (tsconfig.build.json)
+npx vitest run --reporter=verbose test/
+bun test --preload ./src/test-preload.ts test/
+npm run build                    # dist/ — `bun build --compile` 은 쓰지 않는다(sqlite-vec 이 깨진다)
 ```
 
-Template placeholders:
-- `{path}` absolute filesystem path (URI-encoded)
-- `{line}` 1-based line number
-- `{col}` or `{column}` 1-based column number
+- 브랜치: `develop` 이 작업 브랜치(PR 은 여기로), `main` 은 배포 브랜치다. 릴리스는 `/release <version>`(→ `v*` 태그 → `publish.yml` 이 npm 발행).
+  절차와 CHANGELOG 규칙: [skills/release/SKILL.md](skills/release/SKILL.md).
+- CI 는 업스트림 매트릭스에 `windows-latest` 와 Electron 스모크 잡을 더했다.
 
-- **Path**: Collection-relative path (e.g., `docs/guide.md`)
-- **Docid**: Short hash identifier (e.g., `#a1b2c3`) - use with `qmd get #a1b2c3`
-- **Title**: Extracted from document (first heading or filename)
-- **Context**: Path context if configured via `qmd context add`
-- **Score**: Color-coded (green >70%, yellow >40%, dim otherwise)
-- **Snippet**: Context around match with query terms highlighted
-
-### Examples
+### dogfood — 작업 트리 빌드를 이 머신 데몬에 올리기
 
 ```sh
-# Get 10 results with minimum score 0.3
-qmd query -n 10 --min-score 0.3 "API design patterns"
-
-# Output as markdown for LLM context
-qmd search --md --full "error handling"
-
-# JSON output for scripting
-qmd query --json "quarterly reports"
-
-# Inspect how each result was scored (RRF + rerank blend)
-qmd query --json --explain "quarterly reports"
-
-# Use separate index for different knowledge base
-qmd --index work search "quarterly reports"
+bash scripts/dogfood.sh              # 빌드 → bench-ko 게이트 → npm pack → npm i -g → 데몬 재시작 → 모델 워밍 → 스모크
+bash scripts/dogfood.sh --restore    # 발행본(DOGFOOD_PIN_FILE 의 ko-qmd@<버전>, 없으면 latest)으로 되돌림
+bash scripts/dogfood.sh --check "RESULT bm25_r5=…"   # 게이트 판정만
 ```
 
-The `--explain` flag attaches a score breakdown to each result: the FTS/vector
-backend scores plus the RRF fusion math (rank, weight, top-rank bonus) and every
-sub-query's contribution. Abbreviated:
+- 게이트: `bench-ko.sh` 의 `bm25_r5` 가 [BASELINE.md](test/fixtures/ko-vault/BASELINE.md) 의 마지막 `RESULT` 줄보다 낮으면 설치 전에 멈춘다(exit 3).
+- `npm link` 가 아니라 pack 설치다. 링크하면 데몬이 작업 트리의 `dist/` 를 서빙해 빌드 중에 깨질 수 있다.
+- 머신 배선 env: `DOGFOOD_LABEL`(launchd 라벨, 기본 `com.lemoncloud.qmd-daemon`) · `DOGFOOD_URL`(기본 `http://127.0.0.1:8181`) ·
+  `DOGFOOD_SMOKE` · `DOGFOOD_PIN_FILE`. 성공하면 `~/.cache/qmd/dogfood-deployed` 에 `<시각> <커밋>` 을 쓴다.
 
-```json
-{
-  "docid": "#6c90f0",
-  "score": 0.89,
-  "file": "qmd://qmd/README.md",
-  "explain": {
-    "ftsScores": [0.892, 0.907],
-    "vectorScores": [0.540, 0.484],
-    "rrf": {
-      "rank": 1,
-      "weight": 0.75,
-      "baseScore": 0.123,
-      "topRankBonus": 0.05,
-      "totalScore": 0.173,
-      "contributions": [
-        { "source": "fts", "queryType": "original", "query": "reranking",
-          "rank": 1, "weight": 2, "backendScore": 0.892, "rrfContribution": 0.0328 }
-      ]
-    }
-  }
-}
-```
+### ko-vault 벤치
 
-### Index Maintenance
+`bash scripts/bench-ko.sh` — 픽스처 `test/fixtures/ko-vault/`(문서 28·질의 63), 임베딩은 Qwen3-Embedding-0.6B-Q8_0 고정.
+run별 수치는 [BASELINE.md](test/fixtures/ko-vault/BASELINE.md). 업스트림 2.8.3 의 bm25_r5 0.6250 에서 시작해,
+Qwen3-Embedding 기본값·질의 52 에서 bm25_r5 0.9519 · vector_r5 1.0000 · full_r5 1.0000 이다.
+질의 63 은 외래어 표기 질의 11건을 더한 셋이고, 그 11건의 수치는 BASELINE.md 2026-09-23 절에 있다.
+
+### Electron 내장
+
+앱은 SDK 를 워커(utilityProcess)에서 쓴다. CI `electron-smoke` 잡이 Electron 39(ABI 140)로 `better-sqlite3` 를 리빌드하고
+`createStore` → `searchLex('검색')` 을 확인한다.
+
+- **동적 `import()` 만 된다.** `dist/` 에 top-level await 가 있어 `require()` 는 `ERR_REQUIRE_ASYNC_MODULE` 로 실패한다.
+  `XDG_CACHE_HOME` 같은 env 는 모듈 로드 시점에 읽히므로, 워커 진입점에서 env 를 설정한 뒤 `await import('ko-qmd')` 한다.
+- **`asarUnpack`**: `node_modules/@node-llama-cpp/**` · `node_modules/sqlite-vec-*/**` · `node_modules/better-sqlite3/build/**`
+- **pnpm `onlyBuiltDependencies`**: `better-sqlite3`, `node-llama-cpp`
+- `better-sqlite3` 는 Electron ABI 로 리빌드한다(`@electron/rebuild` 또는 electron-builder `install-app-deps`).
+  리빌드된 모듈은 시스템 Node(vitest)에서 `NODE_MODULE_VERSION` 불일치로 로드되지 않는다.
+
+### 업스트림 동기화
+
+업스트림은 `upstream` 원격으로만 따라간다(GitHub 포크가 아니다). `develop` 에서 `chore/upstream-sync-*` 브랜치를 따고,
+업스트림의 first-parent 머지 지점을 하나씩 `--no-ff` 로 머지한다.
 
 ```sh
-# Show index status and collections with contexts
-qmd status
-
-# Re-index all collections. If a collection has a configured update command
-# (e.g. `git pull`), it runs first — set one with `qmd collection update-cmd`.
-qmd update
-
-# Diagnose the install (runtime, sqlite-vec, embedding fingerprints, GPU probe)
-qmd doctor
-
-# Initialize a project-local index in the current directory
-qmd init
-
-# Get document by filepath (with fuzzy matching suggestions)
-qmd get notes/meeting.md
-
-# Get document by docid (from search results)
-qmd get "#abc123"
-
-# Get document starting at line 50, max 100 lines
-qmd get notes/meeting.md:50 -l 100
-
-# Read 40 lines starting at line 120 via the :from:count suffix (works with docids)
-qmd get notes/meeting.md:120:40
-qmd get "#abc123:120:40"
-
-# get / multi-get are line-numbered by default; disable with --no-line-numbers
-qmd get notes/meeting.md --no-line-numbers
-
-# Get multiple documents by glob pattern
-qmd multi-get "journals/2025-05*.md"
-
-# Get multiple documents by comma-separated list (supports docids)
-qmd multi-get "doc1.md, doc2.md, #abc123"
-
-# Limit multi-get to files under 20KB
-qmd multi-get "docs/*.md" --max-bytes 20480
-
-# Output multi-get as JSON for agent processing
-qmd multi-get "docs/*.md" --json
-
-# Clean up cache and orphaned data
-qmd cleanup
+git fetch upstream --tags
+git log --first-parent --oneline develop..upstream/main   # 머지할 지점 목록
+bash scripts/bench-ko.sh                                  # 머지 전 기준값
+git merge --no-ff <지점>                                   # 지점마다 반복, 충돌은 이 머지 커밋에서 해결
+pnpm install --lockfile-only                              # package.json 이 바뀌었으면 — 업스트림은 bun.lock 만 갱신한다
+bun run lint && bun run test:types && bun run test:unit && bash scripts/bench-ko.sh
 ```
 
-### Benchmarking
+- 벤치는 bm25 recall@5·MRR 을 질의별로 머지 전과 비교한다(hybrid 는 실행마다 한 질의쯤 흔들린다).
+- PR 은 squash 가 아니라 **머지 커밋**으로 들인다. 업스트림 커밋이 조상으로 남아야 다음 동기화가 새 커밋만 본다.
+  같은 이유로 이 브랜치는 squash·rebase 하지 않고, `develop`·`main` 을 upstream 위로 rebase 하지 않는다.
+- `pnpm install --frozen-lockfile --lockfile-only` 가 통과해야 한다. 낡은 `pnpm-lock.yaml` 은 GitHub 설치(`prepare`)와 릴리스 태그의 pre-push 검사를 막는다.
+- 업스트림 태그 위에 있을 때만 `v<업스트림 버전>-ko.N` 태그를 쓴다. `main` 스냅샷이면 버전은 마지막 태그 기준이다.
 
-Measure search quality across all four backends with `qmd bench` and a fixture file
-of queries with known-relevant documents.
+## 라이선스
 
-**From a git checkout**, an example fixture and its test corpus ship in the repo:
-
-```sh
-# One-time setup (indexes the repo's test corpus into its own collection)
-qmd collection add test/eval-docs --name eval-docs
-qmd embed -c eval-docs
-
-# Run the benchmark (table output)
-qmd bench src/bench/fixtures/example.json
-
-# JSON output for programmatic analysis
-qmd bench src/bench/fixtures/example.json --json
-```
-
-> The example fixture (`src/bench/fixtures/example.json`) and its test corpus
-> (`test/eval-docs/`) exist only in a git checkout — they are **not** part of the
-> published npm package. If you installed via `npm`/`npx`, write your own fixture
-> (see below) against a collection you have already indexed:
->
-> ```sh
-> qmd bench my-fixture.json -c my-collection
-> ```
-
-Each query runs against four backends, reporting precision@k, recall, MRR, and F1:
-
-| Backend | What it tests | LLM required |
-|---------|---------------|--------------|
-| `bm25` | Keyword search only (FTS5) | No |
-| `vector` | Semantic similarity only | Embedding model |
-| `hybrid` | BM25 + vector fusion (no reranking) | Embedding model |
-| `full` | Full pipeline with LLM reranking | All three models |
-
-**Score interpretation:** `1.00` = perfect (all expected docs in top results),
-`0.00` = complete miss. The example fixture typically shows bm25 ~0.50, vector
-~0.70, and hybrid/full ~1.00 — a concrete demonstration of why hybrid search beats
-either backend alone.
-
-**Custom fixtures** are JSON:
-
-```json
-{
-  "description": "My benchmark",
-  "version": 1,
-  "collection": "my-collection",
-  "queries": [
-    {
-      "id": "find-auth",
-      "query": "authentication flow",
-      "type": "semantic",
-      "expected_files": ["docs/auth-design.md"],
-      "expected_in_top_k": 3
-    }
-  ]
-}
-```
-
-`expected_files` are collection-relative paths as shown by `qmd ls`. The `type`
-field (`exact`, `semantic`, `topical`, `cross-domain`, `alias`) labels queries for
-grouping — it does not change search behavior.
-
-> **Heads-up:** if the fixture's collection isn't indexed, bench currently runs to
-> completion and reports all zeros with no warning. Verify setup with
-> `qmd ls <collection>` first.
-
-## Data Storage
-
-Index stored in: `~/.cache/qmd/index.sqlite`
-
-### Schema
-
-```sql
-collections     -- Indexed directories with name and glob patterns
-path_contexts   -- Context descriptions by virtual path (qmd://...)
-documents       -- Markdown content with metadata and docid (6-char hash)
-documents_fts   -- FTS5 full-text index
-content_vectors -- Embedding chunks (hash, seq, pos, 900 tokens each)
-vectors_vec     -- sqlite-vec vector index (hash_seq key)
-llm_cache       -- Cached LLM responses (query expansion, rerank scores)
-```
-
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `XDG_CACHE_HOME` | `~/.cache` | Cache directory location |
-| `XDG_CONFIG_HOME` | `~/.config` | Config directory location (where `index.yml` lives) |
-| `QMD_CONFIG_DIR` | unset | Override the config directory outright (takes precedence over `XDG_CONFIG_HOME`) |
-| `QMD_LLAMA_GPU` | `auto` | Force llama.cpp GPU backend (`metal`, `vulkan`, `cuda`) or disable GPU with `false` |
-| `QMD_FORCE_CPU` | unset | Set to `1`/`true` to force CPU mode before any CUDA/Vulkan/Metal probing. Equivalent CLI flag: `--no-gpu`. |
-| `QMD_QUERY_LOG` | unset | ko-qmd: set to `1`/`true`/`yes` on the HTTP daemon to append each REST or MCP search to `$XDG_CACHE_HOME/qmd/queries-YYYY-MM.jsonl` (see [Query log](#query-log-ko-qmd)) |
-| `QMD_LLM_IDLE_TIMEOUT_MS` | `300000` | ko-qmd: idle time in ms before loaded models and contexts are unloaded; `0` never unloads. Overrides the SDK's `createStore()` timeout, so a long-running HTTP daemon can skip the model reload on its first search after a quiet spell, at the cost of keeping that memory in use. |
-| `QMD_EMBED_PARALLELISM` | automatic | Override embedding/reranking context parallelism (1-8). Windows CUDA defaults to `1` because parallel CUDA contexts can crash with `ggml-cuda.cu:98`; use Vulkan or raise this only if your driver is stable. |
-
-## How It Works
-
-### Indexing Flow
-
-```
-Collection ──► Glob Pattern ──► Markdown Files ──► Parse Title ──► Hash Content
-    │                                                   │              │
-    │                                                   │              ▼
-    │                                                   │         Generate docid
-    │                                                   │         (6-char hash)
-    │                                                   │              │
-    └──────────────────────────────────────────────────►└──► Store in SQLite
-                                                                       │
-                                                                       ▼
-                                                                  FTS5 Index
-```
-
-### Embedding Flow
-
-Documents are chunked into ~900-token pieces with 15% overlap using smart boundary detection:
-
-```
-Document ──► Smart Chunk (~900 tokens) ──► Format each chunk ──► node-llama-cpp ──► Store Vectors
-                │                           "title | text"        embedBatch()
-                │
-                └─► Chunks stored with:
-                    - hash: document hash
-                    - seq: chunk sequence (0, 1, 2...)
-                    - pos: character position in original
-```
-
-### Smart Chunking
-
-Instead of cutting at hard token boundaries, QMD uses a scoring algorithm to find natural markdown break points. This keeps semantic units (sections, paragraphs, code blocks) together.
-
-**Break Point Scores:**
-
-| Pattern | Score | Description |
-|---------|-------|-------------|
-| `# Heading` | 100 | H1 - major section |
-| `## Heading` | 90 | H2 - subsection |
-| `### Heading` | 80 | H3 |
-| `#### Heading` | 70 | H4 |
-| `##### Heading` | 60 | H5 |
-| `###### Heading` | 50 | H6 |
-| ` ``` ` | 80 | Code block boundary |
-| `---` / `***` | 60 | Horizontal rule |
-| Blank line | 20 | Paragraph boundary |
-| `- item` / `1. item` | 5 | List item |
-| Line break | 1 | Minimal break |
-
-**Algorithm:**
-
-1. Scan document for all break points with scores
-2. When approaching the 900-token target, search a 200-token window before the cutoff
-3. Score each break point: `finalScore = baseScore × (1 - (distance/window)² × 0.7)`
-4. Cut at the highest-scoring break point
-
-The squared distance decay means a heading 200 tokens back (score ~30) still beats a simple line break at the target (score 1), but a closer heading wins over a distant one.
-
-**Code Fence Protection:** Break points inside code blocks are ignored—code stays together. If a code block exceeds the chunk size, it's kept whole when possible.
-
-**AST-Aware Chunking (Code Files):**
-
-For supported code files, QMD also parses the source with [tree-sitter](https://tree-sitter.github.io/) and adds AST-derived break points that are merged with the regex scores above:
-
-| AST Node | Score | Languages |
-|----------|-------|-----------|
-| Class / interface / struct / impl / trait | 100 | All |
-| Function / method | 90 | All |
-| Type alias / enum | 80 | All |
-| Import / use declaration | 60 | All |
-
-Supported for `.ts`, `.tsx`, `.js`, `.jsx`, `.py`, `.go`, and `.rs` files. Enable with `--chunk-strategy auto`. Markdown and other file types always use regex chunking.
-
-### Query Flow (Hybrid)
-
-```
-Query ──► LLM Expansion ──► [Original, Variant 1, Variant 2]
-                │
-      ┌─────────┴─────────┐
-      ▼                   ▼
-   For each query:     FTS (BM25)
-      │                   │
-      ▼                   ▼
-   Vector Search      Ranked List
-      │
-      ▼
-   Ranked List
-      │
-      └─────────┬─────────┘
-                ▼
-         RRF Fusion (k=60)
-         Original query ×2 weight
-         Top-rank bonus: +0.05/#1, +0.02/#2-3
-                │
-                ▼
-         Top 30 candidates
-                │
-                ▼
-         LLM Re-ranking
-         (yes/no + logprob confidence)
-                │
-                ▼
-         Position-Aware Blend
-         Rank 1-3:  75% RRF / 25% reranker
-         Rank 4-10: 60% RRF / 40% reranker
-         Rank 11+:  40% RRF / 60% reranker
-                │
-                ▼
-         Final Results
-```
-
-## Model Configuration
-
-The default models are defined in `src/llm.ts` as HuggingFace URIs:
-
-```typescript
-const DEFAULT_EMBED_MODEL = "hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf";
-const DEFAULT_RERANK_MODEL = "hf:ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF/qwen3-reranker-0.6b-q8_0.gguf";
-const DEFAULT_GENERATE_MODEL = "hf:tobil/qmd-query-expansion-1.7B-gguf/qmd-query-expansion-1.7B-q4_k_m.gguf";
-```
-
-Override them per-role without touching source via the `models:` block in
-`index.yml` (see [Configuring `index.yml`](#configuring-indexyml)) or the
-`QMD_EMBED_MODEL` / `QMD_RERANK_MODEL` / `QMD_GENERATE_MODEL` env vars. The
-config block wins over the env var, which wins over the built-in default.
-Re-run `qmd embed` after changing the embedding model.
-
-### EmbeddingGemma Prompt Format
-
-```
-// For queries
-"task: search result | query: {query}"
-
-// For documents
-"title: {title} | text: {content}"
-```
-
-### Qwen3-Reranker
-
-Uses node-llama-cpp's `createRankingContext()` and `rankAndSort()` API for cross-encoder reranking. Returns documents sorted by relevance score (0.0 - 1.0).
-
-### Qwen3 (Query Expansion)
-
-Used for generating query variations via `LlamaChatSession`.
-
-## License
-
-MIT
+MIT. 원저작권은 Tobi Lutke([LICENSE](LICENSE))에게 있고, 이 배포판도 같은 라이선스를 따른다.

@@ -4,6 +4,12 @@
 
 ### Changes
 
+- README.md is rewritten in Korean around ko-qmd itself: what differs from
+  upstream, install, quick start, MCP/REST/SDK, environment variables and the
+  maintenance guide that used to live in `README.ko.md` (now removed). The
+  upstream-derived English reference (full CLI, MCP tool parameters, SDK API,
+  score fusion) moved to `docs/REFERENCE.md`, with install and import names
+  switched to `ko-qmd`.
 - REST `POST /query` and SDK `search()` take `rerankMaxDocTokens`, a
   per-request rerank doc token cap. For that request it overrides the daemon's
   `QMD_RERANK_MAX_DOC_TOKENS`, and it never raises the context budget. A caller
