@@ -1316,7 +1316,7 @@ describe("Caching", () => {
     const uncappedAgain = makeMock(0.9);
 
     try {
-      store.llm = uncapped.llm as any;
+      store.llm = uncapped.llm as any; // any: mock implements only what rerank() reads
       expect((await store.rerank(query, docs))[0]!.score).toBe(0.3);
 
       store.llm = capped.llm as any;
@@ -1327,6 +1327,58 @@ describe("Caching", () => {
       store.llm = uncappedAgain.llm as any;
       expect((await store.rerank(query, docs))[0]!.score).toBe(0.3);
       expect(uncappedAgain.spy).not.toHaveBeenCalled();
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("a per-request rerank cap keys the cache by the effective cap (request ?? env)", async () => {
+    const store = await createTestStore();
+    const query = "rerank request cap cache split";
+    const docs = [{ file: "doc.md", text: "chunk" }];
+    const modelName = "hf:example/cap/cap.gguf";
+
+    const makeMock = (score: number, rerankMaxDocTokens?: number) => {
+      const spy = vi.fn(async (_query: string, scoredDocs: { file: string; text: string }[]) => ({
+        results: scoredDocs.map((doc, index) => ({ file: doc.file, score, index })),
+        model: modelName,
+      }));
+      return { spy, llm: { rerank: spy, rerankModelName: modelName, rerankMaxDocTokens } };
+    };
+
+    const requestCapped = makeMock(0.8);
+    const uncapped = makeMock(0.3);
+    const envCappedSame = makeMock(0.1, 128);
+    const envCappedOther = makeMock(0.6, 64);
+
+    try {
+      store.llm = requestCapped.llm as any; // any: mock implements only what rerank() reads
+      expect((await store.rerank(query, docs, undefined, undefined, { maxDocTokens: 128 }))[0]!.score).toBe(0.8);
+      expect(requestCapped.spy.mock.calls[0]![2]).toEqual({ model: modelName, maxDocTokens: 128 });
+
+      store.llm = uncapped.llm as any; // any: mock implements only what rerank() reads
+      expect((await store.rerank(query, docs))[0]!.score).toBe(0.3);
+
+      // Env cap 128 with no request cap: same effective cap as the first call → cache hit.
+      store.llm = envCappedSame.llm as any; // any: mock implements only what rerank() reads
+      expect((await store.rerank(query, docs))[0]!.score).toBe(0.8);
+      expect(envCappedSame.spy).not.toHaveBeenCalled();
+
+      // Request cap 128 wins over env cap 64 → cache hit on the 128 entry.
+      store.llm = envCappedOther.llm as any; // any: mock implements only what rerank() reads
+      expect((await store.rerank(query, docs, undefined, undefined, { maxDocTokens: 128 }))[0]!.score).toBe(0.8);
+      expect(envCappedOther.spy).not.toHaveBeenCalled();
+      // Env cap 64 alone → its own entry.
+      expect((await store.rerank(query, docs))[0]!.score).toBe(0.6);
+
+      // An invalid request cap (0) is ignored: env cap 128 keys the lookup (hit), nothing is forwarded.
+      const envCappedZero = makeMock(0.2, 128);
+      store.llm = envCappedZero.llm as any; // any: mock implements only what rerank() reads
+      expect((await store.rerank(query, docs, undefined, undefined, { maxDocTokens: 0 }))[0]!.score).toBe(0.8);
+      expect(envCappedZero.spy).not.toHaveBeenCalled();
+      const freshDocs = [{ file: "doc2.md", text: "other chunk" }];
+      await store.rerank(query, freshDocs, undefined, undefined, { maxDocTokens: 0 });
+      expect(envCappedZero.spy.mock.calls[0]![2]).toEqual({ model: modelName });
     } finally {
       await cleanupTestDb(store);
     }

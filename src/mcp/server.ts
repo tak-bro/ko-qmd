@@ -37,6 +37,7 @@ import { entryFromMcp, entryFromRest, logQuery, queryLogStatus } from "../query-
 import { createStoreIndexRefresher, type IndexRefresher } from "../refresh.js";
 import { buildDocumentFilter, describeFilter, type DocumentFilter } from "../filters.js";
 import { countFilteredDocuments } from "../store.js";
+import { normalizeRerankMaxDocTokens } from "../llm.js";
 import { compileGrepPattern, grepDocuments } from "../grep.js";
 
 // =============================================================================
@@ -1308,6 +1309,7 @@ export async function startMcpHttpServer(
           limit: typeof params.limit === "number" ? params.limit : 10,
           minScore: typeof params.minScore === "number" ? params.minScore : 0,
           candidateLimit: typeof params.candidateLimit === "number" ? params.candidateLimit : undefined,
+          rerankMaxDocTokens: normalizeRerankMaxDocTokens(params.rerankMaxDocTokens),
           intent: typeof params.intent === "string" ? params.intent : undefined,
           rerank,
           // rerank:false scores are 1/rank; explain carries the raw backend scores.

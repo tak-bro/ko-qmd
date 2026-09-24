@@ -5,7 +5,7 @@
  * Uses inline config (no YAML files) to verify the SDK works self-contained.
  */
 
-import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -626,6 +626,28 @@ describe("search (unified API)", () => {
     });
 
     expect(results).toHaveLength(1);
+  });
+
+  test("search() forwards rerankMaxDocTokens to the reranker", async () => {
+    const spy = vi.fn(async (_query: string, docs: { file: string; text: string }[]) => ({
+      results: docs.map((doc, index) => ({ file: doc.file, score: 0.5, index })),
+      model: "hf:example/cap/cap.gguf",
+    }));
+    const prevLlm = store.internal.llm;
+    store.internal.llm = { rerank: spy, rerankModelName: "hf:example/cap/cap.gguf" } as any; // any: mock implements only what rerank() reads
+    try {
+      await store.search({
+        queries: [{ type: "lex", query: "authentication" }],
+        limit: 5,
+        rerank: true,
+        rerankMaxDocTokens: 128,
+      });
+    } finally {
+      store.internal.llm = prevLlm;
+    }
+
+    expect(spy).toHaveBeenCalled();
+    expect(spy.mock.calls[0]![2]).toEqual({ model: "hf:example/cap/cap.gguf", maxDocTokens: 128 });
   });
 
   // Tests below use search({ query: ... }) which triggers LLM query expansion

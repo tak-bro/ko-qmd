@@ -4,6 +4,12 @@
 
 ### Changes
 
+- REST `POST /query` and SDK `search()` take `rerankMaxDocTokens`, a
+  per-request rerank doc token cap. For that request it overrides the daemon's
+  `QMD_RERANK_MAX_DOC_TOKENS`, and it never raises the context budget. A caller
+  like the KB seam can then turn a capped rerank on for one machine without
+  changing the daemon's env. The rerank cache key follows the effective cap
+  (request, else env). Invalid values (non-integer, ≤ 0, strings) are ignored.
 - `QMD_RERANK_MAX_DOC_TOKENS` caps the tokens of each document sent to the
   reranker, below the context budget. Unset keeps today's behaviour. On the KB
   goldset (40 queries, candidateLimit 15), a cap of 128 keeps quality at
