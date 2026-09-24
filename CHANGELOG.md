@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- ko-vault goldset: 69 near-topic distractor documents and 30 hard queries (`sem-hard` /
+  `multi` / `neg`) join the fixture; `bench-ko.sh` indexes both directories (97 files) and
+  prints a `RESULT-HARD hybrid_r1=… full_r1=… n=30` line next to `RESULT`. The `dogfood.sh`
+  gate now also fails when the hard `full_r1` falls below the baseline minus the `tol=` recorded
+  on that baseline line, and fails closed when `RESULT-HARD` or its `tol=` goes missing.
+  `full_r1` is gated rather than `hybrid_r1` because it held one value across eight same-commit
+  runs, while `hybrid_r1` moved by about 3.5 queries of 30.
+  Fixture invariants (no title-term leakage, no excluded concept among expected files, no basename
+  collisions) are enforced by `test/ko-bench-fixture.test.ts`.
+
 ## [2.8.3-ko.5] - 2026-09-24
 
 Rerank gets an input cap. Truncating each document to 128 tokens keeps KB

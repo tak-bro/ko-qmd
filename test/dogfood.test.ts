@@ -1,13 +1,13 @@
 /**
- * scripts/dogfood.sh gate: `--check` judges a bench-ko RESULT line against the
- * newest one in test/fixtures/ko-vault/BASELINE.md without installing anything,
+ * scripts/dogfood.sh gate: `--check` judges bench-ko output (RESULT + RESULT-HARD lines)
+ * against the newest ones in test/fixtures/ko-vault/BASELINE.md without installing anything,
  * and a deploy whose bench regresses stops before `npm pack`.
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
@@ -25,6 +25,22 @@ const baseline = (): string => {
   return /bm25_r5=([0-9.]+)/.exec(lines.at(-1) ?? "")?.[1] ?? "";
 };
 
+const RESULT_HARD_LINE = /^RESULT-HARD /;
+const lastValue = (pattern: RegExp, field: string): string => {
+  const lines = readFileSync(baselineFile, "utf-8").split("\n").filter((l) => pattern.test(l));
+  return new RegExp(`${field}=([0-9.]+)`).exec(lines.at(-1) ?? "")?.[1] ?? "";
+};
+const hardBaseline = (): string => lastValue(RESULT_HARD_LINE, "full_r1");
+const tolerance = (): string => lastValue(RESULT_HARD_LINE, "tol");
+// A synthetic baseline for tests that need a specific shape; returns its path.
+const tempBaseline = (body: string): string => {
+  const path = join(mkdtempSync(join(tmpdir(), "dogfood-hard-")), "baseline.md");
+  writeFileSync(path, `## t\n\nRESULT bm25_r5=0.9000 vector_r5=1.0000\n${body}`);
+  return path;
+};
+const hardLine = (r1: string) =>
+  `RESULT-HARD hybrid_r1=0.3000 hybrid_mrr=0.5000 full_r1=${r1} full_mrr=0.6000 n=30`;
+
 describe.skipIf(process.platform === "win32")("dogfood.sh --check", () => {
   test("a bm25_r5 below the baseline is a regression (exit 3)", () => {
     const check = run(["--check", result("0.0000")]);
@@ -35,13 +51,14 @@ describe.skipIf(process.platform === "win32")("dogfood.sh --check", () => {
   test("a bm25_r5 equal to the baseline passes", () => {
     const value = baseline();
     expect(value).not.toBe("");
-    const check = run(["--check", result(value)]);
+    const check = run(["--check", `${result(value)}\n${hardLine(hardBaseline())}`]);
     expect(check.status).toBe(0);
     expect(check.stderr).toContain(`gate: ok bm25_r5=${value}`);
   });
 
   test("a bm25_r5 above the baseline passes", () => {
-    expect(run(["--check", result("1.0000")]).status).toBe(0);
+    const check = run(["--check", `${result("1.0000")}\n${hardLine(hardBaseline())}`]);
+    expect(check.status).toBe(0);
   });
 
   test("output without a RESULT line fails closed (exit 3)", () => {
@@ -53,6 +70,92 @@ describe.skipIf(process.platform === "win32")("dogfood.sh --check", () => {
   test("bad arguments are a usage error (exit 64)", () => {
     expect(run(["--check"]).status).toBe(64);
     expect(run(["--bogus"]).status).toBe(64);
+  });
+});
+
+describe.skipIf(process.platform === "win32")("dogfood.sh --check hard gate", () => {
+  test("a hard full_r1 below baseline − tolerance is a regression (exit 3)", () => {
+    const base = hardBaseline();
+    const tol = tolerance();
+    expect(base).not.toBe("");
+    expect(tol).not.toBe("");
+    const below = (Number(base) - Number(tol) - 0.01).toFixed(4);
+    const check = run(["--check", `${result(baseline())}\n${hardLine(below)}`]);
+    expect(check.status).toBe(3);
+    expect(check.stderr).toContain(`REGRESSION hard full_r1=${below}`);
+  });
+
+  test("a hard full_r1 within tolerance passes", () => {
+    const within = (Number(hardBaseline()) - Number(tolerance()) + 0.005).toFixed(4);
+    const check = run(["--check", `${result(baseline())}\n${hardLine(within)}`]);
+    expect(check.status).toBe(0);
+    expect(check.stderr).toContain(`ok hard full_r1=${within}`);
+  });
+
+  test("RESULT-HARD in the baseline but missing from the output fails closed (exit 3)", () => {
+    const base = tempBaseline("RESULT-HARD hybrid_r1=0.4000 hybrid_mrr=0.5 full_r1=0.4 full_mrr=0.6 n=10 tol=0.05\n");
+    try {
+      const check = run(["--check", result("0.9000")], { DOGFOOD_BASELINE: base });
+      expect(check.status).toBe(3);
+      expect(check.stderr).toContain("no RESULT-HARD");
+    } finally {
+      rmSync(dirname(base), { recursive: true, force: true });
+    }
+  });
+
+  test("a baseline RESULT-HARD without tol= fails closed (exit 3)", () => {
+    const base = tempBaseline("RESULT-HARD hybrid_r1=0.4000 hybrid_mrr=0.5 full_r1=0.4 full_mrr=0.6 n=10\n");
+    try {
+      const check = run(["--check", `${result("0.9000")}\n${hardLine("0.4000")}`], { DOGFOOD_BASELINE: base });
+      expect(check.status).toBe(3);
+      expect(check.stderr).toContain("has no tol=");
+    } finally {
+      rmSync(dirname(base), { recursive: true, force: true });
+    }
+  });
+
+  test("an unparsable baseline RESULT-HARD value is a regression, not a skip (exit 3)", () => {
+    const base = tempBaseline("RESULT-HARD hybrid_r1=0.4 hybrid_mrr=0.5 full_r1=nan full_mrr=0.6 n=10 tol=0.05\n");
+    try {
+      const check = run(["--check", result("0.9000")], { DOGFOOD_BASELINE: base });
+      expect(check.status).toBe(3);
+      expect(check.stderr).toContain("unparsable");
+    } finally {
+      rmSync(dirname(base), { recursive: true, force: true });
+    }
+  });
+
+  test("a newer baseline RESULT-HARD does not inherit an older line's tol= (exit 3)", () => {
+    const base = tempBaseline(
+      "RESULT-HARD hybrid_r1=0.4000 hybrid_mrr=0.5 full_r1=0.4 full_mrr=0.6 n=10 tol=0.05\n" +
+      "RESULT-HARD hybrid_r1=0.4000 hybrid_mrr=0.5 full_r1=0.4 full_mrr=0.6 n=10\n",
+    );
+    try {
+      const check = run(["--check", `${result("0.9000")}\n${hardLine("0.4000")}`], { DOGFOOD_BASELINE: base });
+      expect(check.status).toBe(3);
+      expect(check.stderr).toContain("has no tol=");
+    } finally {
+      rmSync(dirname(base), { recursive: true, force: true });
+    }
+  });
+
+  test("a baseline without RESULT-HARD skips the hard gate and says so", () => {
+    const base = tempBaseline("");
+    try {
+      const check = run(["--check", result("0.9000")], { DOGFOOD_BASELINE: base });
+      expect(check.status).toBe(0);
+      expect(check.stderr).toContain("skip hard — no RESULT-HARD line in the baseline");
+    } finally {
+      rmSync(dirname(base), { recursive: true, force: true });
+    }
+  });
+
+  test("the RESULT line format is unchanged — RESULT-HARD does not shadow the bm25 gate", () => {
+    const both = run(["--check", `${result(baseline())}\n${hardLine(hardBaseline())}`]);
+    expect(both.status).toBe(0);
+    const bm25StillGates = run(["--check", `${result("0.0000")}\n${hardLine("1.0000")}`]);
+    expect(bm25StillGates.status).toBe(3);
+    expect(bm25StillGates.stderr).toContain("REGRESSION bm25_r5=0.0000");
   });
 });
 
@@ -91,6 +194,13 @@ describe.skipIf(process.platform === "win32")("dogfood.sh deploy gate", () => {
     expect(out.stderr).toContain("REGRESSION bm25_r5=0.0000");
     expect(npmCalls()).toContain("run --silent build");
     expect(npmCalls()).not.toMatch(/\bpack\b|\binstall\b/);
+  });
+
+  test("a passing two-line bench gets past the gate to pack", () => {
+    // bench-ko prints RESULT then RESULT-HARD; the deploy path must hand the gate both lines.
+    const out = deploy(`printf '%s\\n%s\\n' "${result(baseline())}" "${hardLine(hardBaseline())}"`);
+    expect(out.stderr).toContain(`gate: ok hard full_r1=${hardBaseline()}`);
+    expect(npmCalls()).toMatch(/\bpack\b/);
   });
 
   test("a failing bench never packs or installs", () => {
