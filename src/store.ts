@@ -30,6 +30,7 @@ import {
   DEFAULT_EMBED_MODEL_URI,
   DEFAULT_RERANK_MODEL_URI,
   DEFAULT_GENERATE_MODEL_URI,
+  normalizeRerankMaxDocTokens,
   type RerankDocument,
   type ILLMSession,
 } from "./llm.js";
@@ -1559,7 +1560,7 @@ export type Store = {
   expandQuery: (query: string, model?: string) => Promise<ExpandedQuery[]>;
   /** Drop the cached expansion for a query so the next call regenerates. */
   invalidateExpansionCache: (query: string) => void;
-  rerank: (query: string, documents: { file: string; text: string }[], model?: string, intent?: string) => Promise<{ file: string; score: number }[]>;
+  rerank: (query: string, documents: { file: string; text: string }[], model?: string, intent?: string, options?: StoreRerankOptions) => Promise<{ file: string; score: number }[]>;
 
   // Document retrieval
   findDocument: (filename: string, options?: { includeBody?: boolean }) => DocumentResult | DocumentLookupError;
@@ -2331,12 +2332,12 @@ export function createStore(dbPath?: string): Store {
     // Query expansion & reranking
     expandQuery: (query: string, model?: string) => expandQuery(query, model ?? store.llm?.generateModelName ?? DEFAULT_QUERY_MODEL, db, store.llm),
     invalidateExpansionCache: (query: string) => deleteExpansionCacheEntry(db, query, store.llm?.generateModelName ?? DEFAULT_QUERY_MODEL),
-    rerank: (query: string, documents: { file: string; text: string }[], model?: string, intent?: string) => {
+    rerank: (query: string, documents: { file: string; text: string }[], model?: string, intent?: string, options?: StoreRerankOptions) => {
       // Cache keys must use the resolved rerank model (store.llm or the global
       // singleton from models.rerank). Falling back to DEFAULT_RERANK_MODEL when
       // store.llm is unset made keys stable across config swaps (#764).
       const llm = getLlm(store);
-      return rerank(query, documents, model ?? llm.rerankModelName ?? DEFAULT_RERANK_MODEL, db, intent, llm);
+      return rerank(query, documents, model ?? llm.rerankModelName ?? DEFAULT_RERANK_MODEL, db, intent, llm, options);
     },
 
     // Document retrieval
@@ -4842,16 +4843,24 @@ export function deleteExpansionCacheEntry(db: Database, query: string, model: st
 // Reranking
 // =============================================================================
 
-export async function rerank(query: string, documents: { file: string; text: string }[], model: string = DEFAULT_RERANK_MODEL, db: Database, intent?: string, llmOverride?: LlamaCpp): Promise<{ file: string; score: number }[]> {
+/** Per-request rerank options. A 5th positional on Store.rerank keeps existing SDK callers working. */
+export type StoreRerankOptions = {
+  /** Doc token cap for this request; overrides QMD_RERANK_MAX_DOC_TOKENS. */
+  maxDocTokens?: number;
+};
+
+export async function rerank(query: string, documents: { file: string; text: string }[], model: string = DEFAULT_RERANK_MODEL, db: Database, intent?: string, llmOverride?: LlamaCpp, options: StoreRerankOptions = {}): Promise<{ file: string; score: number }[]> {
   // Prepend intent to rerank query so the reranker scores with domain context
   const rerankQuery = intent ? `${intent}\n\n${query}` : query;
   const llm = llmOverride ?? getDefaultLlamaCpp();
   // Prefer the LLM instance's resolved URI so a models.rerank swap cannot
   // reuse another model's cache entries (#764).
   const cacheModel = llm.rerankModelName ?? model;
-  // A capped rerank (QMD_RERANK_MAX_DOC_TOKENS) scores a different text than the
-  // chunk in the key, so its scores must not mix with uncapped ones.
-  const cacheTag = llm.rerankMaxDocTokens ? `${cacheModel}#max${llm.rerankMaxDocTokens}` : cacheModel;
+  // A capped rerank (per request, else QMD_RERANK_MAX_DOC_TOKENS) scores a different
+  // text than the chunk in the key, so its scores must not mix with other caps.
+  const requestMaxDocTokens = normalizeRerankMaxDocTokens(options.maxDocTokens);
+  const maxDocTokens = requestMaxDocTokens ?? llm.rerankMaxDocTokens;
+  const cacheTag = maxDocTokens ? `${cacheModel}#max${maxDocTokens}` : cacheModel;
 
   const cachedResults: Map<string, number> = new Map();
   const uncachedDocsByChunk: Map<string, RerankDocument> = new Map();
@@ -4875,7 +4884,10 @@ export async function rerank(query: string, documents: { file: string; text: str
   // Rerank uncached documents using LlamaCpp
   if (uncachedDocsByChunk.size > 0) {
     const uncachedDocs = [...uncachedDocsByChunk.values()];
-    const rerankResult = await llm.rerank(rerankQuery, uncachedDocs, { model: cacheModel });
+    const rerankResult = await llm.rerank(rerankQuery, uncachedDocs, {
+      model: cacheModel,
+      ...(requestMaxDocTokens ? { maxDocTokens: requestMaxDocTokens } : {}),
+    });
 
     // Cache results by chunk text so identical chunks across files are scored once.
     const textByFile = new Map(uncachedDocs.map(d => [d.file, d.text]));
@@ -5710,6 +5722,7 @@ export interface HybridQueryOptions {
   limit?: number;           // default 10
   minScore?: number;        // default 0
   candidateLimit?: number;  // default RERANK_CANDIDATE_LIMIT
+  rerankMaxDocTokens?: number;  // per-request rerank doc token cap
   explain?: boolean;        // include backend/RRF/rerank score traces
   intent?: string;          // domain intent hint for disambiguation
   skipRerank?: boolean;     // skip LLM reranking, use only RRF scores
@@ -6104,7 +6117,7 @@ export async function hybridQuery(
 
   hooks?.onRerankStart?.(chunksToRerank.length);
   const rerankStart = Date.now();
-  const reranked = await store.rerank(query, chunksToRerank, undefined, intent);
+  const reranked = await store.rerank(query, chunksToRerank, undefined, intent, { maxDocTokens: options?.rerankMaxDocTokens });
   hooks?.onRerankDone?.(Date.now() - rerankStart);
 
   // Step 7: Blend RRF position score with reranker score
@@ -6264,6 +6277,7 @@ export interface StructuredSearchOptions {
   limit?: number;           // default 10
   minScore?: number;        // default 0
   candidateLimit?: number;  // default RERANK_CANDIDATE_LIMIT
+  rerankMaxDocTokens?: number;  // per-request rerank doc token cap
   explain?: boolean;        // include backend/RRF/rerank score traces
   /** Domain intent hint for disambiguation — steers reranking and chunk selection */
   intent?: string;
@@ -6522,7 +6536,7 @@ export async function structuredSearch(
 
   hooks?.onRerankStart?.(chunksToRerank.length);
   const rerankStart2 = Date.now();
-  const reranked = await store.rerank(primaryQuery, chunksToRerank, undefined, intent);
+  const reranked = await store.rerank(primaryQuery, chunksToRerank, undefined, intent, { maxDocTokens: options?.rerankMaxDocTokens });
   hooks?.onRerankDone?.(Date.now() - rerankStart2);
 
   // Step 6: Blend RRF position score with reranker score

@@ -225,8 +225,14 @@ export type GenerateOptions = {
 /**
  * Options for reranking
  */
+/** A rerank doc token cap is a positive integer; anything else means "no cap from this source". */
+export const normalizeRerankMaxDocTokens = (value: unknown): number | undefined => // unknown: REST JSON and SDK input, narrowed here
+  typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
+
 export type RerankOptions = {
   model?: string;
+  /** Per-call doc token cap; overrides QMD_RERANK_MAX_DOC_TOKENS, never raises the context budget. */
+  maxDocTokens?: number;
 };
 
 /**
@@ -1827,11 +1833,11 @@ export class LlamaCpp implements LLM {
     const model = await this.ensureRerankModel();
 
     // Truncate documents that would exceed the rerank context size.
-    // Budget = contextSize - template overhead - query tokens, lowered to
-    // rerankMaxDocTokens when set.
+    // Budget = contextSize - template overhead - query tokens, lowered to the
+    // per-call cap, else rerankMaxDocTokens, when set.
     const queryTokens = model.tokenize(query).length;
     const contextBudget = LlamaCpp.RERANK_CONTEXT_SIZE - LlamaCpp.RERANK_TEMPLATE_OVERHEAD - queryTokens;
-    const maxDocTokens = Math.min(contextBudget, this.rerankMaxDocTokens ?? contextBudget);
+    const maxDocTokens = Math.min(contextBudget, normalizeRerankMaxDocTokens(options.maxDocTokens) ?? this.rerankMaxDocTokens ?? contextBudget);
     const truncationCache = new Map<string, string>();
 
     const truncatedDocs = documents.map((doc) => {

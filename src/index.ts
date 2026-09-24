@@ -139,6 +139,7 @@ export { parseMetadataFilter, MetadataFilterError };
 
 // Re-export the internal Store type for advanced consumers
 export type { InternalStore };
+export type { StoreRerankOptions } from "./store.js";
 
 // Re-export utility functions and types used by frontends
 export { extractSnippet, addLineNumbers, DEFAULT_MULTI_GET_MAX_BYTES };
@@ -197,6 +198,8 @@ export interface SearchOptions {
   limit?: number;
   /** Max candidates to rerank (default: 40) */
   candidateLimit?: number;
+  /** Per-request rerank doc token cap; overrides QMD_RERANK_MAX_DOC_TOKENS */
+  rerankMaxDocTokens?: number;
   /** Minimum score threshold */
   minScore?: number;
   /** Include explain traces */
@@ -467,6 +470,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
           explain: opts.explain,
           intent: opts.intent,
           candidateLimit: opts.candidateLimit,
+          rerankMaxDocTokens: opts.rerankMaxDocTokens,
           skipRerank,
           chunkStrategy: opts.chunkStrategy,
           scope: opts.scope,
@@ -482,6 +486,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
         explain: opts.explain,
         intent: opts.intent,
         candidateLimit: opts.candidateLimit,
+        rerankMaxDocTokens: opts.rerankMaxDocTokens,
         skipRerank,
         chunkStrategy: opts.chunkStrategy,
         scope: opts.scope,

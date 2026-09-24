@@ -910,6 +910,47 @@ describe("LlamaCpp rerank doc token cap (QMD_RERANK_MAX_DOC_TOKENS)", () => {
     expect(withEnv(value).rerankMaxDocTokens).toBeUndefined();
   });
 
+  test("a per-call maxDocTokens overrides the env cap for that call only", async () => {
+    const llm = withEnv("6");
+    const rankAll = stubRerank(llm);
+
+    await llm.rerank("q", [{ file: "a.md", text: "abcdefgh" }], { maxDocTokens: 3 });
+    await llm.rerank("q", [{ file: "a.md", text: "abcdefgh" }]);
+
+    expect(rankAll.mock.calls[0]![1]).toEqual(["abc"]);
+    expect(rankAll.mock.calls[1]![1]).toEqual(["abcdef"]);
+    expect(llm.rerankMaxDocTokens).toBe(6);
+  });
+
+  test.each([0, -1, 1.5])("a per-call maxDocTokens of %j is ignored and the env cap applies", async (value) => {
+    const llm = withEnv("6");
+    const rankAll = stubRerank(llm);
+
+    await llm.rerank("q", [{ file: "a.md", text: "abcdefgh" }], { maxDocTokens: value });
+
+    expect(rankAll).toHaveBeenCalledWith("q", ["abcdef"]);
+  });
+
+  test("a per-call maxDocTokens works with the env unset", async () => {
+    const llm = withEnv(undefined);
+    const rankAll = stubRerank(llm);
+
+    await llm.rerank("q", [{ file: "a.md", text: "abcdefgh" }], { maxDocTokens: 2 });
+
+    expect(rankAll).toHaveBeenCalledWith("q", ["ab"]);
+  });
+
+  test("a per-call maxDocTokens above the context budget cannot raise it", async () => {
+    const llm = withEnv(undefined);
+    const rankAll = stubRerank(llm);
+    const statics = LlamaCpp as any; // any: private statics
+    const contextBudget = statics.RERANK_CONTEXT_SIZE - statics.RERANK_TEMPLATE_OVERHEAD - 1;
+
+    await llm.rerank("q", [{ file: "a.md", text: "x".repeat(contextBudget + 50) }], { maxDocTokens: 100000 });
+
+    expect(rankAll.mock.calls[0]![1][0]).toHaveLength(contextBudget);
+  });
+
   test("docs that share a capped head are scored once and both get the score", async () => {
     const llm = withEnv("3");
     const rankAll = stubRerank(llm);

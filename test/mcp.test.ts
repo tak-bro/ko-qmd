@@ -936,6 +936,7 @@ describe("MCP Server", () => {
 // =============================================================================
 
 import { startMcpHttpServer, type HttpServerHandle } from "../src/mcp/server";
+import { normalizeRerankMaxDocTokens } from "../src/llm";
 import { _resetProductionModeForTesting } from "../src/store";
 
 describe.skipIf(!!process.env.CI)("MCP HTTP Transport", () => {
@@ -2096,5 +2097,15 @@ describe("REST /query takes path and time filters", () => {
   test("a literal search escapes regex characters", async () => {
     const result = await callGrep({ pattern: "zanzibar.once", fixedString: true });
     expect(result.structuredContent!.files).toEqual([]);
+  });
+});
+
+describe("REST /query rerankMaxDocTokens validation", () => {
+  test("a positive integer passes through", () => {
+    expect(normalizeRerankMaxDocTokens(128)).toBe(128);
+  });
+
+  test.each([0, -1, 1.5, "128", null, undefined])("%j is ignored", (value) => {
+    expect(normalizeRerankMaxDocTokens(value)).toBeUndefined();
   });
 });
