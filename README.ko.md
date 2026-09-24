@@ -102,12 +102,14 @@ git fetch upstream --tags
 git log --first-parent --oneline develop..upstream/main   # 머지할 지점 목록
 bash scripts/bench-ko.sh                                  # 머지 전 기준값 (tmp/bench-ko/bench.json 보관)
 git merge --no-ff <지점>                                   # 지점마다 반복, 충돌은 이 머지 커밋에서 해결
+pnpm install --lockfile-only                              # package.json 이 바뀌었으면 — 업스트림은 bun.lock 만 갱신한다
 bun run lint && bun run test:types && bun run test:unit && bash scripts/bench-ko.sh
 ```
 
 - 벤치는 전체 수치가 아니라 bm25 recall@5·MRR 을 질의별로 머지 전과 비교한다(hybrid 는 실행마다 한 질의쯤 흔들린다 — BASELINE.md 2026-09-23).
 - PR 은 squash 가 아니라 **머지 커밋**으로 들인다. 업스트림 커밋이 조상으로 남아야 다음 동기화가 새 커밋만 본다. 같은 이유로 이 브랜치는 squash·rebase 하지 않는다.
 - `develop`·`main` 을 upstream 위로 rebase 하지 않는다(보호 브랜치 force push).
+- `pnpm-lock.yaml` 은 업스트림도 갱신하지 않는다(2026-09 동기화: oxlint 가 `bun.lock` 에만 들어갔다). GitHub 설치(`npm i github:tak-bro/ko-qmd`)는 pnpm `--frozen-lockfile` 로 `prepare` 를 돌려서, 낡은 lockfile 은 Windows git install CI 와 릴리스 태그의 pre-push 검사를 막는다. `pnpm install --frozen-lockfile --lockfile-only` 가 통과해야 한다.
 - 업스트림 태그 위에 있을 때만 `v<업스트림 버전>-ko.N` 태그를 쓴다. `main` 스냅샷이면 버전은 `2.8.3-ko.N` 식으로 마지막 태그 기준이다.
 
 ## 라이선스

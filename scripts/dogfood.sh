@@ -3,7 +3,7 @@
 #
 # Usage:
 #   bash scripts/dogfood.sh                     # build → bench-ko gate → npm pack → npm i -g → restart daemon → smoke
-#   bash scripts/dogfood.sh --restore           # reinstall the published ko-qmd, restart daemon
+#   bash scripts/dogfood.sh --restore           # reinstall the published ko-qmd, restart daemon, warm models
 #   bash scripts/dogfood.sh --check "<RESULT>"  # gate verdict for one bench-ko RESULT line, installs nothing
 #
 # Gate: `bm25_r5` from bench-ko must not fall below the newest bench-ko RESULT line in
@@ -61,11 +61,24 @@ restart_daemon() { # restart_daemon — kickstart the launchd job, wait up to 30
     || { say "launchctl kickstart $LABEL failed — is the job loaded?"; return 1; }
   local _
   for _ in $(seq 1 30); do
-    curl -fsS -m 2 "$URL/health" >/dev/null 2>&1 && return 0
+    curl -fsS -m 2 "$URL/health" >/dev/null 2>&1 && { warm_models; return 0; }
     sleep 1
   done
   say "daemon did not answer $URL/health within 30s"
   return 1
+}
+
+# warm_models — one vec query loads the embedding model. A fresh daemon's first vec query took
+# 15.5s (2026-09-24), and the KB seam's 20s curl limit then failed the first search after a
+# restart. A failed warm-up is not a failed restart: the daemon is up, the next search pays the load.
+warm_models() {
+  local started=$SECONDS
+  if curl -fsS -m 90 -X POST "$URL/query" -H 'Content-Type: application/json' -H 'X-QMD-No-Log: 1' \
+    -d '{"searches":[{"type":"vec","query":"qmd"}],"limit":1,"rerank":false}' >/dev/null 2>&1; then
+    say "warmed embedding model in $((SECONDS - started))s"
+  else
+    say "warning: warm-up vec query failed — the first search after this restart pays the model load"
+  fi
 }
 
 restore() {
