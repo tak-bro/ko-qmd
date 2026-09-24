@@ -6,19 +6,27 @@
  * and measures precision, recall, MRR, and latency.
  */
 
+export type BenchmarkQueryType = "exact" | "semantic" | "topical" | "cross-domain" | "alias"
+  | "sem-hard" | "multi" | "neg";
+
+/** Query types pooled into the hard `RESULT-HARD` gate line (bench-ko.sh / dogfood.sh). */
+export const HARD_QUERY_TYPES: readonly BenchmarkQueryType[] = ["sem-hard", "multi", "neg"];
+
 export interface BenchmarkQuery {
   /** Unique identifier for the query */
   id: string;
   /** The search query text */
   query: string;
   /** Query difficulty/type for grouping results */
-  type: "exact" | "semantic" | "topical" | "cross-domain" | "alias";
+  type: BenchmarkQueryType;
   /** Human-readable description of what this tests */
   description: string;
   /** File paths (relative to collection) that should appear in results */
   expected_files: string[];
   /** How many of expected_files should appear in top-k results */
   expected_in_top_k?: number;
+  /** For `neg` queries: the named-but-excluded concept's path (fixture-test invariant only) */
+  excluded?: string;
 }
 
 export interface BenchmarkFixture {
@@ -68,18 +76,35 @@ export interface QueryResult {
   backends: Record<string, BackendResult>;
 }
 
+/** Per-backend averages over a group of queries (the shape of summary[backend]). */
+export interface BackendSummary {
+  avg_precision: number;
+  avg_recall: number;
+  avg_recall_at_1: number;
+  avg_recall_at_3: number;
+  avg_recall_at_5: number;
+  avg_mrr: number;
+  avg_f1: number;
+  avg_latency_ms: number;
+}
+
+/** Per-backend averages over one query type; count = queries of that type (the same for every backend). */
+export type BackendSummaryByType = Record<string, Record<string, BackendSummary & { count: number }>>;
+
+/** Count-weighted pool over the hard query types; nulls when no hard queries ran (printed as nan). */
+export interface HardSummary {
+  hybrid_r1: number | null;
+  hybrid_mrr: number | null;
+  full_r1: number | null;
+  full_mrr: number | null;
+  n: number;
+}
+
 export interface BenchmarkResult {
   timestamp: string;
   fixture: string;
   results: QueryResult[];
-  summary: Record<string, {
-    avg_precision: number;
-    avg_recall: number;
-    avg_recall_at_1: number;
-    avg_recall_at_3: number;
-    avg_recall_at_5: number;
-    avg_mrr: number;
-    avg_f1: number;
-    avg_latency_ms: number;
-  }>;
+  summary: Record<string, BackendSummary>;
+  summary_by_type: BackendSummaryByType;
+  summary_hard: HardSummary;
 }

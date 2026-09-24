@@ -29,9 +29,12 @@ import type {
   BenchmarkFixture,
   BenchmarkQuery,
   BackendResult,
+  BackendSummaryByType,
+  HardSummary,
   QueryResult,
   BenchmarkResult,
 } from "./types.js";
+import { HARD_QUERY_TYPES } from "./types.js";
 
 type Backend = {
   name: string;
@@ -274,6 +277,47 @@ function computeSummary(results: QueryResult[]): BenchmarkResult["summary"] {
   return summary;
 }
 
+/** Per-type summary built from the existing computeSummary on each type's slice of results.
+ *  A type with zero queries gets no entry — pooling must skip it, never divide by zero. */
+export const computeSummaryByType = (results: QueryResult[]): BackendSummaryByType => {
+  const byType: BackendSummaryByType = {};
+  const types = Array.from(new Set(results.map(r => r.type))).sort();
+  for (const type of types) {
+    const slice = results.filter(r => r.type === type);
+    byType[type] = {};
+    for (const [name, s] of Object.entries(computeSummary(slice))) {
+      byType[type][name] = { ...s, count: slice.length };
+    }
+  }
+  return byType;
+};
+
+/** Count-weighted pool of the hard query types over the per-type summary — the numbers behind
+ *  the `RESULT-HARD` line bench-ko.sh prints and dogfood.sh gates. Nulls when empty. */
+export const computeHardSummary = (byType: BackendSummaryByType): HardSummary => {
+  const METRICS = [
+    ["hybrid_r1", "hybrid", "avg_recall_at_1"],
+    ["hybrid_mrr", "hybrid", "avg_mrr"],
+    ["full_r1", "full", "avg_recall_at_1"],
+    ["full_mrr", "full", "avg_mrr"],
+  ] as const;
+  const out: HardSummary = { hybrid_r1: null, hybrid_mrr: null, full_r1: null, full_mrr: null, n: 0 };
+  for (const type of HARD_QUERY_TYPES) {
+    out.n += Object.values(byType[type] ?? {})[0]?.count ?? 0;
+  }
+  for (const [key, backend, metric] of METRICS) {
+    let num = 0, den = 0;
+    for (const type of HARD_QUERY_TYPES) {
+      const entry = byType[type]?.[backend];
+      if (!entry) continue;
+      num += entry[metric] * entry.count;
+      den += entry.count;
+    }
+    out[key] = den > 0 ? num / den : null;
+  }
+  return out;
+};
+
 export type BenchCollectionInfo = {
   name: string;
   active_count: number;
@@ -390,12 +434,15 @@ export async function runBenchmark(
 
   const summary = computeSummary(results);
   const timestamp = new Date().toISOString().replace(/[:.]/g, "").slice(0, 15);
+  const summaryByType = computeSummaryByType(results);
 
   const benchResult: BenchmarkResult = {
     timestamp,
     fixture: fixturePath,
     results,
     summary,
+    summary_by_type: summaryByType,
+    summary_hard: computeHardSummary(summaryByType),
   };
 
   // Output

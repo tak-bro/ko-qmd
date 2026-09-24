@@ -197,16 +197,20 @@ bash scripts/dogfood.sh --check "RESULT bm25_r5=…"   # 게이트 판정만
 ```
 
 - 게이트: `bench-ko.sh` 의 `bm25_r5` 가 [BASELINE.md](test/fixtures/ko-vault/BASELINE.md) 의 마지막 `RESULT` 줄보다 낮으면 설치 전에 멈춘다(exit 3).
+  베이스라인에 `RESULT-HARD` 줄이 있으면 어려운 유형 게이트도 돈다: `full_r1` 이 마지막 `RESULT-HARD` 줄의 값에서
+  그 줄의 `tol=` 을 뺀 값보다 낮으면 마찬가지로 멈춘다. 같은 커밋 8번 실행에서 `full_r1` 은 한 번도
+  안 흔들렸고 `hybrid_r1` 은 질의 3~4개만큼 흔들려서 `full_r1` 을 본다.
 - `npm link` 가 아니라 pack 설치다. 링크하면 데몬이 작업 트리의 `dist/` 를 서빙해 빌드 중에 깨질 수 있다.
 - 머신 배선 env: `DOGFOOD_LABEL`(launchd 라벨, 기본 `com.lemoncloud.qmd-daemon`) · `DOGFOOD_URL`(기본 `http://127.0.0.1:8181`) ·
   `DOGFOOD_SMOKE` · `DOGFOOD_PIN_FILE`. 성공하면 `~/.cache/qmd/dogfood-deployed` 에 `<시각> <커밋>` 을 쓴다.
 
 ### ko-vault 벤치
 
-`bash scripts/bench-ko.sh` — 픽스처 `test/fixtures/ko-vault/`(문서 28·질의 63), 임베딩은 Qwen3-Embedding-0.6B-Q8_0 고정.
+`bash scripts/bench-ko.sh` — 픽스처 `test/fixtures/ko-vault/`(문서 97: 위키 28·디스트랙터 69·질의 93), 임베딩은 Qwen3-Embedding-0.6B-Q8_0 고정.
 run별 수치는 [BASELINE.md](test/fixtures/ko-vault/BASELINE.md). 업스트림 2.8.3 의 bm25_r5 0.6250 에서 시작해,
 Qwen3-Embedding 기본값·질의 52 에서 bm25_r5 0.9519 · vector_r5 1.0000 · full_r5 1.0000 이다.
-질의 63 은 외래어 표기 질의 11건을 더한 셋이고, 그 11건의 수치는 BASELINE.md 2026-09-23 절에 있다.
+질의 63 은 외래어 표기 질의 11건을 더한 셋이고, 그 11건의 수치는 BASELINE.md 2026-09-23 절에 있다. 질의 93 은 어려운 유형
+(sem-hard 12·multi 8·neg 10) 30건을 더한 셋이고, 첫 수치는 BASELINE.md 2026-09-24 절에 있다.
 
 ### Electron 내장
 
