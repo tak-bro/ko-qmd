@@ -7,15 +7,15 @@ Temporary. Delete this directory in its own commit before the branch is merged.
   input. The cap is part of the rerank cache key, so capped and uncapped scores never mix.
 - Plans: `PLAN-12-27-43.md` (candidate-count sweep, verdict none) and `PLAN-16-46-00.md` (input cap, verdict
   none, both slices done).
-- Results: `NOTE-12-58-00.md` and `NOTE-17-30-00.md`. Cap 128 at N=15 reaches Hit@5 0.97 / Recall@5 0.77, which
+- Results: `NOTE-12-58-00.md`, `NOTE-17-30-00.md` and `NOTE-21-51-06.md` (option B, 2026-09-25). Cap 128 at N=15 reaches Hit@5 0.97 / Recall@5 0.77, which
   beats the uncapped rerank. Its p90 is 2192ms against the 2s seam budget.
 - A per-chunk floor of ~110ms remains. N=15 runs on only 2 ranking contexts, because
   `LlamaCpp.RERANK_TARGET_DOCS_PER_CONTEXT` is 10.
 
 ## Next move
-Option B: spread N=15 over more ranking contexts at cap 128, then measure whether p90 drops under 2000ms. The
-levers are `RERANK_TARGET_DOCS_PER_CONTEXT` and the `min(computeParallelism(1000), 4)` cap in
-`LlamaCpp.ensureRerankContexts`. Start with `/01-plan` in a fresh session, from `NOTE-17-30-00.md § Open`.
+Option B is done and rejected (`NOTE-21-51-06.md`): 3 or 4 ranking contexts are slower than 2 on Metal. On an M3
+Max, cap 128 at N=15 with default settings meets p90 ≤ 2000ms with no headroom. The next lever is the few slow
+queries that set the p90. Start from `NOTE-21-51-06.md § Open`.
 
 ## Machine setup
 1. `git switch feat/rerank-max-doc-tokens && bun install`
