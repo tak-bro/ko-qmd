@@ -9,7 +9,8 @@ Synthetic Korean wiki vault + `qmd bench` goldset for Hangul search work (`docs/
 - `models.yml`: models used by `scripts/bench-ko.sh` (top-level `embed`/`rerank`/`generate` keys). Pinned to Qwen3-Embedding-0.6B-Q8_0, the package default (switched from embeddinggemma on 2026-09-16, see `BASELINE.md`).
 - `BASELINE.md`: recorded `RESULT` lines.
 
-Run: `bash scripts/bench-ko.sh` (isolated index under `tmp/bench-ko/`).
+Run: `bash scripts/bench-ko.sh` (isolated index under `tmp/bench-ko/`). `KO_CORPUS` / `KO_BENCH` swap in
+another corpus copy or goldset for an A/B — usage and validation in the script header.
 
 ## `distractors/` — near-topic decoys (created in this repo, not upstream)
 

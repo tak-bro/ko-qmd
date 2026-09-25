@@ -476,3 +476,96 @@ RESULT-HARD hybrid_r1=0.3111 hybrid_mrr=0.5909 full_r1=0.5111 full_mrr=0.7528 n=
 
 Eight runs is still a small sample. If a same-commit run ever lands below the floor, widen `tol=`
 on a new reference line; do not edit this one.
+
+## 2026-09-25 — plain-language summary surface A/B
+
+Question: if every document carries three everyday-language question lines, does the hard bucket
+improve? The 16-query experiment behind `bench-vault-summarize.ts` (CHANGELOG, bench tooling)
+moved BM25 r@5 .250 → .562 and unreranked hybrid .625 → .812, but it had no near-topic decoys and
+no negation queries. This A/B reruns the idea on this fixture, decoys included.
+
+Setup (HEAD `02a8e7e`, Apple M3 Max 36 GB):
+
+- Summaries: `bench-vault-summarize.ts` with `gemma3:latest` (4.3B Q4_K_M, ollama) over the
+  fixture root. On the first pass, 2 of the 97 indexed documents came back with no usable line
+  (`wiki/inverted-index.md`, `wiki/chunking-strategy.md`). Those two got one retry, so all 97 are
+  covered, the 69 decoys included — gold documents alone getting a surface would inflate the
+  effect. `bench-vault-summary-apply.mjs` at the default max-df 20 kept 291 lines and dropped 0.
+- Goldset: the primary A/B uses a "seam" copy of `ko-bench.json` in which every query becomes
+  `lex: <q>` + `vec: <q>`. That is the shape REST/MCP callers send (the KB seam puts the same
+  sentence in both), and it routes hybrid/full through `structuredSearch` with no LLM query
+  expansion. The plain goldset (expansion via `hybridQuery`) ran 1+1 for continuity with the
+  lines above.
+- Runs: seam before/after interleaved ×3, then plain before/after ×1. The after side ran with
+  `KO_CORPUS=tmp/summary-ab/aug/wiki`, and every after run's stderr shows that `corpus=`.
+
+Result lines, prefixed so the dogfood gate never reads them as a baseline. The three seam runs on
+each side were byte-identical, so each side is shown once:
+
+```
+ab-seam-before-{1,2,3}: RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.8996 full_r5=0.9480 full_mrr=0.9036
+ab-seam-before-{1,2,3}: RESULT-HARD hybrid_r1=0.3111 hybrid_mrr=0.5615 full_r1=0.5111 full_mrr=0.7444 n=30
+ab-seam-after-{1,2,3}: RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.9211 full_r5=0.9695 full_mrr=0.9081
+ab-seam-after-{1,2,3}: RESULT-HARD hybrid_r1=0.2778 hybrid_mrr=0.5614 full_r1=0.5111 full_mrr=0.7750 n=30
+ab-plain-before-1: RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.9104 full_r5=0.9480 full_mrr=0.9063
+ab-plain-before-1: RESULT-HARD hybrid_r1=0.3111 hybrid_mrr=0.5528 full_r1=0.5111 full_mrr=0.7528 n=30
+ab-plain-after-1: RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.9265 full_r5=0.9749 full_mrr=0.9081
+ab-plain-after-1: RESULT-HARD hybrid_r1=0.3111 hybrid_mrr=0.5889 full_r1=0.5111 full_mrr=0.7750 n=30
+```
+
+Verdict under the rule fixed before the runs (seam goldset, hard 30): **not reproduced**.
+
+| criterion | before → after | bar | met |
+|---|---|---|---|
+| lex: bm25 hit@5 | 0.667 → 0.700 (+1 query) | +0.10 | no |
+| hybrid_r1, mean of 3 | 0.3111 → 0.2778 (−1 query) | +0.12, ranges apart | no |
+| full_r1, mean of 3 | 0.5111 → 0.5111 | +0.067 | no |
+| easy 63: regression | no backend moved | −2 queries | no regression |
+
+Hard hit@5 per type (seam, identical across runs):
+
+| type | n | bm25 | vector | hybrid | full |
+|---|---|---|---|---|---|
+| sem-hard | 12 | 0.750 → 0.833 | 0.917 → 0.833 | 0.917 → 0.917 | 0.917 → 1.000 |
+| multi | 8 | 0.875 → 0.875 | 0.875 → 0.875 | 0.875 → 1.000 | 1.000 → 1.000 |
+| neg | 10 | 0.400 → 0.400 | 0.600 → 0.700 | 0.500 → 0.600 | 0.800 → 0.900 |
+| hard | 30 | 0.667 → 0.700 | 0.800 → 0.800 | 0.767 → 0.833 | 0.900 → 0.967 |
+
+The three queries no path reached before: `hsh-05` full rank 6 → 2, `hneg-04` full — → 2 (bm25
+— → 4), `hneg-08` still unreached.
+
+Reading: the summaries pull gold documents into the candidate pool — two more hard queries in the
+hybrid and full top 5, full_mrr 0.7444 → 0.7750 — but they do not win rank 1. Every decoy got the
+same kind of surface, so the rank-1 contest is where it was, and hybrid rank 1 lost a query. An
+agent reads rank 1 first. A top-5 gain of 2 of 30 does not pay for the cost below.
+
+Cost: fixture median 1317 ms per document (p90 1671); a 20-document sample of the live KB
+(`~/workspace/knowledge-base/docs`) median 1984 ms (p90 2508). At that rate the 1057-document
+live corpus takes about 35 minutes per full pass, and generation adds an instruct model to the
+dependency set.
+
+Where to generate, if ever: not in `qmd embed`, for the two reasons above. If a vault wants this
+surface anyway, it belongs on the authoring side as frontmatter, which is already indexed as body
+text and needs no ko-qmd change. Some vaults already have such a field: KB `summary:` in 62 of
+652 documents, vault-lemon `aliases:` in 59 of 236, muzly `aliases:` in 2 of 119.
+
+Limits, both in the after side's favour: fixture documents are short (median 666 chars with the
+6000-char prompt cap applied, against 1837 on the live corpus, where 85 of 1057 hit the cap), so
+three lines weigh more here than they would live. And the summary model and the hard queries both
+write everyday Korean. The effect still did not reproduce.
+
+Side finding: each seam run built a fresh index and re-embedded all 97 documents, and the three
+runs per side still matched to the last digit. Re-embedding is deterministic here. The
+hybrid_r1 wobble recorded above (0.2278–0.3444 over eight plain runs) therefore points at the
+plain path's LLM query expansion, not at re-embedding; this was not isolated by a direct test.
+The plain 1+1 runs point the same way. Hard rank 1 does not move (hybrid_r1 0.3111 and full_r1
+0.5111 on both sides). Hard hit@5 gains one query on hybrid (0.833 → 0.867) and two on full
+(0.900 → 0.967), and `hsh-05` and `hneg-04` both reach full rank 2. The plain before-run's
+hybrid_mrr, 0.5528, is a fourth distinct value next to the 0.5704 / 0.5861 / 0.5909 recorded above
+at earlier commits. The seam form gave 0.5615 three times. That contrast is the same pattern as the
+side finding.
+
+Reproduce: `bun scripts/bench-vault-summarize.ts test/fixtures/ko-vault <out.json>`, then
+`node scripts/bench-vault-summary-apply.mjs test/fixtures/ko-vault <out.json> <dir>`, then
+`KO_CORPUS=<dir>/wiki KO_BENCH=<seam goldset> bash scripts/bench-ko.sh`. ollama output is not
+deterministic, so a rerun gets different lines.
