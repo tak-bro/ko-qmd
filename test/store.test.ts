@@ -3842,6 +3842,43 @@ describe("Vector Search collection filter", () => {
     await cleanupTestDb(store);
   });
 
+  test("searchVec still finds a small collection when the table is past one MATCH", async () => {
+    // Up to 4096 vectors a filtered search post-filters one KNN over the whole table.
+    // Past that, the KNN no longer covers every row, so the collection-scoped exact
+    // scan has to take over or the far-away target is starved again.
+    const store = await createTestStore();
+    const small = await createTestCollection({ name: "small", pwd: "/test/small" });
+
+    const dims = 8;
+    store.ensureVecTable(dims);
+    const now = new Date().toISOString();
+    const queryEmbedding = Array(dims).fill(0);
+    queryEmbedding[0] = 1;
+
+    const near = new Float32Array(dims);
+    near[0] = 1;
+    const insertNoise = store.db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`);
+    for (let i = 0; i < 4100; i++) insertNoise.run(`noise${i}_0`, near);
+
+    const targetHash = "smallhash001";
+    await insertTestDocument(store.db, small, {
+      name: "target",
+      hash: targetHash,
+      body: "Target document in the small collection",
+      displayPath: "target.md",
+    });
+    const far = new Float32Array(dims);
+    far[0] = 0.6;
+    far[1] = 0.8;
+    store.db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, 'test', ?)`).run(targetHash, now);
+    store.db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${targetHash}_0`, far);
+
+    const filtered = await store.searchVec("ignored", "test-model", 3, small, undefined, queryEmbedding);
+    expect(filtered.map((r) => r.displayPath)).toEqual([`${small}/target.md`]);
+
+    await cleanupTestDb(store);
+  });
+
   test("searchVec multi-collection union is not starved by a third collection (#775)", async () => {
     const store = await createTestStore();
     const large = await createTestCollection({ name: "large", pwd: "/test/large" });

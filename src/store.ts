@@ -4509,7 +4509,18 @@ export async function searchVec(db: Database, query: string, model: string, limi
 
     if (uniqueEligibleHashSeqs.length === 0) return [];
 
-    if (uniqueEligibleHashSeqs.length <= FILTERED_VEC_EXACT_SCAN_MAX) {
+    // When the whole table fits in one MATCH, post-filtering one KNN over it is exact
+    // (vec0 KNN in sqlite-vec 0.1.x is a brute-force scan) and ~10-50x faster than the
+    // per-row vec_distance_cosine scan below (KB goldset, M3 Max: ~25ms vs 250-1300ms
+    // for 1047 of 3389 vectors). Asking for one row more than we counted proves the
+    // table was covered: a row embedded between the count and the MATCH comes back as
+    // the extra one and sends us to the exact scan instead.
+    const totalVectors = (db.prepare(`SELECT count(*) AS n FROM vectors_vec`).get() as { n: number }).n;
+    const fullKnn = totalVectors < SQLITE_VEC_MAX_K ? annVecScan(db, embedding, totalVectors + 1) : null;
+    if (fullKnn && fullKnn.length <= totalVectors) {
+      const eligible = new Set(uniqueEligibleHashSeqs);
+      vecResults = fullKnn.filter(r => eligible.has(r.hash_seq)).slice(0, breadth * 3);
+    } else if (uniqueEligibleHashSeqs.length <= FILTERED_VEC_EXACT_SCAN_MAX) {
       vecResults = exactVecScanByHashSeq(db, embedding, uniqueEligibleHashSeqs, breadth);
     } else {
       // Past the exact-scan ceiling: ANN with over-fetch, hard-capped at sqlite-vec's max k.
