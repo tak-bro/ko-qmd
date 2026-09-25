@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Changes
+
+- Collection- or filter-scoped vector search is faster on indexes of up to
+  4096 vectors. It now post-filters one sqlite-vec KNN over the whole table,
+  which is exact because vec0 KNN is a brute-force scan, instead of computing
+  `vec_distance_cosine` row by row. On the KB goldset (1047 of 3389 vectors,
+  M3 Max) the vector stage dropped from 250–1300ms to about 25ms, and a cold
+  capped query (cap 128, candidateLimit 15) went from p90 2000ms to 906ms with
+  identical rankings. Larger indexes keep the exact scan.
+
 ## [2.8.3-ko.5] - 2026-09-24
 
 Rerank gets an input cap. Truncating each document to 128 tokens keeps KB
