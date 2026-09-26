@@ -1315,6 +1315,17 @@ describe("MCP HTTP Transport — 2026-07-28 protocol", () => {
     expect(serverInfo?.name).toBe("qmd");
   });
 
+  test("the query tool tells callers that a Korean query is not expanded", async () => {
+    const { json } = await postMcp(
+      { jsonrpc: "2.0", id: 2, method: "tools/list", params: { _meta: mcp2026Meta } },
+      { "MCP-Protocol-Version": MCP_2026, "Mcp-Method": "tools/list" },
+    );
+    type ListedTool = { name: string; description: string; inputSchema: { properties: Record<string, { description?: string }> } };
+    const queryTool: ListedTool | undefined = json.result.tools.find((t: ListedTool) => t.name === "query");
+    expect(queryTool?.description).toContain("a Korean query is not expanded");
+    expect(queryTool?.inputSchema.properties.query?.description).toContain("a query with any Hangul is not expanded");
+  });
+
   test("POST without Mcp-Method is HeaderMismatch (-32020)", async () => {
     const { status, json } = await postMcp(
       {

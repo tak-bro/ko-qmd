@@ -180,7 +180,7 @@ export type UpdateResult = {
  * Options for the unified search() method.
  */
 export interface SearchOptions {
-  /** Simple query string — will be auto-expanded via LLM */
+  /** Simple query string — auto-expanded via LLM, unless it contains Hangul */
   query?: string;
   /** Pre-expanded queries (from expandQuery) — skips auto-expansion */
   queries?: ExpandedQuery[];

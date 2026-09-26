@@ -45,6 +45,10 @@ flowchart LR
 - 한국어 문서는 실제 토큰 예산으로 청킹한다. 한글은 글자당 토큰이 영어보다 훨씬 많다(Qwen3-Embedding 실측 ko 1.64 / en 6.08 chars/token).
   그래서 청크 크기는 한글·기타 문자의 조화 평균으로 잡는다. 영어 문서의 청크 경계는 업스트림과 같다.
 - 하이브리드 RRF 가중치를 한국어에 맞게 조정했다. 벡터 목록은 절반, OR 로 완화한 lex 목록은 다시 절반, 확장 질의 목록은 0.75 로 센다.
+- `qmd query`·MCP plain `query`·SDK `search({ query })` 의 하이브리드 경로에서 한글이 한 글자라도 든 질의는 LLM 질의
+  확장을 하지 않는다(명시적 `expand:` 포함, `qmd vsearch` 는 아직 확장한다). 확장 모델은 한국어 질문에 영어 문장 틀과 중국어를 섞어 썼고,
+  그 샘플링만으로 어려운 질의 1위가 실행마다 30개 중 5개까지 바뀌었다. 끄자 어려운 질의 1위는 줄지 않았고 hybrid 지연은
+  질의당 약 1초에서 수십 ms 로 줄었다(BASELINE.md 2026-09-26). 영어 질의는 그대로 확장한다.
 - 리랭커가 실제로 1위를 바꿀 수 있게 점수 블렌드를 고쳤다. 검색 순위 항은 블렌드의 10% 인 선형 감쇠다.
   이전 블렌드에서는 리랭크 점수와 상관없이 검색 1위가 그대로 남았다.
 
@@ -87,7 +91,7 @@ qmd collection add ~/notes --name notes          # 컬렉션 등록 + 색인
 qmd context add qmd://notes "개인 개발 노트"       # 검색 결과와 함께 돌려줄 설명
 qmd embed                                         # 벡터 임베딩 (처음 한 번, 이후 변경분만)
 
-qmd query "하이브리드 서치 설계 결정"               # 확장 + 융합 + 리랭크 (권장)
+qmd query "하이브리드 서치 설계 결정"               # 융합 + 리랭크 (권장, 한글 질의는 확장하지 않는다)
 qmd search "리랭크"                               # BM25 만 (빠름, 모델 없음)
 qmd vsearch "검색 지연을 줄인 방법"                 # 벡터만
 qmd grep "QMD_QUERY_LOG"                          # 본문 정확 일치
@@ -197,9 +201,11 @@ bash scripts/dogfood.sh --check "RESULT bm25_r5=…"   # 게이트 판정만
 ```
 
 - 게이트: `bench-ko.sh` 의 `bm25_r5` 가 [BASELINE.md](test/fixtures/ko-vault/BASELINE.md) 의 마지막 `RESULT` 줄보다 낮으면 설치 전에 멈춘다(exit 3).
-  베이스라인에 `RESULT-HARD` 줄이 있으면 어려운 유형 게이트도 돈다: `full_r1` 이 마지막 `RESULT-HARD` 줄의 값에서
-  그 줄의 `tol=` 을 뺀 값보다 낮으면 마찬가지로 멈춘다. 같은 커밋 8번 실행에서 `full_r1` 은 한 번도
-  안 흔들렸고 `hybrid_r1` 은 질의 3~4개만큼 흔들려서 `full_r1` 을 본다.
+  베이스라인에 `RESULT-HARD` 줄이 있으면 어려운 유형 게이트도 돈다: 벤치를 돌린 form(`form=`, 없으면 plain)이
+  그 줄과 같아야 하고, `full_r1` 이 그 줄의 값에서 그 줄의 `tol=` 을 뺀 값보다 낮으면 마찬가지로 멈춘다.
+  seam form(`bench-ko.sh` 기본값 — 질의마다 `lex:`·`vec:` 두 줄, LLM 질의 확장 없음)이면 `hybrid_r1` 도 같은 식으로 본다.
+  seam form 은 같은 커밋에서 매번 같은 값이 나와 기준줄이 `tol=0` 이다. plain form 의 `hybrid_r1` 은 확장 샘플링만으로
+  질의 5개만큼 흔들려서 게이트하지 않는다(BASELINE.md 2026-09-26).
 - `npm link` 가 아니라 pack 설치다. 링크하면 데몬이 작업 트리의 `dist/` 를 서빙해 빌드 중에 깨질 수 있다.
 - 머신 배선 env: `DOGFOOD_LABEL`(launchd 라벨, 기본 `com.lemoncloud.qmd-daemon`) · `DOGFOOD_URL`(기본 `http://127.0.0.1:8181`) ·
   `DOGFOOD_SMOKE` · `DOGFOOD_PIN_FILE`. 성공하면 `~/.cache/qmd/dogfood-deployed` 에 `<시각> <커밋>` 을 쓴다.
@@ -207,6 +213,7 @@ bash scripts/dogfood.sh --check "RESULT bm25_r5=…"   # 게이트 판정만
 ### ko-vault 벤치
 
 `bash scripts/bench-ko.sh` — 픽스처 `test/fixtures/ko-vault/`(문서 97: 위키 28·디스트랙터 69·질의 93), 임베딩은 Qwen3-Embedding-0.6B-Q8_0 고정.
+기본은 seam form(REST/MCP 호출과 같은 `lex:`+`vec:` 모양, 확장 없음)이고 `KO_FORM=plain` 이면 질의를 그대로 넘겨 확장 경로를 잰다.
 run별 수치는 [BASELINE.md](test/fixtures/ko-vault/BASELINE.md). 업스트림 2.8.3 의 bm25_r5 0.6250 에서 시작해,
 Qwen3-Embedding 기본값·질의 52 에서 bm25_r5 0.9519 · vector_r5 1.0000 · full_r5 1.0000 이다.
 질의 63 은 외래어 표기 질의 11건을 더한 셋이고, 그 11건의 수치는 BASELINE.md 2026-09-23 절에 있다. 질의 93 은 어려운 유형
@@ -238,7 +245,8 @@ pnpm install --lockfile-only                              # package.json 이 바
 bun run lint && bun run test:types && bun run test:unit && bash scripts/bench-ko.sh
 ```
 
-- 벤치는 bm25 recall@5·MRR 을 질의별로 머지 전과 비교한다(hybrid 는 실행마다 한 질의쯤 흔들린다).
+- 벤치는 bm25 recall@5·MRR 을 질의별로 머지 전과 비교한다. 기본 seam form 은 실행마다 같은 값이 나와서, 움직였다면
+  동기화가 바꾼 것이다. `KO_FORM=plain` 의 hybrid 는 질의 확장 샘플링만으로도 흔들린다.
 - PR 은 squash 가 아니라 **머지 커밋**으로 들인다. 업스트림 커밋이 조상으로 남아야 다음 동기화가 새 커밋만 본다.
   같은 이유로 이 브랜치는 squash·rebase 하지 않고, `develop`·`main` 을 upstream 위로 rebase 하지 않는다.
 - `pnpm install --frozen-lockfile --lockfile-only` 가 통과해야 한다. 낡은 `pnpm-lock.yaml` 은 GitHub 설치(`prepare`)와 릴리스 태그의 pre-push 검사를 막는다.

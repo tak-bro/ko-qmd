@@ -20,7 +20,7 @@ import { readFileSync, realpathSync, statSync, mkdirSync } from "node:fs";
 // Note: node:path resolve is not imported — we export our own cross-platform resolve()
 import fastGlob from "fast-glob";
 import { qmdHomedir } from "./paths.js";
-import { estimateCharsPerToken, hangulBigramTail, hangulMixedQuery, hangulTermQuery } from "./hangul.js";
+import { containsHangul, estimateCharsPerToken, hangulBigramTail, hangulMixedQuery, hangulTermQuery } from "./hangul.js";
 import {
   LlamaCpp,
   getDefaultLlamaCpp,
@@ -5900,10 +5900,15 @@ export async function hybridQuery(
 
   if (hasStrongSignal) hooks?.onStrongSignal?.(topScore);
 
-  // Step 2: Expand query (or skip if strong signal)
+  // Step 2: Expand query (or skip if strong signal or Hangul)
+  // ko-qmd: a query with any Hangul is never expanded. On the ko-vault goldset the expansion model
+  // wrote English templates and stray Chinese around Korean questions, its sampling alone moved hard
+  // rank 1 by up to five of 30 queries between runs, and it cost ~1 s per query
+  // (test/fixtures/ko-vault/BASELINE.md 2026-09-26).
+  const skipsExpansion = hasStrongSignal || containsHangul(query);
   hooks?.onExpandStart?.();
   const expandStart = Date.now();
-  const expanded = hasStrongSignal
+  const expanded = skipsExpansion
     ? []
     : await store.expandQuery(query);
 

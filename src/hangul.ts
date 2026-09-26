@@ -2,12 +2,14 @@
  * hangul.ts - Korean (Hangul) handling for FTS5 indexing and queries.
  *
  * ko-qmd patch stack: all Hangul-specific logic lives here so store.ts keeps
- * at most two call sites. Han and kana appear only as CJK-side characters in
+ * only one-line call sites. Han and kana appear only as CJK-side characters in
  * estimateCharsPerToken's density count — indexing and query logic never sees them.
  */
 
 const HANGUL_WORD_PATTERN = /^\p{Script=Hangul}+$/u;
 const HANGUL_RUN_PATTERN = /\p{Script=Hangul}+/gu;
+// Not global: a /g pattern's test() keeps lastIndex between calls.
+const HANGUL_CHAR_PATTERN = /\p{Script=Hangul}/u;
 
 // Particles (design §4) plus the nominalizing ending 기 (`나누기` → `나누`).
 // Longest first, so 에서 wins over 에 and 으로 over 로.
@@ -31,6 +33,9 @@ function syllableBigrams(word: string): string[] {
   const syllables = Array.from(word);
   return syllables.slice(1).map((s, i) => syllables[i] + s);
 }
+
+/** True when `text` has any Hangul syllable or jamo, script-mixed text included. */
+export const containsHangul = (text: string): boolean => HANGUL_CHAR_PATTERN.test(text);
 
 /**
  * Syllable bigrams of every Hangul run in `text`, space-joined in run order

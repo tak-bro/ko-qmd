@@ -100,7 +100,7 @@ expand: error handling best practices
 error handling best practices
 ```
 
-Both forms call the local query expansion model, which generates lex, vec, and hyde variations automatically.
+Both forms call the local query expansion model, which generates lex, vec, and hyde variations automatically. ko-qmd makes one exception: a query containing Hangul is searched as written, with no expansion, even behind an explicit `expand:`. For a Korean question, write the `lex:`/`vec:` lines yourself.
 
 ## Intent
 

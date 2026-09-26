@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+- A query with any Hangul is no longer expanded by the LLM on the hybrid path (`hybridQuery`). That
+  path serves CLI `qmd query`, including an explicit `expand:` line, as well as a plain MCP `query`
+  and SDK `search({ query })`; `qmd vsearch` still expands. On the ko-vault goldset the
+  expansion model wrapped Korean questions in English sentence templates and stray Chinese, and its
+  sampling alone moved hard rank 1 by up to five of 30 queries between runs. Without it, hard
+  `hybrid_r1` reads 0.3778 (0.2611–0.3611 with expansion), `full_r1` holds at 0.5111, the easy
+  queries lose nothing, and the median hybrid query drops from about 1 s to 20 ms. The Korean
+  queries now return the same results on every run. English-only queries are still expanded, and a
+  caller who wants variants for a Korean question can pass its own `searches`
+  (`BASELINE.md` 2026-09-26).
+
+- `scripts/bench-ko.sh` benches the seam form by default. Every one-line goldset query reaches
+  `qmd bench` as `lex: <q>` + `vec: <q>`, the shape REST/MCP callers send, which skips LLM query
+  expansion. `KO_FORM=plain` keeps the old path, and the `RESULT-HARD` line now ends with
+  `form=<seam|plain>`. The `dogfood.sh` gate refuses a bench whose form differs from its baseline
+  line's form. On the seam form it gates hard `hybrid_r1` as well as `full_r1`, against a reference
+  line with `tol=0`, since the seam form gave the same lines in every run. The reason is the plain
+  form's hard wobble, which turned out to be the expansion sampler alone. Replaying recorded
+  expansions reproduces every query's top 10, and every query that moved between same-commit runs
+  had drawn a different expansion. The draw moved `hybrid_r1` by up to five of 30 queries and once
+  put `full_r1` 0.0007 above the old gate's floor (`BASELINE.md` 2026-09-26). The gate also runs
+  the bench with any exported `KO_BENCH`/`KO_CORPUS`/`KO_FORM` removed, and `bench-ko.sh` refuses a
+  `KO_BENCH` inside `tmp/bench-ko/`, where the run clears its outputs.
+
 - `scripts/bench-ko.sh` takes `KO_CORPUS` (a corpus directory holding `wiki/` and
   `distractors/`) and `KO_BENCH` (a goldset) so an A/B runs through the same isolated harness
   and stdout lines. Overrides resolve against the caller's cwd and are checked before the

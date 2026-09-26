@@ -338,7 +338,7 @@ const store3 = await createStore({ dbPath: './index.sqlite' })
 The unified `search()` method handles both simple queries and pre-expanded structured queries:
 
 ```typescript
-// Simple query — auto-expanded via LLM, then BM25 + vector + reranking
+// Simple query — auto-expanded via LLM (not when it contains Hangul), then BM25 + vector + reranking
 const results = await store.search({ query: "authentication flow" })
 
 // With options
