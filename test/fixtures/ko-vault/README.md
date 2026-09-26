@@ -10,7 +10,8 @@ Synthetic Korean wiki vault + `qmd bench` goldset for Hangul search work (`docs/
 - `BASELINE.md`: recorded `RESULT` lines.
 
 Run: `bash scripts/bench-ko.sh` (isolated index under `tmp/bench-ko/`). `KO_CORPUS` / `KO_BENCH` swap in
-another corpus copy or goldset for an A/B — usage and validation in the script header.
+another corpus copy or goldset for an A/B; `KO_FORM` picks the seam form (default, no query expansion) or
+`plain` — usage and validation in the script header.
 
 ## `distractors/` — near-topic decoys (created in this repo, not upstream)
 
@@ -64,6 +65,6 @@ hard kinds:
 
 1. `RESULT bm25_r5=<f> vector_r5=<f> hybrid_r5=<f> full_r5=<f> full_mrr=<f>` — format fixed;
    `scripts/dogfood.sh`'s `bm25_of` regex parses it.
-2. `RESULT-HARD hybrid_r1=<f> hybrid_mrr=<f> full_r1=<f> full_mrr=<f> n=<n>` — the hard types
-   pooled, weighted by query count. `n=0` (and `nan` values) while the fixture has no hard
-   queries; from slice 03 on this line feeds the dogfood hard gate.
+2. `RESULT-HARD hybrid_r1=<f> hybrid_mrr=<f> full_r1=<f> full_mrr=<f> n=<n> form=<seam|plain>` — the
+   hard types pooled, weighted by query count. `n=0` (and `nan` values) while the fixture has no
+   hard queries. This line feeds the dogfood hard gate, which needs `form=` to match its baseline.

@@ -569,3 +569,180 @@ Reproduce: `bun scripts/bench-vault-summarize.ts test/fixtures/ko-vault <out.jso
 `node scripts/bench-vault-summary-apply.mjs test/fixtures/ko-vault <out.json> <dir>`, then
 `KO_CORPUS=<dir>/wiki KO_BENCH=<seam goldset> bash scripts/bench-ko.sh`. ollama output is not
 deterministic, so a rerun gets different lines.
+
+## 2026-09-26 — the hybrid wobble is LLM query expansion
+
+Question: does LLM query expansion cause the plain path's hard `hybrid_r1` wobble (0.2278–0.3444
+over the eight same-commit runs above)? The 2026-09-25 side finding pointed there without
+isolating it. The verdict rule was fixed before the runs:
+
+- (a) With the expansion held fixed, a rerun reproduces every query's hybrid and full top 10.
+- (b) Across fresh runs, some query's hybrid or full top 10 moves.
+- (c) Every query that moves saw a different expansion.
+
+(a)–(c) together mean confirmed. A failure of (a) means something besides expansion also varies.
+
+Setup (HEAD `3e024d8`, Apple M3 Max 36 GB): the expansion model is `qmd-query-expansion-1.7B`
+(q4_k_m), sampled at temperature 0.7 with no seed (`LlamaCpp.expandQuery`). bench-ko rebuilds its
+index on every run, so each run starts with an empty `llm_cache` and draws new expansions.
+
+- F1–F3: plain bench-ko runs. P1 and P2 are two earlier plain runs at the same HEAD, from a first
+  attempt whose expansion dump failed. They are kept as observations only.
+- H1–H3: a probe that calls `hybridQuery` for every goldset query with the options bench's hybrid
+  and full backends use, on a fresh index each run. It records the expansion each call used through
+  `SearchHooks.onExpand`.
+- R1–R2: the same probe on H3's index, with `store.expandQuery` swapped for H3's recorded
+  expansions. The expansion is held fixed and nothing else changes.
+- S: the seam goldset (`lex: <q>` + `vec: <q>`) through bench-ko.
+
+Method change: the plan was to hold expansions fixed by rerunning `qmd bench` on the same index, so
+that the cache would serve them. That does not work. `setCachedResult` trims `llm_cache` to its
+newest 1000 rows on 1% of writes, and a bench run writes more than a thousand rerank rows, so a
+run's early expansions are gone by the time it ends. F3's cache held 1121 rows, and only 27 of them were
+expansions, all written in its last three minutes. The first same-index rerun ended with 25
+expansions in its cache, none of them F3's. The probe replaced the rerun; the rule above did not change.
+
+Result lines, prefixed so the dogfood gate never reads them as a baseline:
+
+```
+ab-exp-P1: RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.8996 full_r5=0.9480 full_mrr=0.9081
+ab-exp-P1: RESULT-HARD hybrid_r1=0.3278 hybrid_mrr=0.5856 full_r1=0.5111 full_mrr=0.7583 n=30
+ab-exp-P2: RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.8943 full_r5=0.9480 full_mrr=0.9060
+ab-exp-P2: RESULT-HARD hybrid_r1=0.3611 hybrid_mrr=0.5742 full_r1=0.5111 full_mrr=0.7520 n=30
+ab-exp-F1: RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.8943 full_r5=0.9588 full_mrr=0.9010
+ab-exp-F1: RESULT-HARD hybrid_r1=0.2611 hybrid_mrr=0.5108 full_r1=0.4778 full_mrr=0.7364 n=30
+ab-exp-F2: RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.9158 full_r5=0.9588 full_mrr=0.9072
+ab-exp-F2: RESULT-HARD hybrid_r1=0.2778 hybrid_mrr=0.5789 full_r1=0.5111 full_mrr=0.7556 n=30
+ab-exp-F3: RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.9050 full_r5=0.9480 full_mrr=0.9045
+ab-exp-F3: RESULT-HARD hybrid_r1=0.3611 hybrid_mrr=0.5939 full_r1=0.5111 full_mrr=0.7472 n=30
+ab-exp-S: RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.8996 full_r5=0.9480 full_mrr=0.9036
+ab-exp-S: RESULT-HARD hybrid_r1=0.3111 hybrid_mrr=0.5615 full_r1=0.5111 full_mrr=0.7444 n=30
+```
+
+Probe, hard 30:
+
+| run | hybrid_r1 | full_r1 | hybrid latency p50 / p90 |
+|---|---|---|---|
+| H1 | 0.4111 | 0.5111 | 1083 / 5638 ms |
+| H2 | 0.3278 | 0.5111 | 1029 / 6336 ms |
+| H3 | 0.2444 | 0.5111 | 1094 / 6212 ms |
+| R1 (H3's expansions) | 0.2444 | 0.5111 | 96 / 175 ms |
+| R2 (H3's expansions) | 0.2444 | 0.5111 | 98 / 175 ms |
+
+Verdict: **confirmed**.
+
+- (a) R1 and R2 match H3 on every query's hybrid and full top 10, with 0 differences.
+- (b) 81 of 93 queries changed their hybrid or full top 10 across H1–H3.
+- (c) All 81 saw a different expansion across the three runs; none moved with the same one. The
+  10 queries that were never expanded all moved zero times: `ali-04 ali-05 sem-03 sem-06 sem-07
+  top-01 top-03 top-04 ko-13 ali-15`, the hook saw an empty expansion every time,
+  which is the shape of the strong-signal bypass.
+- Rule S: S matches `ab-seam-before-{1,2,3}` byte for byte. The seam form gave the same two lines
+  in three runs at `02a8e7e` and again at `3e024d8`.
+
+Per type, hybrid_r1 swings in every hard bucket (H1 / H2 / H3): sem-hard 0.5833 / 0.5000 /
+0.3333, multi 0.4167 / 0.3542 / 0.2917, neg 0.2000 / 0.1000 / 0.1000. full_r1 held sem-hard
+0.8333, multi 0.4167 and neg 0.2000 in all three runs.
+
+What the expansion writes for Korean: over H1–H3, the 85 Hangul queries got 889 expansion lines.
+283 of them carry an English word the question does not have, 12 carry Han or kana, and 259 of the
+275 `hyde` lines are English sentence templates with the Korean question pasted in. Samples:
+
+- `hneg-04` 오타 교정 말고 검색어에 알맹이 덧붙이기, H1: `hyde: Understanding 오타 교정 말고
+  검색어에 알맹이 덧붙이기 is essential for modern development. …`
+- `hsh-05` 새 글이 들어와서 검색이 가능해질 때까지 거치는 일련의 단계, H2: the `hyde` line
+  repeats `任何问题都可以通过这个设置来解决, 确保遵循最佳实践.` until the token limit.
+- `hmu-01` 하이브리드 검색에서 두 점수를 합치는 법과 그걸 평가하는 법, H3: `lex: 빅데이터 기반 하이브리드
+  검색의`. The question never mentions 빅데이터.
+
+Cost: expansion is most of the plain hybrid latency. The p50 is about 1.0–1.1 s with expansion and
+96 ms with the expansion supplied (R1/R2). The p90 of 5.6–6.3 s comes from `hyde` lines that run
+to the token limit.
+
+This corrects two readings above; the sections themselves are left as written. The hybrid wobble
+the 2026-09-24 sections call re-embedding noise is query expansion, and the seam form, which has
+no expansion, repeats exactly. `full_r1` is not immune either. F1 read 0.4778, which is 0.0007
+above the plain gate's floor (0.5111 − 0.034 = 0.4771); P1, P2, F2 and F3 read 0.5111. The next
+section moves the gate to the seam form.
+
+Reproduce: plain runs are `bash scripts/bench-ko.sh` at this commit. The seam run is
+`KO_BENCH=<seam copy of ko-bench.json> bash scripts/bench-ko.sh`. The probe is not committed. It
+is about 70 lines over `createStore` + `hybridQuery` with `hooks.onExpand`, and a replay mode that
+assigns `store.internal.expandQuery = async () => <recorded>` before each call.
+
+## 2026-09-26 — the gate moves to the seam form
+
+The section above shows that the plain form's hard numbers are partly a draw from the expansion
+sampler: hybrid_r1 by up to five queries, and full_r1 once by one. A gate on the plain form either
+tolerates that draw or fails on it. The seam form, where every query is `lex: <q>` + `vec: <q>`,
+has no expansion. It is the shape REST/MCP callers send, and it gave the same two lines in all five
+runs recorded here: three at `02a8e7e`, one at `3e024d8`, and the reference below, run with this
+branch's `bench-ko.sh`.
+
+So `bench-ko.sh` now benches the seam form by default and ends its RESULT-HARD line with
+`form=<seam|plain>`, while `KO_FORM=plain` keeps the old path. The dogfood gate refuses a bench
+whose form differs from the baseline line's form, where a line without `form=` counts as plain. On
+the seam form it gates hard `hybrid_r1` next to `full_r1`. `hybrid_r1` is the `rerank:false` path,
+the one the gate could not watch before.
+
+Reference, from the default bench-ko run on this branch. It is `ab-exp-S` above plus
+`tol=0 form=seam`:
+
+```
+RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.8996 full_r5=0.9480 full_mrr=0.9036
+RESULT-HARD hybrid_r1=0.3111 hybrid_mrr=0.5615 full_r1=0.5111 full_mrr=0.7444 n=30 tol=0 form=seam
+```
+
+The tolerance is 0, so losing a single hard query at rank 1, on hybrid or full, stops the deploy. A
+same-commit run that differs from this line would itself be a finding, because the seam form has
+repeated exactly so far. A dependency or model bump that moves the numbers gets a new reference line
+with the reason next to it; this one is not edited. The plain path, which is CLI `qmd query` with a
+plain question, is no longer gated. Changes to it are measured by hand with `KO_FORM=plain`.
+
+## 2026-09-26 — a Hangul query skips LLM expansion
+
+`hybridQuery` now leaves a query with any Hangul unexpanded, and treats it the same way as a
+strong-signal bypass. The keep rule was fixed before the runs. F1–F3 above are the with-expansion
+side, and X1 is the plain bench with the skip. Keep only if all three hold:
+
+- X1's hard `hybrid_r1` ≥ mean(F) − 0.034.
+- X1's hard `full_r1` ≥ min(F) − 0.034.
+- X1's easy hit@5, hybrid and full each, ≥ min(F) − 1 query.
+
+Anything else meant dropping the change. X2 repeats X1. V is the seam bench, run to show that the
+real-use path is untouched.
+
+```
+ab-exp-X1: RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.9211 full_r5=0.9480 full_mrr=0.9045
+ab-exp-X1: RESULT-HARD hybrid_r1=0.3778 hybrid_mrr=0.6001 full_r1=0.5111 full_mrr=0.7472 n=30 form=plain
+ab-exp-X2: RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.9211 full_r5=0.9480 full_mrr=0.9045
+ab-exp-X2: RESULT-HARD hybrid_r1=0.3778 hybrid_mrr=0.6001 full_r1=0.5111 full_mrr=0.7472 n=30 form=plain
+ab-exp-V: RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.8996 full_r5=0.9480 full_mrr=0.9036
+ab-exp-V: RESULT-HARD hybrid_r1=0.3111 hybrid_mrr=0.5615 full_r1=0.5111 full_mrr=0.7444 n=30 form=seam
+```
+
+| | F1 / F2 / F3 (expansion) | X1 (Hangul skip) |
+|---|---|---|
+| hard hybrid_r1 | 0.2611 / 0.2778 / 0.3611 (mean 0.3000) | 0.3778 |
+| hard full_r1 | 0.4778 / 0.5111 / 0.5111 | 0.5111 |
+| easy hit@5 hybrid | 62 / 62 / 62 of 63 | 63 |
+| easy hit@5 full | 63 / 63 / 63 of 63 | 63 |
+| hybrid latency p50 | 1205 / 1067 / 1000 ms | 20 ms |
+
+Verdict: **keep**. All three conditions hold: 0.3778 ≥ 0.2660, 0.5111 ≥ 0.4438, and hit@5 of 63
+and 63 against floors of 61 and 62.
+
+By type, X1's hard hybrid_r1 is sem-hard 0.5833, multi 0.2917 and neg 0.2000, against F's ranges
+of 0.3333–0.5833, 0.3542–0.4167 and 0.0000–0.1000. `multi` is the one bucket below F's range. Its
+answers span 2–3 notes; why it lost ground was not isolated.
+full_r1 per type is sem-hard 0.8333, multi 0.4167 and neg 0.2000, the same values as F2 and F3.
+
+X2 gave X1's lines exactly. Per query, the top 10 of all 85 Hangul queries matched between the two
+runs. The 9 cells that differed all belong to English-only queries, which still expand: `ali-01`,
+`ali-02`, `ali-03`, `ali-08`, `ali-09` and `ali-11`. V is byte-identical to the run behind the seam
+reference line two sections up, so that line stands.
+
+With neither side expanding, the plain path now leads the seam form on hard hybrid_r1, 0.3778
+against 0.3111. The two differ in how they weight a relaxed (any-word) FTS list:
+`getHybridRrfWeights` halves it and `structuredSearch` does not. Whether that difference causes
+the gap is not tested here.

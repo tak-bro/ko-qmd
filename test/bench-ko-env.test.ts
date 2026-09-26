@@ -1,14 +1,15 @@
 /**
- * scripts/bench-ko.sh corpus/goldset overrides: `KO_CORPUS` and `KO_BENCH`.
+ * scripts/bench-ko.sh overrides: `KO_CORPUS`, `KO_BENCH` and `KO_FORM`.
  *
  * The script runs from a copy under a temp root, so ROOT and tmp/bench-ko/ are the temp
  * root's and the repo's own bench outputs are never touched. With no package.json there,
  * a run that gets past validation stops at its first `npm run qmd` — after index.yml is
- * written and before any model loads.
+ * written and before any model loads. The KO_FORM tests that need the whole run put a stub
+ * `qmd` script in that root instead.
  */
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -41,7 +42,7 @@ afterEach(() => {
 
 const run = (env: Record<string, string>, cwd = root) => {
   // PWD is dropped so bash reports the physical cwd, the same form realpathSync gives.
-  const { PWD: _pwd, KO_CORPUS: _corpus, KO_BENCH: _bench, ...base } = process.env;
+  const { PWD: _pwd, KO_CORPUS: _corpus, KO_BENCH: _bench, KO_FORM: _form, ...base } = process.env;
   return spawnSync("bash", [join(root, "scripts", "bench-ko.sh")], {
     cwd,
     encoding: "utf-8",
@@ -104,6 +105,51 @@ describe("bench-ko.sh KO_CORPUS / KO_BENCH", () => {
   });
 
   test.each([
+    ["queries that are not a list", { collection: "ko-vault", queries: {} }],
+    ["a query that is not a string", { collection: "ko-vault", queries: [{ id: "q", query: 7 }] }],
+  ])("a goldset with %s fails before the previous output is removed", (_name, goldset) => {
+    const gold = join(root, "gold.json");
+    writeFileSync(gold, JSON.stringify(goldset));
+    const res = run({ KO_BENCH: gold });
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain("goldset queries must be a list of {query: string}");
+    expect(existsSync(sentinel)).toBe(true);
+  });
+
+  // bench's parseStructuredQuery throws on these, and the backend's catch would score them 0 silently.
+  test.each([
+    ["a whitespace-only query", " \n "],
+    ["several lines without a lex:/vec:/hyde:/intent: prefix", "역색인\n색인 구조"],
+  ])("a goldset with %s fails before the previous output is removed", (_name, query) => {
+    const gold = join(root, "gold.json");
+    writeFileSync(gold, JSON.stringify({ collection: "ko-vault", queries: [{ id: "bad", query }] }));
+    const res = run({ KO_BENCH: gold });
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain("goldset query bad must be one line or typed lex:/vec:/hyde:/intent: lines");
+    expect(existsSync(sentinel)).toBe(true);
+  });
+
+  test("a KO_BENCH inside tmp/bench-ko/ fails before the rm could delete it", () => {
+    const gold = join(root, "tmp", "bench-ko", "ko-bench.seam.json");
+    writeFileSync(gold, JSON.stringify({ collection: "ko-vault", queries: [] }));
+    const res = run({ KO_BENCH: gold });
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain("KO_BENCH must not be inside tmp/bench-ko/");
+    expect(existsSync(gold)).toBe(true);
+    expect(existsSync(sentinel)).toBe(true);
+  });
+
+  test("a KO_BENCH that reaches tmp/bench-ko/ through a symlink is refused too", () => {
+    const gold = join(root, "tmp", "bench-ko", "ko-bench.seam.json");
+    writeFileSync(gold, JSON.stringify({ collection: "ko-vault", queries: [] }));
+    symlinkSync(join(root, "tmp", "bench-ko"), join(root, "outputs"));
+    const res = run({ KO_BENCH: join(root, "outputs", "ko-bench.seam.json") });
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain("KO_BENCH must not be inside tmp/bench-ko/");
+    expect(existsSync(gold)).toBe(true);
+  });
+
+  test.each([
     ["a newline that would inject YAML keys", "ko-vault\n    update: touch pwned"],
     ["a missing collection", undefined],
   ])("a goldset collection with %s fails before the previous output is removed", (_name, collection) => {
@@ -114,5 +160,90 @@ describe("bench-ko.sh KO_CORPUS / KO_BENCH", () => {
     expect(res.stderr).toContain("goldset collection must match [A-Za-z0-9._-]+");
     expect(existsSync(sentinel)).toBe(true);
     expect(existsSync(join(root, "tmp", "bench-ko", "config", "index.yml"))).toBe(false);
+  });
+});
+
+describe("bench-ko.sh KO_FORM", () => {
+  const seamFile = () => join(root, "tmp", "bench-ko", "ko-bench.seam.json");
+  const writeGold = () =>
+    writeFileSync(join(fixture, "ko-bench.json"), JSON.stringify({
+      collection: "ko-vault",
+      queries: [
+        { id: "one", query: "역색인", expected_files: ["wiki/a.md"] },
+        { id: "typed", query: "lex: 역색인\nvec: 색인 구조", expected_files: ["wiki/a.md"] },
+        { id: "typed-one-line", query: "lex: 색인", expected_files: ["wiki/a.md"] },
+        { id: "trailing-newline", query: " 역색인 구조\n", expected_files: ["wiki/a.md"] },
+      ],
+    }));
+
+  // A stand-in for `npm run qmd`: update/embed pass, bench records the goldset path it was handed
+  // and prints a minimal bench JSON, so the whole script runs through to its RESULT lines.
+  const stubQmd = () => {
+    writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { qmd: "node stub.mjs" } }));
+    writeFileSync(join(root, "stub.mjs"), [
+      'import { writeFileSync } from "node:fs";',
+      "const args = process.argv.slice(2);",
+      'const at = args.indexOf("bench");',
+      "if (at >= 0) {",
+      '  writeFileSync("bench-arg.txt", args[at + 1]);',
+      "  const b = { avg_recall_at_5: 1, avg_mrr: 1 };",
+      "  console.log(JSON.stringify({ summary: { bm25: b, vector: b, hybrid: b, full: b },",
+      "    summary_hard: { hybrid_r1: 0.5, hybrid_mrr: 0.5, full_r1: 0.5, full_mrr: 0.5, n: 2 } }));",
+      "}",
+    ].join("\n"));
+  };
+  const benchArg = () => readFileSync(join(root, "bench-arg.txt"), "utf-8");
+
+  test.each([
+    ["an empty KO_FORM", "", "KO_FORM is set but empty"],
+    ["an unknown KO_FORM", "hybrid", "KO_FORM must be seam or plain, got: hybrid"],
+  ])("%s fails before the previous output is removed", (_name, form, message) => {
+    const res = run({ KO_FORM: form });
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain(message);
+    expect(existsSync(sentinel)).toBe(true);
+  });
+
+  test("defaults to seam: each plain query becomes lex:/vec: lines, a typed query is kept", () => {
+    writeGold();
+    const res = run({});
+    expect(res.stderr).toContain("form=seam\n");
+    const derived = JSON.parse(readFileSync(seamFile(), "utf-8"));
+    expect(derived.collection).toBe("ko-vault");
+    expect(derived.queries.map((q: { query: string }) => q.query)).toEqual([
+      "lex: 역색인\nvec: 역색인",
+      "lex: 역색인\nvec: 색인 구조",
+      "lex: 색인",
+      "lex: 역색인 구조\nvec: 역색인 구조",
+    ]);
+    expect(derived.queries[0].expected_files).toEqual(["wiki/a.md"]);
+  });
+
+  test("KO_FORM=plain benches the goldset as written and leaves no derived file", () => {
+    writeGold();
+    mkdirSync(join(root, "tmp", "bench-ko"), { recursive: true });
+    writeFileSync(seamFile(), "stale");
+    const res = run({ KO_FORM: "plain" });
+    expect(res.stderr).toContain("form=plain\n");
+    expect(existsSync(seamFile())).toBe(false);
+  });
+
+  test("the seam run hands qmd bench the derived goldset and tags RESULT-HARD form=seam", () => {
+    writeGold();
+    stubQmd();
+    const res = run({});
+    expect(res.status).toBe(0);
+    expect(benchArg()).toBe(seamFile());
+    expect(res.stdout).toMatch(/^RESULT bm25_r5=1\.0000 vector_r5=1\.0000 hybrid_r5=1\.0000 full_r5=1\.0000 full_mrr=1\.0000\n/);
+    expect(res.stdout).toContain("RESULT-HARD hybrid_r1=0.5000 hybrid_mrr=0.5000 full_r1=0.5000 full_mrr=0.5000 n=2 form=seam\n");
+  });
+
+  test("the plain run hands qmd bench the goldset itself and tags RESULT-HARD form=plain", () => {
+    writeGold();
+    stubQmd();
+    const res = run({ KO_FORM: "plain" });
+    expect(res.status).toBe(0);
+    expect(benchArg()).toBe(join(fixture, "ko-bench.json"));
+    expect(res.stdout).toContain(" n=2 form=plain\n");
   });
 });
