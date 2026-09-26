@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+- `scripts/bench-ko.sh` takes `KO_CORPUS` (a corpus directory holding `wiki/` and
+  `distractors/`) and `KO_BENCH` (a goldset) so an A/B runs through the same isolated harness
+  and stdout lines. Overrides resolve against the caller's cwd and are checked before the
+  previous run's output is removed. The first use settled a question: three everyday-language
+  question lines per document, decoys included, did not move hard rank 1 on the REST-shaped
+  goldset (hybrid_r1 0.3111 → 0.2778, full_r1 flat at 0.5111; hard hit@5 up 2 of 30). Index-time
+  summaries are therefore not being built. The same runs point the `hybrid_r1` wobble at LLM
+  query expansion rather than re-embedding (`BASELINE.md` 2026-09-25).
 - ko-vault goldset: 69 near-topic distractor documents and 30 hard queries (`sem-hard` /
   `multi` / `neg`) join the fixture; `bench-ko.sh` indexes both directories (97 files) and
   prints a `RESULT-HARD hybrid_r1=… full_r1=… n=30` line next to `RESULT`. The `dogfood.sh`
