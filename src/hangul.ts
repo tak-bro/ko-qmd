@@ -29,6 +29,11 @@ const ENDINGS = [
 
 const MIN_STEM_SYLLABLES = 2;
 
+// Whitespace-delimited tokens that close an excluded clause (`X 말고 Y`).
+// 아닌 and bare 제외 are left out: `캐시가 아닌 경우` states a condition and
+// `검색 제외 설정` uses 제외 as a noun, neither an exclusion.
+const NEGATION_MARKERS = new Set(["말고", "빼고", "제외하고", "제외한"]);
+
 function syllableBigrams(word: string): string[] {
   const syllables = Array.from(word);
   return syllables.slice(1).map((s, i) => syllables[i] + s);
@@ -64,6 +69,24 @@ export function sharesHangulBigram(a: string, b: string): boolean {
     for (const gram of syllableBigrams(run)) if (left.has(gram)) return true;
   }
   return false;
+}
+
+/**
+ * Drop the excluded clause of a Korean negation query and keep what follows the
+ * last marker (`tf-idf 말고 순위 공식` → `순위 공식`), so retrieval and rerank
+ * never see the concept the user ruled out. Returns the query unchanged when a
+ * side would be empty or hold only `-term` exclusions, a `"` phrase is present, or
+ * no marker stands as its own token — a marker glued to X (`이거말고`) is not split.
+ */
+export function stripHangulNegation(query: string): string {
+  if (query.includes('"') || !containsHangul(query)) return query;
+  const tokens = query.trim().split(/\s+/);
+  const last = tokens.findLastIndex((token) => NEGATION_MARKERS.has(token));
+  if (last < 1 || last === tokens.length - 1) return query;
+  const kept = tokens.slice(last + 1);
+  // A Y of only `-term` exclusions leaves lex no positive term to match.
+  if (kept.every((token) => token.startsWith("-"))) return query;
+  return kept.join(" ");
 }
 
 /**

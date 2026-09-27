@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+- A Korean query of the form "X 말고 Y" now searches for Y alone. `hybridQuery` (CLI `qmd query`,
+  plain MCP `query`) and the `lex`/`vec` lines of `structuredSearch` (MCP `searches`, typed lines)
+  drop everything up to the last whitespace-separated 말고, 빼고, 제외하고 or 제외한. The rerank
+  query follows. `hyde` lines, `intent` and `qmd search`/`vsearch` stay as written. Before this
+  change every list also searched for X, the concept the user ruled out, so a note about X often
+  took rank 1. `아닌` and bare `제외` are not markers, because they also state conditions or act as
+  nouns. On the ko-vault seam form, the `neg` queries' full MRR goes 0.4500 → 0.6944. Hard
+  `full_r1` goes 0.5111 → 0.6111 and hard `full_mrr` 0.7472 → 0.8287. No query outside `neg`
+  changed its results, and that run is the gate's new reference (`BASELINE.md` 2026-09-27,
+  "a Korean negation clause is stripped before search").
+
 - `structuredSearch` (MCP `searches`, SDK `search({ queries })`, typed `lex:`/`vec:` lines) now
   counts a relaxed lex list, one that matched only through the any-word retry, at half its slot's
   weight, as `hybridQuery` already did. At a flat 2.0 for the first list, a lex line that matched
