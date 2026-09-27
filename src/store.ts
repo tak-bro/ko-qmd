@@ -20,7 +20,7 @@ import { readFileSync, realpathSync, statSync, mkdirSync } from "node:fs";
 // Note: node:path resolve is not imported — we export our own cross-platform resolve()
 import fastGlob from "fast-glob";
 import { qmdHomedir } from "./paths.js";
-import { containsHangul, estimateCharsPerToken, hangulBigramTail, hangulMixedQuery, hangulTermQuery } from "./hangul.js";
+import { containsHangul, estimateCharsPerToken, hangulBigramTail, hangulMixedQuery, hangulTermQuery, stripHangulNegation } from "./hangul.js";
 import {
   LlamaCpp,
   getDefaultLlamaCpp,
@@ -5877,9 +5877,11 @@ export function blendRerankScore(rrfRank: number, rerankScore: number, candidate
  */
 export async function hybridQuery(
   store: Store,
-  query: string,
+  rawQuery: string,
   options?: HybridQueryOptions
 ): Promise<HybridQueryResult[]> {
+  // ko-qmd: "X 말고 Y" names X to exclude — every list and the reranker see only Y.
+  const query = stripHangulNegation(rawQuery);
   const limit = options?.limit ?? 10;
   const minScore = options?.minScore ?? 0;
   const candidateLimit = options?.candidateLimit ?? RERANK_CANDIDATE_LIMIT;
@@ -6329,7 +6331,7 @@ export interface StructuredSearchOptions {
  */
 export async function structuredSearch(
   store: Store,
-  searches: ExpandedQuery[],
+  rawSearches: ExpandedQuery[],
   options?: StructuredSearchOptions
 ): Promise<HybridQueryResult[]> {
   const limit = options?.limit ?? 10;
@@ -6344,10 +6346,10 @@ export async function structuredSearch(
   const collections = options?.collections;
   const scope = options?.scope;
 
-  if (searches.length === 0) return [];
+  if (rawSearches.length === 0) return [];
 
   // Validate queries before executing
-  for (const search of searches) {
+  for (const search of rawSearches) {
     const location = search.line ? `Line ${search.line}` : 'Structured search';
     if (/[\r\n]/.test(search.query)) {
       throw new Error(`${location} (${search.type}): queries must be single-line. Remove newline characters.`);
@@ -6364,6 +6366,12 @@ export async function structuredSearch(
       }
     }
   }
+
+  // ko-qmd: "X 말고 Y" names X to exclude — lex and vec lines, and the rerank query taken from
+  // them, keep only Y. A hyde line is a passage, not a query, and stays as written.
+  const searches = rawSearches.map((search) =>
+    search.type === 'hyde' ? search : { ...search, query: stripHangulNegation(search.query) }
+  );
 
   const rankedLists: RankedResult[][] = [];
   const rankedListMeta: RankedListMeta[] = [];

@@ -802,3 +802,66 @@ RESULT-HARD hybrid_r1=0.3778 hybrid_mrr=0.6001 full_r1=0.5111 full_mrr=0.7472 n=
 Reproduce: `bash scripts/bench-ko.sh` at this commit. The probe is not committed. It calls
 `hybridQuery` with `explain: true` and `structuredSearch` for each Hangul query, and passes the
 per-list ranks from the explain contributions to `reciprocalRankFusion` under both weight rules.
+
+## 2026-09-27 — a Korean negation clause is stripped before search
+
+All ten `neg` queries read "X 말고 Y", and X is usually a decoy from `distractors/`. Until now every
+list and the reranker searched for X as well, and in most of those queries the excluded decoy took
+rank 1. `stripHangulNegation` (`src/hangul.ts`) now keeps only the text after the last whitespace-
+delimited 말고, 빼고, 제외하고 or 제외한 marker. `hybridQuery` rewrites its query once. `structuredSearch`
+rewrites `lex` and `vec` lines, which also changes the rerank query taken from them. `hyde` lines
+and `intent` stay as written. `아닌` and bare `제외` are not markers, because they also state
+conditions ("캐시가 아닌 경우") or act as nouns ("검색 제외 설정").
+
+The seam reference is the 2026-09-27 run above. On it, the `neg` bucket (10 queries) has full MRR
+0.4500 and hybrid MRR 0.3344.
+
+Rule N was fixed before the run. The seam form is deterministic, so one run decides:
+
+- N0 (precondition): `bm25_r5` = 0.8459 and `vector_r5` = 0.9050. The bench bm25 and vector
+  backends call the searches directly and are not rewritten.
+- N1: `neg` full MRR > 0.4500.
+- N2: every query outside `neg` has the same `top_files` on all four backends as the reference
+  run. This shows that the parser never fires outside `neg`.
+- N3: hard `full_mrr` ≥ 0.7472.
+
+Keep if all hold.
+
+```
+ab-neg-N: RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.9211 full_r5=0.9588 full_mrr=0.9308
+ab-neg-N: RESULT-HARD hybrid_r1=0.4111 hybrid_mrr=0.6356 full_r1=0.6111 full_mrr=0.8287 n=30 form=seam
+```
+
+Verdict: **keep**. N0 holds. N1: `neg` full MRR goes 0.4500 → 0.6944, and hybrid MRR goes
+0.3344 → 0.4408. N2: none of the 83 queries outside `neg` changed `top_files` on any backend.
+N3: hard `full_mrr` goes 0.7472 → 0.8287, and hard `full_r1` goes 0.5111 → 0.6111.
+
+Per `neg` query, MRR before → after:
+
+| query | hybrid | full |
+|---|---|---|
+| `hneg-01` | 0.333 → 0.125 | 0.5 → 0.5 |
+| `hneg-02` | 0.2 → 0.5 | 0.5 → 1 |
+| `hneg-03` | 0.111 → 1 | 0.333 → 1 |
+| `hneg-04` | 0 → 0.2 | 0 → 0.333 |
+| `hneg-05` | 0.25 → 0.25 | 0.333 → 0.5 |
+| `hneg-06` | 1 → 1 | 1 → 1 |
+| `hneg-07` | 0.25 → 0 | 0.333 → 0.5 |
+| `hneg-08` | 0 → 0 | 0 → 0.111 |
+| `hneg-09` | 0.2 → 0.333 | 1 → 1 |
+| `hneg-10` | 1 → 1 | 0.5 → 1 |
+
+No query ranked worse after rerank. Two queries, `hneg-01` and `hneg-07`, ranked worse before
+rerank. This run does not show why. `hneg-04` and `hneg-08`, which had no hit in either backend
+before, now have one after rerank.
+
+The plain form (`KO_FORM=plain`, `hybridQuery`) gave the same two lines as the seam form in one run.
+The Hangul query skips expansion, so both forms search the same text.
+
+The seam reference moves to this run. The gate reads the last two lines below:
+
+RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.9211 full_r5=0.9588 full_mrr=0.9308
+RESULT-HARD hybrid_r1=0.4111 hybrid_mrr=0.6356 full_r1=0.6111 full_mrr=0.8287 n=30 tol=0 form=seam
+
+Reproduce: `bash scripts/bench-ko.sh` at this commit. The per-query diff against the reference
+run's `tmp/bench-ko/bench.json` is not committed.
