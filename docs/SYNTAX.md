@@ -82,7 +82,7 @@ hyde: The rate limiter uses a sliding window algorithm with a 60-second window. 
 
 ## Multi-Line Queries
 
-Combine multiple query types for best results. First query gets 2x weight in fusion.
+Combine multiple query types for best results. First query gets 2x weight in fusion; a `lex` line that matches only some of its words (the any-word retry) counts half of its slot's weight.
 
 ```
 lex: rate limiter algorithm

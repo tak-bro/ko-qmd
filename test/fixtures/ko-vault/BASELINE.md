@@ -746,3 +746,59 @@ With neither side expanding, the plain path now leads the seam form on hard hybr
 against 0.3111. The two differ in how they weight a relaxed (any-word) FTS list:
 `getHybridRrfWeights` halves it and `structuredSearch` does not. Whether that difference causes
 the gap is not tested here.
+
+## 2026-09-27 — structuredSearch halves a relaxed lex list
+
+The section above left one question open: does the relaxed-list weight cause the plain path's
+hard `hybrid_r1` lead (0.3778 against the seam form's 0.3111)? A probe on a copy of the seam
+reference run's index answered it before any code changed. For each of the 85 Hangul queries it
+ran `hybridQuery` and `structuredSearch` (`lex: q` + `vec: q`), both with `skipRerank` as bench's
+hybrid backend does. It then rebuilt the fused lists from the explain trace and re-fused them with
+each path's weights. The re-fused top 10 matched each path's own top 10 for 85 of 85 queries, so
+the weights are the whole difference. All 30 hard queries and 41 of the 85 fell back to the relaxed
+retry. Rank 1 differed on 3 queries, all of them relaxed:
+
+| query | plain (relaxed list 1.0) | seam (first list 2.0) | expected |
+|---|---|---|---|
+| `hsh-03` | `wiki/bm25-ranking.md` | `distractors/tf-idf.md` | `wiki/bm25-ranking.md` |
+| `hsh-11` | `wiki/spaced-repetition.md` | `distractors/fine-tuning.md` | `wiki/spaced-repetition.md` |
+| `hneg-09` | `distractors/book-notes.md` | `distractors/cornell-notes.md` | `wiki/zettelkasten.md` |
+
+In both `hsh` rows the seam form put a decoy on the question's topic at rank 1, and halving the
+relaxed list gave rank 1 to the expected note. The probe did not record each list's own ranking.
+No query ranked better on the seam form.
+
+`structuredSearch` now weights its lists through `getStructuredRrfWeights`: the first list 2.0 and
+the rest 1.0, times `RELAXED_LIST_WEIGHT` (0.5) for a relaxed FTS list. The vector weight is
+unchanged; `VEC_LIST_WEIGHT` stays specific to `hybridQuery`.
+
+Rule W was fixed before the run, against the seam reference line above. The seam form is
+deterministic, so one run decides:
+
+- W0 (precondition): `bm25_r5` = 0.8459 and `vector_r5` = 0.9050. Neither goes through RRF.
+- W1: hard `hybrid_r1` > 0.3111.
+- W2: hard `full_r1` ≥ 0.5111.
+- W3: `hybrid_r5` ≥ 0.8996, `full_r5` ≥ 0.9480, `full_mrr` ≥ 0.9036, hard `hybrid_mrr` ≥ 0.5615,
+  hard `full_mrr` ≥ 0.7444.
+
+Keep if all hold. The prediction was hard `hybrid_r1` = 0.3778, with every Hangul query's rank 1
+equal to the plain path's. It was not part of the rule.
+
+```
+ab-exp-W: RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.9211 full_r5=0.9480 full_mrr=0.9045
+ab-exp-W: RESULT-HARD hybrid_r1=0.3778 hybrid_mrr=0.6001 full_r1=0.5111 full_mrr=0.7472 n=30 form=seam
+```
+
+Verdict: **keep**. W0 holds. W1 is 0.3778, W2 is 0.5111, and every W3 value rose or held:
+`hybrid_r5` 0.8996 → 0.9211, `full_mrr` 0.9036 → 0.9045, hard `hybrid_mrr` 0.5615 → 0.6001 and
+hard `full_mrr` 0.7444 → 0.7472. The prediction held: rank 1 of all 85 Hangul queries equals the
+plain path's from the probe.
+
+The seam reference moves to this run. The gate reads the last two lines below:
+
+RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.9211 full_r5=0.9480 full_mrr=0.9045
+RESULT-HARD hybrid_r1=0.3778 hybrid_mrr=0.6001 full_r1=0.5111 full_mrr=0.7472 n=30 tol=0 form=seam
+
+Reproduce: `bash scripts/bench-ko.sh` at this commit. The probe is not committed. It calls
+`hybridQuery` with `explain: true` and `structuredSearch` for each Hangul query, and passes the
+per-list ranks from the explain contributions to `reciprocalRankFusion` under both weight rules.

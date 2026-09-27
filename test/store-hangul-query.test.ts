@@ -14,7 +14,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createStore, type QMDStore } from "../src/index.js";
-import { hybridQuery, normalizeCjkForFTS } from "../src/store.js";
+import { hybridQuery, normalizeCjkForFTS, structuredSearch } from "../src/store.js";
 import {
   containsHangul,
   estimateCharsPerToken,
@@ -336,5 +336,40 @@ describe("hybridQuery expansion for Hangul queries", () => {
 
   test("a Latin-only query is still expanded", async () => {
     expect(await expansionCalls("hybrid search notes")).toBe(1);
+  });
+});
+
+describe("structuredSearch weight for a relaxed lex list", () => {
+  let root: string;
+  let store: QMDStore;
+
+  beforeAll(async () => {
+    root = await mkdtemp(join(tmpdir(), "qmd-hangul-structured-"));
+    const docs = join(root, "docs");
+    await mkdir(docs, { recursive: true });
+    await writeFile(join(docs, "ko.md"), "# 검색 품질\n\n역색인 구조를 설명한다.\n");
+    store = await createStore({
+      dbPath: join(root, "index.sqlite"),
+      config: { collections: { docs: { path: docs, pattern: "**/*.md" } } },
+    });
+    await store.update();
+  });
+
+  afterAll(async () => {
+    await store.close();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const lexWeight = async (query: string) => {
+    const results = await structuredSearch(store.internal, [{ type: "lex", query }], { skipRerank: true, explain: true });
+    return results[0]?.explain?.rrf.contributions[0]?.weight;
+  };
+
+  test("a lex line whose words all match keeps the first-list weight", async () => {
+    expect(await lexWeight("검색 품질")).toBe(2.0);
+  });
+
+  test("a lex line that only matched through the any-word retry counts half", async () => {
+    expect(await lexWeight("역색인 구조를 설명하는 문서를 찾고 싶다")).toBe(1.0);
   });
 });

@@ -235,7 +235,7 @@ Point any MCP client at `http://localhost:8181/mcp` to connect.
 
 | Tool | Parameter | Type | Notes |
 |------|-----------|------|-------|
-| `query` | `searches` | array | Typed sub-queries (`lex`/`vec`/`hyde`), 1–10. **Required.** First gets 2x weight. |
+| `query` | `searches` | array | Typed sub-queries (`lex`/`vec`/`hyde`), 1–10. **Required.** First gets 2x weight; a `lex` line that matches only some of its words counts half. |
 | `query` | `collections` | string[] | Filter by collection names (OR). **Array only** — singular `collection` is silently ignored. |
 | `query` | `filter` | object | Metadata filter (recursive `operator`-discriminated JSON AST; see [Metadata Filtering](#metadata-filtering)) |
 | `query` | `intent` | string | Disambiguation context (does not search on its own) |

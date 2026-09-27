@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- `structuredSearch` (MCP `searches`, SDK `search({ queries })`, typed `lex:`/`vec:` lines) now
+  counts a relaxed lex list, one that matched only through the any-word retry, at half its slot's
+  weight, as `hybridQuery` already did. At a flat 2.0 for the first list, a lex line that matched
+  some of a Korean question's words outranked the vector list, and a decoy sharing those words took
+  rank 1. This one weight was the whole gap between the two paths on the Korean ko-vault queries:
+  re-fusing each path's lists with the other's weights reproduced its top 10 for 85 of 85 queries.
+  On the seam form, hard `hybrid_r1` goes 0.3111 → 0.3778 and `hybrid_r5` 0.8996 → 0.9211, with
+  `full_r1` unchanged at 0.5111, and that run is the gate's new reference (`BASELINE.md` 2026-09-27).
+
 - A query with any Hangul is no longer expanded by the LLM on the hybrid path (`hybridQuery`). That
   path serves CLI `qmd query`, including an explicit `expand:` line, as well as a plain MCP `query`
   and SDK `search({ query })`; `qmd vsearch` still expands. On the ko-vault goldset the
