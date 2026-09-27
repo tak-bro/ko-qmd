@@ -3163,7 +3163,7 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
         },
       });
     } else {
-      // Standard hybrid query with automatic expansion
+      // Standard hybrid query with automatic expansion (skipped for a query with Hangul)
       results = await hybridQuery(store, query, {
         collection: collectionSearchFilter(collectionNames),
         filter: opts.filter,

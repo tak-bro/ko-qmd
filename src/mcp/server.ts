@@ -384,12 +384,12 @@ Combine types for best results. First sub-query gets 2× weight — put your str
 
 | Goal | Approach |
 |------|----------|
-| General search (recommended) | Pass \`query\` — auto-expanded into typed variants, fused, reranked |
+| General search (recommended) | Pass \`query\` — auto-expanded into typed variants (not when it has Hangul), fused, reranked |
 | Know exact term/name | \`lex\` only |
 | Concept search | \`vec\` only |
 | Best recall | \`lex\` + \`vec\` |
 | Complex/nuanced | \`lex\` + \`vec\` + \`hyde\` |
-| Unknown vocabulary | Pass \`query\` with natural language so the server auto-expands it |
+| Unknown vocabulary | Pass \`query\` with natural language so the server auto-expands it — a Korean query is not expanded, so pass \`searches\` with your own \`lex\`/\`vec\` variants |
 
 ## Examples
 
@@ -417,8 +417,9 @@ Intent-aware lex (C++ performance, not sports):
       annotations: { readOnlyHint: true, openWorldHint: false },
       inputSchema: z.object({
         query: z.string().optional().describe(
-          "Plain-text query, auto-expanded by the SDK into lex/vec/hyde variants, fused via " +
-          "RRF and reranked. Recommended default for most searches. Mutually exclusive with 'searches'."
+          "Plain-text query, auto-expanded by the SDK into lex/vec/hyde variants (a query with any " +
+          "Hangul is not expanded), fused via RRF and reranked. Recommended default for most searches. " +
+          "Mutually exclusive with 'searches'."
         ),
         searches: z.array(subSearchSchema).max(10).optional().describe(
           "Typed sub-queries to execute (lex/vec/hyde). First gets 2x weight. Use for precise " +
@@ -499,7 +500,7 @@ Intent-aware lex (C++ performance, not sports):
       // Use default collections if none specified
       const effectiveCollections = collections ?? defaultCollectionNames;
 
-      // Plain `query` is auto-expanded by the SDK (expand → fuse → rerank);
+      // Plain `query` takes the SDK's hybrid path (expand unless it has Hangul → fuse → rerank);
       // `searches` runs the caller's typed sub-queries directly.
       const searchOptions = query
         ? { query }
@@ -547,7 +548,7 @@ Intent-aware lex (C++ performance, not sports):
       if (httpHeaders) {
         logQuery(entryFromMcp({
           headers: httpHeaders,
-          // A plain `query` is one auto-expanded search; `searches` are already typed.
+          // A plain `query` is one search the SDK may expand (not when it has Hangul); `searches` are already typed.
           searches: query ? [{ type: "auto", query }] : (searches ?? []).map(s => ({ type: s.type, query: s.query })),
           collections: effectiveCollections,
           limit,

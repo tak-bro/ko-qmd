@@ -9,13 +9,14 @@
  * exact over character tokens, and Han/kana queries keep the upstream path.
  */
 
-import { describe, test, expect, beforeAll, afterAll } from "vitest";
+import { describe, test, expect, beforeAll, afterAll, vi } from "vitest";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createStore, type QMDStore } from "../src/index.js";
-import { normalizeCjkForFTS } from "../src/store.js";
+import { hybridQuery, normalizeCjkForFTS } from "../src/store.js";
 import {
+  containsHangul,
   estimateCharsPerToken,
   hangulBigramTail,
   hangulLoanwordForms,
@@ -274,5 +275,66 @@ describe("searchLex with Hangul particles", () => {
   test("Han and kana queries are unchanged", async () => {
     expect(await files("关键词检索")).toEqual([expect.stringContaining("zh.md")]);
     expect(await files("検索品質")).toEqual([expect.stringContaining("ja.md")]);
+  });
+});
+
+describe("containsHangul", () => {
+  test("any Hangul syllable or jamo makes a Hangul query", () => {
+    expect(containsHangul("검색 품질")).toBe(true);
+    expect(containsHangul("tf-idf 말고 흔한 단어 패널티")).toBe(true);
+    expect(containsHangul("ㅋㅋ")).toBe(true);
+  });
+
+  test("Latin, Han, kana and empty text are not", () => {
+    expect(containsHangul("RAG")).toBe(false);
+    expect(containsHangul("中文检索 検索")).toBe(false);
+    expect(containsHangul("")).toBe(false);
+  });
+
+  test("repeated calls give the same answer (no global-regex state)", () => {
+    expect([containsHangul("검색"), containsHangul("검색"), containsHangul("검색")]).toEqual([true, true, true]);
+  });
+});
+
+describe("hybridQuery expansion for Hangul queries", () => {
+  let root: string;
+  let store: QMDStore;
+
+  beforeAll(async () => {
+    root = await mkdtemp(join(tmpdir(), "qmd-hangul-expand-"));
+    const docs = join(root, "docs");
+    await mkdir(docs, { recursive: true });
+    await writeFile(join(docs, "ko.md"), "# 검색 품질\n\n역색인 구조를 설명한다. tf-idf 대신 BM25 를 쓴다.\n");
+    await writeFile(join(docs, "en.md"), "# hybrid search notes\n\nBM25 and vector lists fused with RRF.\n");
+    store = await createStore({
+      dbPath: join(root, "index.sqlite"),
+      config: { collections: { docs: { path: docs, pattern: "**/*.md" } } },
+    });
+    await store.update();
+  });
+
+  afterAll(async () => {
+    await store.close();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  // intent turns the strong-signal bypass off, so only the Hangul rule can skip expansion here.
+  const expansionCalls = async (query: string) => {
+    const expand = vi.fn(async () => []);
+    store.internal.expandQuery = expand;
+    await hybridQuery(store.internal, query, { skipRerank: true, intent: "search quality notes" });
+    return expand.mock.calls.length;
+  };
+
+  test("a Hangul query is searched without LLM expansion", async () => {
+    expect(await expansionCalls("검색 품질을 올리는 방법")).toBe(0);
+  });
+
+  test("a script-mixed query with Hangul is searched without expansion", async () => {
+    expect(await expansionCalls("tf-idf 말고 흔한 단어 패널티")).toBe(0);
+  });
+
+  test("a Latin-only query is still expanded", async () => {
+    expect(await expansionCalls("hybrid search notes")).toBe(1);
   });
 });
