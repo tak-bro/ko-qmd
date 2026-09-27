@@ -2287,11 +2287,15 @@ export function createStore(dbPath?: string): Store {
   const resolvedPath = dbPath || getDefaultDbPath();
   const db = openDatabase(resolvedPath);
   initializeDatabase(db);
+  const rerankCacheDb = openRerankCache(process.env.QMD_RERANK_CACHE);
 
   const store: Store = {
     db,
     dbPath: resolvedPath,
-    close: () => db.close(),
+    close: () => {
+      rerankCacheDb?.close();
+      db.close();
+    },
     ensureVecTable: (dimensions: number) => ensureVecTableInternal(db, dimensions),
 
     // Index health
@@ -2338,7 +2342,7 @@ export function createStore(dbPath?: string): Store {
       // singleton from models.rerank). Falling back to DEFAULT_RERANK_MODEL when
       // store.llm is unset made keys stable across config swaps (#764).
       const llm = getLlm(store);
-      return rerank(query, documents, model ?? llm.rerankModelName ?? DEFAULT_RERANK_MODEL, db, intent, llm, options);
+      return rerank(query, documents, model ?? llm.rerankModelName ?? DEFAULT_RERANK_MODEL, rerankCacheDb ?? db, intent, llm, options);
     },
 
     // Document retrieval
@@ -2724,10 +2728,30 @@ export function getCachedResult(db: Database, cacheKey: string): string | null {
   return row?.result ?? null;
 }
 
+// ko-qmd: rerank cache files opened from QMD_RERANK_CACHE, which are never trimmed.
+const UNCAPPED_CACHE_DBS = new WeakSet<Database>();
+
+/**
+ * ko-qmd: open the rerank cache file named by QMD_RERANK_CACHE, or undefined when it is unset.
+ * Rerank scores then live outside the index, so a rebuilt index (bench-ko starts from an empty
+ * one every run) reuses them. Only rerank entries move; expansion stays in the index's cache.
+ * The key carries the query, model, doc-token cap and chunk text, so the file is safe across index
+ * rebuilds with the same reranker code — not across a change to how llm.ts scores a chunk
+ * (template, context size, node-llama-cpp), which the key does not see. It is not trimmed to the
+ * index cache's 1000 rows.
+ */
+const openRerankCache = (path: string | undefined): Database | undefined => {
+  if (!path) return undefined;
+  const cacheDb = openDatabase(path);
+  cacheDb.exec(`CREATE TABLE IF NOT EXISTS llm_cache (hash TEXT PRIMARY KEY, result TEXT NOT NULL, created_at TEXT NOT NULL)`);
+  UNCAPPED_CACHE_DBS.add(cacheDb);
+  return cacheDb;
+};
+
 export function setCachedResult(db: Database, cacheKey: string, result: string): void {
   const now = new Date().toISOString();
   db.prepare(`INSERT OR REPLACE INTO llm_cache (hash, result, created_at) VALUES (?, ?, ?)`).run(cacheKey, result, now);
-  if (Math.random() < 0.01) {
+  if (!UNCAPPED_CACHE_DBS.has(db) && Math.random() < 0.01) {
     db.exec(`DELETE FROM llm_cache WHERE hash NOT IN (SELECT hash FROM llm_cache ORDER BY created_at DESC LIMIT 1000)`);
   }
 }
@@ -4890,11 +4914,16 @@ export async function rerank(query: string, documents: { file: string; text: str
     });
 
     // Cache results by chunk text so identical chunks across files are scored once.
+    // A "fallback" result (no rerank context could be created) is a flat 0.5, not a score:
+    // it is returned but never cached, so it cannot outlive the failure.
+    const cacheable = rerankResult.model !== "fallback";
     const textByFile = new Map(uncachedDocs.map(d => [d.file, d.text]));
     for (const result of rerankResult.results) {
       const chunk = textByFile.get(result.file) || "";
-      const cacheKey = getCacheKey("rerank", { query: rerankQuery, model: cacheTag, chunk });
-      setCachedResult(db, cacheKey, result.score.toString());
+      if (cacheable) {
+        const cacheKey = getCacheKey("rerank", { query: rerankQuery, model: cacheTag, chunk });
+        setCachedResult(db, cacheKey, result.score.toString());
+      }
       cachedResults.set(chunk, result.score);
     }
   }

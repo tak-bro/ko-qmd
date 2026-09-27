@@ -22,7 +22,9 @@
 # Isolation: INDEX_PATH and QMD_CONFIG_DIR live under tmp/bench-ko/ and are rebuilt every run.
 # `--index index` is passed explicitly so qmd does not walk up from cwd to a .qmd/index.yml.
 # Model cache (~/.cache/qmd/models) is shared, read-only here. Models come from the committed
-# test/fixtures/ko-vault/models.yml.
+# test/fixtures/ko-vault/models.yml. Rerank scores are recomputed every run unless the caller sets
+# QMD_RERANK_CACHE=<file>, which reuses them across runs. Leave it unset when the change under test
+# is in src/llm.ts's rerank: the cache key does not see the scoring code, so it would print old lines.
 #
 # stdout: first line `RESULT bm25_r5=<f> vector_r5=<f> hybrid_r5=<f> full_r5=<f> full_mrr=<f>`
 # (format fixed — scripts/dogfood.sh's bm25_of regex parses it), then `RESULT-HARD
