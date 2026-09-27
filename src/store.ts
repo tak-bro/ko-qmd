@@ -5816,6 +5816,21 @@ export function getHybridRrfWeights(rankedListMeta: RankedListMeta[]): number[] 
 }
 
 /**
+ * RRF list weights for structuredSearch: the first list gets 2x (the caller ordered by
+ * importance), the rest 1x.
+ *
+ * ko-qmd: a relaxed FTS list counts half here too, as in getHybridRrfWeights. At a flat 2.0 a
+ * lex line that only matched some of a question's words outranked the vector list, and a decoy
+ * sharing a few of those words took rank 1 (test/fixtures/ko-vault/BASELINE.md 2026-09-27).
+ */
+export function getStructuredRrfWeights(rankedListMeta: RankedListMeta[]): number[] {
+  return rankedListMeta.map((meta, i) => {
+    const weight = i === 0 ? 2.0 : 1.0;
+    return meta.relaxed ? weight * RELAXED_LIST_WEIGHT : weight;
+  });
+}
+
+/**
  * How much of the blended score the retrieval position is worth. The reranker
  * decides; position only separates documents it scores alike.
  */
@@ -6425,8 +6440,9 @@ export async function structuredSearch(
 
   if (rankedLists.length === 0) return [];
 
-  // Step 3: RRF fusion — first list gets 2x weight (assume caller ordered by importance)
-  const weights = rankedLists.map((_, i) => i === 0 ? 2.0 : 1.0);
+  // Step 3: RRF fusion — first list gets 2x weight (assume caller ordered by importance),
+  // a relaxed FTS list half of its slot's weight
+  const weights = getStructuredRrfWeights(rankedListMeta);
   const fused = reciprocalRankFusion(rankedLists, weights);
   const rrfTraceByFile = explain ? buildRrfTrace(rankedLists, weights, rankedListMeta) : null;
   const candidates = fused.slice(0, candidateLimit);

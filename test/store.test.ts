@@ -63,6 +63,7 @@ import {
   generateEmbeddings,
   maybeAdoptLegacyEmbeddingFingerprint,
   getHybridRrfWeights,
+  getStructuredRrfWeights,
   blendRerankScore,
   _resetProductionModeForTesting,
   hybridQuery,
@@ -2915,6 +2916,43 @@ describe("Reciprocal Rank Fusion", () => {
     expect(semanticWeights).toEqual([2.0, 0.75, 1.0]);
     expect(fixedOrder.findIndex(r => r.file === "original-vector.md"))
       .toBeLessThan(fixedOrder.findIndex(r => r.file === "lex-expansion-only.md"));
+  });
+
+  test("structured RRF weights halve a relaxed lex list, first list or not", () => {
+    const meta: RankedListMeta[] = [
+      { source: "fts", queryType: "lex", query: "first strict" },
+      { source: "fts", queryType: "lex", query: "second relaxed", relaxed: true },
+      { source: "vec", queryType: "vec", query: "vector" },
+    ];
+    expect(getStructuredRrfWeights(meta)).toEqual([2.0, 0.5, 1.0]);
+
+    const relaxedFirst: RankedListMeta[] = [
+      { source: "fts", queryType: "lex", query: "relaxed", relaxed: true },
+      { source: "fts", queryType: "lex", query: "strict" },
+    ];
+    expect(getStructuredRrfWeights(relaxedFirst)).toEqual([1.0, 1.0]);
+
+    // A vector list keeps the first-list boost; only a relaxed FTS list is halved.
+    const vecFirst: RankedListMeta[] = [
+      { source: "vec", queryType: "vec", query: "vector" },
+      { source: "fts", queryType: "lex", query: "strict" },
+    ];
+    expect(getStructuredRrfWeights(vecFirst)).toEqual([2.0, 1.0]);
+  });
+
+  test("a relaxed first lex list no longer outranks the vector list's top hit", () => {
+    // The ko-vault miss: a decoy sharing a few of the question's words led the relaxed lex list
+    // and the right note led the vector list (hsh-03, hsh-11 — BASELINE.md 2026-09-27).
+    const relaxedLex = ["decoy.md", "lex-2.md", "lex-3.md", "answer.md"].map(f => makeResult(f, 0.5));
+    const vector = ["answer.md", "vec-2.md", "vec-3.md", "vec-4.md", "decoy.md"].map(f => makeResult(f, 0.5));
+    const meta: RankedListMeta[] = [
+      { source: "fts", queryType: "lex", query: "question", relaxed: true },
+      { source: "vec", queryType: "vec", query: "question" },
+    ];
+
+    expect(reciprocalRankFusion([relaxedLex, vector], [2.0, 1.0])[0]!.file).toBe("decoy.md");
+    expect(reciprocalRankFusion([relaxedLex, vector], getStructuredRrfWeights(meta))[0]!.file)
+      .toBe("answer.md");
   });
 
   test("reranker can displace the top retrieval hit", () => {

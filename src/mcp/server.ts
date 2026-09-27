@@ -422,7 +422,7 @@ Intent-aware lex (C++ performance, not sports):
           "Mutually exclusive with 'searches'."
         ),
         searches: z.array(subSearchSchema).max(10).optional().describe(
-          "Typed sub-queries to execute (lex/vec/hyde). First gets 2x weight. Use for precise " +
+          "Typed sub-queries to execute (lex/vec/hyde). First gets 2x weight (a lex line that matches only some of its words counts half). Use for precise " +
           "control over retrieval strategy. Mutually exclusive with 'query'."
         ),
         limit: z.number().optional().default(10).describe("Max results (default: 10)"),
