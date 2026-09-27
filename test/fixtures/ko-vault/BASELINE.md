@@ -865,3 +865,30 @@ RESULT-HARD hybrid_r1=0.4111 hybrid_mrr=0.6356 full_r1=0.6111 full_mrr=0.8287 n=
 
 Reproduce: `bash scripts/bench-ko.sh` at this commit. The per-query diff against the reference
 run's `tmp/bench-ko/bench.json` is not committed.
+
+## 2026-09-28 — rerank-input autoresearch: the keep rule, written before the loop
+
+An autonomous loop (`scripts/autoresearch/program.md`) edits only `src/rerank-input.ts` and keeps a
+commit when `train_full_mrr` rises on a generated train goldset. The goldset is paraphrased from a
+private team vault by `scripts/autoresearch/prepare.sh` and stays outside git. It holds 190 kept
+queries from 140 documents. A seeded split by answer document gives 151 train and 39 held-out
+queries. Review dropped 11 answer keys (4 train, 7 held-out) as wrong or too generic, leaving 147
+train and 32 held-out.
+
+Reference, taken at `fa5ae77` with `bash scripts/autoresearch/eval.sh --baseline`:
+
+| set | queries | `full_mrr` | eval seconds |
+|---|---|---|---|
+| train | 147 | 0.7132 | 33 (rerank cache warm) |
+| held-out | 32 | 0.6589 | 500 (cold) |
+
+The loop's best commit is adopted only if it passes every check below. If it misses one, nothing
+is adopted:
+
+1. held-out `full_mrr` ≥ 0.6589
+2. ko-vault seam `full_mrr` ≥ 0.9308 and hard `full_mrr` ≥ 0.8287 (`bash scripts/bench-ko.sh`)
+3. bm25, vector and hybrid `top_files` identical to the reference on held-out (eval.sh
+   `INVARIANT`) and on ko-vault
+
+Train gains alone never count: the loop saw train, so only held-out and ko-vault can show that a
+gain generalizes.
