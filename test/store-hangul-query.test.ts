@@ -9,13 +9,14 @@
  * exact over character tokens, and Han/kana queries keep the upstream path.
  */
 
-import { describe, test, expect, beforeAll, afterAll } from "vitest";
+import { describe, test, expect, beforeAll, afterAll, vi } from "vitest";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createStore, type QMDStore } from "../src/index.js";
-import { normalizeCjkForFTS } from "../src/store.js";
+import { hybridQuery, normalizeCjkForFTS, structuredSearch, validateLexQuery } from "../src/store.js";
 import {
+  containsHangul,
   estimateCharsPerToken,
   hangulBigramTail,
   hangulLoanwordForms,
@@ -23,6 +24,7 @@ import {
   hangulStems,
   hangulTermQuery,
   sharesHangulBigram,
+  stripHangulNegation,
   stripHangulParticle,
 } from "../src/hangul.js";
 
@@ -194,7 +196,7 @@ describe("searchLex with Hangul particles", () => {
     const docs = join(root, "docs");
     await mkdir(docs, { recursive: true });
     await writeFile(join(docs, "ko.md"), "# 검색 품질\n\n역색인 구조를 설명한다. qmd 색인은 FTS5 위에서 돈다.\n");
-    await writeFile(join(docs, "hybrid-search.md"), "# hybrid-search\n\nBM25 and vector lists fused over n-gram tokens. Notes on the lemon web core.\n");
+    await writeFile(join(docs, "hybrid-search.md"), "# hybrid-search\n\nBM25 and vector lists fused over n-gram tokens. Notes on the react web core.\n");
     await writeFile(join(docs, "zh.md"), "# 中文检索说明\n\n关键词检索。\n");
     await writeFile(join(docs, "ja.md"), "# 日本語検索メモ\n\n検索品質について。\n");
     store = await createStore({
@@ -233,11 +235,11 @@ describe("searchLex with Hangul particles", () => {
   test("Hangul loanword spellings reach Latin-identifier documents", async () => {
     expect(await files("하이브리드 서치")).toEqual([expect.stringContaining("hybrid-search.md")]);
     expect(await files("엔그램 토큰을")).toEqual([expect.stringContaining("hybrid-search.md")]);
-    expect(await files("레몬 웹 코어")).toEqual([expect.stringContaining("hybrid-search.md")]);
+    expect(await files("리액트 웹 코어")).toEqual([expect.stringContaining("hybrid-search.md")]);
   });
 
   // Hangul-only terms joined by a separator take the character-phrase fallback (no stems, no
-  // loanwords) — before and after upstream's separator split. `레몬-웹` / `검색-품질을` still miss.
+  // loanwords) — before and after upstream's separator split. `리액트-웹` / `검색-품질을` still miss.
   test("separator-joined and script-mixed Hangul terms keep matching", async () => {
     expect(await files("검색-품질")).toEqual([expect.stringContaining("ko.md")]);
     expect(await files('"검색-품질"')).toEqual([expect.stringContaining("ko.md")]);
@@ -274,5 +276,240 @@ describe("searchLex with Hangul particles", () => {
   test("Han and kana queries are unchanged", async () => {
     expect(await files("关键词检索")).toEqual([expect.stringContaining("zh.md")]);
     expect(await files("検索品質")).toEqual([expect.stringContaining("ja.md")]);
+  });
+});
+
+describe("containsHangul", () => {
+  test("any Hangul syllable or jamo makes a Hangul query", () => {
+    expect(containsHangul("검색 품질")).toBe(true);
+    expect(containsHangul("tf-idf 말고 흔한 단어 패널티")).toBe(true);
+    expect(containsHangul("ㅋㅋ")).toBe(true);
+  });
+
+  test("Latin, Han, kana and empty text are not", () => {
+    expect(containsHangul("RAG")).toBe(false);
+    expect(containsHangul("中文检索 検索")).toBe(false);
+    expect(containsHangul("")).toBe(false);
+  });
+
+  test("repeated calls give the same answer (no global-regex state)", () => {
+    expect([containsHangul("검색"), containsHangul("검색"), containsHangul("검색")]).toEqual([true, true, true]);
+  });
+});
+
+describe("stripHangulNegation", () => {
+  test("keeps only the clause after 말고", () => {
+    expect(stripHangulNegation("tf-idf 말고 흔한 단어 패널티가 들어간 순위 공식")).toBe("흔한 단어 패널티가 들어간 순위 공식");
+  });
+
+  test("빼고 and the 제외 forms are markers too, with a particle on X", () => {
+    expect(stripHangulNegation("감사 로그를 빼고 작성자 기록")).toBe("작성자 기록");
+    expect(stripHangulNegation("감사 로그를 제외하고 작성자 기록")).toBe("작성자 기록");
+    expect(stripHangulNegation("감사 로그를 제외한 작성자 기록")).toBe("작성자 기록");
+  });
+
+  test("with several markers the text after the last one wins", () => {
+    expect(stripHangulNegation("elo 말고 pagerank 말고 등수 역수 합산")).toBe("등수 역수 합산");
+  });
+
+  test("bare 제외 is not a marker: it is also a noun", () => {
+    expect(stripHangulNegation("검색 제외 설정 방법")).toBe("검색 제외 설정 방법");
+  });
+
+  test("아닌 is not a marker: it also states a condition", () => {
+    expect(stripHangulNegation("캐시가 아닌 경우 처리")).toBe("캐시가 아닌 경우 처리");
+  });
+
+  test("an empty X or Y returns the query unchanged", () => {
+    expect(stripHangulNegation("tf-idf 말고")).toBe("tf-idf 말고");
+    expect(stripHangulNegation("말고 순위 공식")).toBe("말고 순위 공식");
+  });
+
+  test("a quoted phrase returns the query unchanged", () => {
+    expect(stripHangulNegation('"tf-idf 말고" 순위 공식')).toBe('"tf-idf 말고" 순위 공식');
+  });
+
+  test("text without a whitespace-delimited marker is unchanged", () => {
+    expect(stripHangulNegation("검색 품질을 올리는 방법")).toBe("검색 품질을 올리는 방법");
+    expect(stripHangulNegation("not tf-idf but bm25")).toBe("not tf-idf but bm25");
+  });
+
+  test("a Y of only -exclusions returns the query unchanged (lex needs a positive term)", () => {
+    expect(stripHangulNegation("tf-idf 말고 -bm25")).toBe("tf-idf 말고 -bm25");
+  });
+
+  test("a stripped lex query still passes lex validation", () => {
+    const stripped = stripHangulNegation("tf-idf 말고 흔한 단어 -불용어");
+    expect(stripped).toBe("흔한 단어 -불용어");
+    expect(validateLexQuery(stripped)).toBeNull();
+  });
+
+  test("deliberate limitation: a marker glued to X is not split", () => {
+    expect(stripHangulNegation("이거말고 순위 공식")).toBe("이거말고 순위 공식");
+  });
+});
+
+describe("hybridQuery expansion for Hangul queries", () => {
+  let root: string;
+  let store: QMDStore;
+
+  beforeAll(async () => {
+    root = await mkdtemp(join(tmpdir(), "qmd-hangul-expand-"));
+    const docs = join(root, "docs");
+    await mkdir(docs, { recursive: true });
+    await writeFile(join(docs, "ko.md"), "# 검색 품질\n\n역색인 구조를 설명한다. tf-idf 대신 BM25 를 쓴다.\n");
+    await writeFile(join(docs, "en.md"), "# hybrid search notes\n\nBM25 and vector lists fused with RRF.\n");
+    store = await createStore({
+      dbPath: join(root, "index.sqlite"),
+      config: { collections: { docs: { path: docs, pattern: "**/*.md" } } },
+    });
+    await store.update();
+  });
+
+  afterAll(async () => {
+    await store.close();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  // intent turns the strong-signal bypass off, so only the Hangul rule can skip expansion here.
+  const expansionCalls = async (query: string) => {
+    const expand = vi.fn(async () => []);
+    store.internal.expandQuery = expand;
+    await hybridQuery(store.internal, query, { skipRerank: true, intent: "search quality notes" });
+    return expand.mock.calls.length;
+  };
+
+  test("a Hangul query is searched without LLM expansion", async () => {
+    expect(await expansionCalls("검색 품질을 올리는 방법")).toBe(0);
+  });
+
+  test("a script-mixed query with Hangul is searched without expansion", async () => {
+    expect(await expansionCalls("tf-idf 말고 흔한 단어 패널티")).toBe(0);
+  });
+
+  test("a Latin-only query is still expanded", async () => {
+    expect(await expansionCalls("hybrid search notes")).toBe(1);
+  });
+});
+
+describe("structuredSearch weight for a relaxed lex list", () => {
+  let root: string;
+  let store: QMDStore;
+
+  beforeAll(async () => {
+    root = await mkdtemp(join(tmpdir(), "qmd-hangul-structured-"));
+    const docs = join(root, "docs");
+    await mkdir(docs, { recursive: true });
+    await writeFile(join(docs, "ko.md"), "# 검색 품질\n\n역색인 구조를 설명한다.\n");
+    store = await createStore({
+      dbPath: join(root, "index.sqlite"),
+      config: { collections: { docs: { path: docs, pattern: "**/*.md" } } },
+    });
+    await store.update();
+  });
+
+  afterAll(async () => {
+    await store.close();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const lexWeight = async (query: string) => {
+    const results = await structuredSearch(store.internal, [{ type: "lex", query }], { skipRerank: true, explain: true });
+    return results[0]?.explain?.rrf.contributions[0]?.weight;
+  };
+
+  test("a lex line whose words all match keeps the first-list weight", async () => {
+    expect(await lexWeight("검색 품질")).toBe(2.0);
+  });
+
+  test("a lex line that only matched through the any-word retry counts half", async () => {
+    expect(await lexWeight("역색인 구조를 설명하는 문서를 찾고 싶다")).toBe(1.0);
+  });
+});
+
+describe("negation queries through hybridQuery and structuredSearch", () => {
+  let root: string;
+  let store: QMDStore;
+  const vecQueries: string[] = [];
+  const rerankQueries: string[] = [];
+
+  beforeAll(async () => {
+    root = await mkdtemp(join(tmpdir(), "qmd-hangul-negation-"));
+    const docs = join(root, "docs");
+    await mkdir(docs, { recursive: true });
+    await writeFile(join(docs, "tf-idf.md"), "# tf-idf\n\n단어 빈도와 역문서 빈도를 곱한다.\n");
+    await writeFile(join(docs, "bm25.md"), "# 순위 공식\n\n흔한 단어 패널티가 들어간 순위 공식이다.\n");
+    store = await createStore({
+      dbPath: join(root, "index.sqlite"),
+      config: { collections: { docs: { path: docs, pattern: "**/*.md" } } },
+    });
+    await store.update();
+    // An empty vec table turns the vector path on; the stubs record what each list was asked.
+    store.internal.db.exec(`CREATE VIRTUAL TABLE vectors_vec USING vec0(hash_seq TEXT PRIMARY KEY, embedding float[1] distance_metric=cosine)`);
+    store.internal.llm = {
+      embedModelName: "stub",
+      embedBatch: async (texts: string[]) => texts.map(() => ({ embedding: [1] })),
+    } as any; // any: mock implements only what the vector path reads
+    store.internal.searchVec = vi.fn(async (query: string) => {
+      vecQueries.push(query);
+      return [];
+    });
+    store.internal.rerank = vi.fn(async (query: string, documents: { file: string }[]) => {
+      rerankQueries.push(query);
+      return documents.map((d) => ({ file: d.file, score: 0.5 }));
+    });
+  });
+
+  afterAll(async () => {
+    await store.close();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const reset = () => {
+    vecQueries.length = 0;
+    rerankQueries.length = 0;
+  };
+
+  const contributionQueries = (results: Awaited<ReturnType<typeof hybridQuery>>) =>
+    [...new Set(results.flatMap((r) => r.explain?.rrf.contributions.map((c) => c.query) ?? []))];
+
+  test("hybridQuery sends only Y to lex, vec and rerank", async () => {
+    reset();
+    const results = await hybridQuery(store.internal, "tf-idf 말고 흔한 단어 패널티", { explain: true });
+    expect(contributionQueries(results)).toEqual(["흔한 단어 패널티"]);
+    expect(vecQueries).toEqual(["흔한 단어 패널티"]);
+    expect(rerankQueries).toEqual(["흔한 단어 패널티"]);
+  });
+
+  test("structuredSearch sends only Y to lex, vec and rerank", async () => {
+    reset();
+    const results = await structuredSearch(store.internal, [
+      { type: "lex", query: "tf-idf 말고 흔한 단어 패널티" },
+      { type: "vec", query: "tf-idf 말고 흔한 단어 패널티가 들어간 공식" },
+    ], { explain: true });
+    expect(contributionQueries(results)).toEqual(["흔한 단어 패널티"]);
+    expect(vecQueries).toEqual(["흔한 단어 패널티가 들어간 공식"]);
+    expect(rerankQueries).toEqual(["흔한 단어 패널티"]);
+  });
+
+  test("structuredSearch leaves hyde passages and intent as written", async () => {
+    reset();
+    const hyde = "tf-idf 말고 흔한 단어에 패널티를 주는 순위 공식을 설명하는 문서";
+    const rerank = vi.mocked(store.internal.rerank);
+    rerank.mockClear();
+    await structuredSearch(store.internal, [
+      { type: "lex", query: "tf-idf 말고 순위 공식" },
+      { type: "hyde", query: hyde },
+    ], { intent: "tf-idf 말고 다른 공식" });
+    expect(vecQueries).toEqual([hyde]);
+    expect(rerank.mock.calls[0]?.[0]).toBe("순위 공식");
+    expect(rerank.mock.calls[0]?.[3]).toBe("tf-idf 말고 다른 공식");
+  });
+
+  test("a query without a marker reaches every list unchanged", async () => {
+    reset();
+    await hybridQuery(store.internal, "흔한 단어 패널티", {});
+    expect(vecQueries).toEqual(["흔한 단어 패널티"]);
+    expect(rerankQueries).toEqual(["흔한 단어 패널티"]);
   });
 });

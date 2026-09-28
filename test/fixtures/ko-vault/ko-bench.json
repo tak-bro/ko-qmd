@@ -1,5 +1,5 @@
 {
-  "description": "Synthetic Korean vault search benchmark (A2). Distribution exact 19 / alias 24 / semantic 11 / topical 6 / cross-domain 3. Korean-specific kinds tagged in query description as ko:particle, ko:spacing, ko:alias, ko:loanword.",
+  "description": "Synthetic Korean vault search benchmark (A2). Distribution exact 19 / alias 24 / semantic 11 / topical 6 / cross-domain 3 / sem-hard 12 / multi 8 / neg 10. Korean-specific kinds tagged in query description as ko:particle, ko:spacing, ko:alias, ko:loanword, ko:sem-hard, ko:multi, ko:neg.",
   "version": 1,
   "collection": "ko-vault",
   "queries": [
@@ -637,6 +637,325 @@
       ],
       "description": "ko:loanword — 한글 외래어 표기로 영문 식별자 문서 찾기 (golden dataset)",
       "expected_in_top_k": 5
+    },
+    {
+      "id": "hsh-01",
+      "query": "찾고 싶은 단어를 넣으면 그 단어가 실린 글을 거꾸로 바로 찾아주는 구조",
+      "type": "sem-hard",
+      "description": "ko:sem-hard — 표준어 풀이, 역색인 용어 미사용",
+      "expected_files": [
+        "wiki/inverted-index.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hsh-02",
+      "query": "문장의 뜻을 숫자 배열로 바꿔 비슷한 글끼리 가까이 모으는 기술",
+      "type": "sem-hard",
+      "description": "ko:sem-hard — 임베딩·벡터 용어 미사용",
+      "expected_files": [
+        "wiki/vector-embedding.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hsh-03",
+      "query": "흔한 단어는 가점을 낮추고 길이도 함께 보아 순서를 매기는 공식",
+      "type": "sem-hard",
+      "description": "ko:sem-hard — BM25·랭킹 용어 미사용",
+      "expected_files": [
+        "wiki/bm25-ranking.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hsh-04",
+      "query": "긴 글을 넣기 좋은 크기로 끊는 기준을 정하는 일",
+      "type": "sem-hard",
+      "description": "ko:sem-hard — 청킹·분할 용어 미사용",
+      "expected_files": [
+        "wiki/chunking-strategy.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hsh-05",
+      "query": "새 글이 들어와서 검색이 가능해질 때까지 거치는 일련의 단계",
+      "type": "sem-hard",
+      "description": "ko:sem-hard — 파이프라인·인제스트 용어 미사용",
+      "expected_files": [
+        "wiki/ingest-pipeline.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hsh-06",
+      "query": "사람이 넣은 짧은 검색어에 알맹이를 덧붙여 놓친 글까지 끌어오는 기법",
+      "type": "sem-hard",
+      "description": "ko:sem-hard — 질의·확장 용어 미사용",
+      "expected_files": [
+        "wiki/query-expansion.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hsh-07",
+      "query": "정답이 위 몇 안에 들어오는지 보는 척도",
+      "type": "sem-hard",
+      "description": "ko:sem-hard — 재현율·recall 용어 미사용",
+      "expected_files": [
+        "wiki/recall-at-k.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hsh-08",
+      "query": "여러 목록에서 얻은 등수를 서로 더해 한 줄로 세우는 식",
+      "type": "sem-hard",
+      "description": "ko:sem-hard — 융합·RRF·순위 용어 미사용",
+      "expected_files": [
+        "wiki/reciprocal-rank-fusion.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hsh-09",
+      "query": "모델이 답할 때 우리 글에서 찾은 내용을 근거로 끌어다 쓰는 구조",
+      "type": "sem-hard",
+      "description": "ko:sem-hard — 검색증강·RAG 용어 미사용",
+      "expected_files": [
+        "wiki/retrieval-augmented-generation.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hsh-10",
+      "query": "생각 하나를 카드에 적고 카드끼리 엮어 지식 그물을 짜는 노트법",
+      "type": "sem-hard",
+      "description": "ko:sem-hard — 제텔카스텐 용어 미사용",
+      "expected_files": [
+        "wiki/zettelkasten.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hsh-11",
+      "query": "잊을 만할 때 다시 꺼내어 외우는 학습 리듬",
+      "type": "sem-hard",
+      "description": "ko:sem-hard — 간격·반복 용어 미사용",
+      "expected_files": [
+        "wiki/spaced-repetition.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hsh-12",
+      "query": "대괄호 두 겹으로 이어 문서 사이 그물망을 그려내는 것",
+      "type": "sem-hard",
+      "description": "ko:sem-hard — 링크·그래프 용어 미사용",
+      "expected_files": [
+        "wiki/wikilink-graph.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hmu-01",
+      "query": "하이브리드 검색에서 두 점수를 합치는 법과 그걸 평가하는 법",
+      "type": "multi",
+      "description": "ko:multi — 3개 노트에 답이 걸침",
+      "expected_files": [
+        "wiki/hybrid-search.md",
+        "wiki/reciprocal-rank-fusion.md",
+        "wiki/recall-at-k.md"
+      ],
+      "expected_in_top_k": 3
+    },
+    {
+      "id": "hmu-02",
+      "query": "글을 쪼개 넣는 기준과 새 글이 검색되기까지의 흐름",
+      "type": "multi",
+      "description": "ko:multi",
+      "expected_files": [
+        "wiki/chunking-strategy.md",
+        "wiki/ingest-pipeline.md"
+      ],
+      "expected_in_top_k": 2
+    },
+    {
+      "id": "hmu-03",
+      "query": "키워드 점수 방식과 여러 목록을 한 줄로 섞는 방식",
+      "type": "multi",
+      "description": "ko:multi",
+      "expected_files": [
+        "wiki/bm25-ranking.md",
+        "wiki/reciprocal-rank-fusion.md"
+      ],
+      "expected_in_top_k": 2
+    },
+    {
+      "id": "hmu-04",
+      "query": "회의를 남기고 결정을 기록으로 남기는 흐름",
+      "type": "multi",
+      "description": "ko:multi",
+      "expected_files": [
+        "wiki/meeting-notes-workflow.md",
+        "wiki/decision-record.md"
+      ],
+      "expected_in_top_k": 2
+    },
+    {
+      "id": "hmu-05",
+      "query": "카드 노트를 쌓고 그 연결을 그물로 보는 관점",
+      "type": "multi",
+      "description": "ko:multi",
+      "expected_files": [
+        "wiki/zettelkasten.md",
+        "wiki/wikilink-graph.md"
+      ],
+      "expected_in_top_k": 2
+    },
+    {
+      "id": "hmu-06",
+      "query": "평가용 정답셋을 만들고 위 몇 안에 정답이 오는지 잰다",
+      "type": "multi",
+      "description": "ko:multi",
+      "expected_files": [
+        "wiki/golden-dataset.md",
+        "wiki/recall-at-k.md"
+      ],
+      "expected_in_top_k": 2
+    },
+    {
+      "id": "hmu-07",
+      "query": "출처를 남기고 머리말에 정보를 정리하는 습관",
+      "type": "multi",
+      "description": "ko:multi",
+      "expected_files": [
+        "wiki/provenance-tracking.md",
+        "wiki/frontmatter-metadata.md"
+      ],
+      "expected_in_top_k": 2
+    },
+    {
+      "id": "hmu-08",
+      "query": "복습 주기를 두고 카드로 정리하는 학습법",
+      "type": "multi",
+      "description": "ko:multi",
+      "expected_files": [
+        "wiki/spaced-repetition.md",
+        "wiki/zettelkasten.md"
+      ],
+      "expected_in_top_k": 2
+    },
+    {
+      "id": "hneg-01",
+      "query": "tf-idf 말고 흔한 단어 패널티가 들어간 순위 공식",
+      "type": "neg",
+      "description": "ko:neg — 배제 대상은 디스트랙터",
+      "excluded": "distractors/tf-idf.md",
+      "expected_files": [
+        "wiki/bm25-ranking.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hneg-02",
+      "query": "접미사 배열 말고 단어가 실린 글을 거꾸로 찾는 구조",
+      "type": "neg",
+      "description": "ko:neg",
+      "excluded": "distractors/suffix-array.md",
+      "expected_files": [
+        "wiki/inverted-index.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hneg-03",
+      "query": "기계 번역 말고 우리말 어간을 다루는 기술",
+      "type": "neg",
+      "description": "ko:neg",
+      "excluded": "distractors/machine-translation.md",
+      "expected_files": [
+        "wiki/korean-morphology.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hneg-04",
+      "query": "오타 교정 말고 검색어에 알맹이 덧붙이기",
+      "type": "neg",
+      "description": "ko:neg",
+      "excluded": "distractors/spell-correction.md",
+      "expected_files": [
+        "wiki/query-expansion.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hneg-05",
+      "query": "음원 태그 말고 문서 머리말 정보 규격",
+      "type": "neg",
+      "description": "ko:neg",
+      "excluded": "distractors/id3-tag.md",
+      "expected_files": [
+        "wiki/frontmatter-metadata.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hneg-06",
+      "query": "부하 시험 말고 정답이 정해진 평가 셋",
+      "type": "neg",
+      "description": "ko:neg",
+      "excluded": "distractors/load-testing.md",
+      "expected_files": [
+        "wiki/golden-dataset.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hneg-07",
+      "query": "짧은 집중 타이머 말고 벌여 놓고 섞어 푸는 연습",
+      "type": "neg",
+      "description": "ko:neg",
+      "excluded": "distractors/pomodoro-technique.md",
+      "expected_files": [
+        "wiki/spaced-repetition.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hneg-08",
+      "query": "감사 로그 말고 누가 썼는지 남기는 기록 관리",
+      "type": "neg",
+      "description": "ko:neg",
+      "excluded": "distractors/audit-log.md",
+      "expected_files": [
+        "wiki/provenance-tracking.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hneg-09",
+      "query": "마음지도 말고 카드를 엮는 노트 기법",
+      "type": "neg",
+      "description": "ko:neg",
+      "excluded": "distractors/mind-map.md",
+      "expected_files": [
+        "wiki/zettelkasten.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hneg-10",
+      "query": "elo 점수 말고 등수 역수를 더해 목록을 섞는 식",
+      "type": "neg",
+      "description": "ko:neg",
+      "excluded": "distractors/elo-rating.md",
+      "expected_files": [
+        "wiki/reciprocal-rank-fusion.md"
+      ],
+      "expected_in_top_k": 1
     }
   ]
 }

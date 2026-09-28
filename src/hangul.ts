@@ -2,12 +2,14 @@
  * hangul.ts - Korean (Hangul) handling for FTS5 indexing and queries.
  *
  * ko-qmd patch stack: all Hangul-specific logic lives here so store.ts keeps
- * at most two call sites. Han and kana appear only as CJK-side characters in
+ * only one-line call sites. Han and kana appear only as CJK-side characters in
  * estimateCharsPerToken's density count — indexing and query logic never sees them.
  */
 
 const HANGUL_WORD_PATTERN = /^\p{Script=Hangul}+$/u;
 const HANGUL_RUN_PATTERN = /\p{Script=Hangul}+/gu;
+// Not global: a /g pattern's test() keeps lastIndex between calls.
+const HANGUL_CHAR_PATTERN = /\p{Script=Hangul}/u;
 
 // Particles (design §4) plus the nominalizing ending 기 (`나누기` → `나누`).
 // Longest first, so 에서 wins over 에 and 으로 over 로.
@@ -27,10 +29,18 @@ const ENDINGS = [
 
 const MIN_STEM_SYLLABLES = 2;
 
+// Whitespace-delimited tokens that close an excluded clause (`X 말고 Y`).
+// 아닌 and bare 제외 are left out: `캐시가 아닌 경우` states a condition and
+// `검색 제외 설정` uses 제외 as a noun, neither an exclusion.
+const NEGATION_MARKERS = new Set(["말고", "빼고", "제외하고", "제외한"]);
+
 function syllableBigrams(word: string): string[] {
   const syllables = Array.from(word);
   return syllables.slice(1).map((s, i) => syllables[i] + s);
 }
+
+/** True when `text` has any Hangul syllable or jamo, script-mixed text included. */
+export const containsHangul = (text: string): boolean => HANGUL_CHAR_PATTERN.test(text);
 
 /**
  * Syllable bigrams of every Hangul run in `text`, space-joined in run order
@@ -59,6 +69,24 @@ export function sharesHangulBigram(a: string, b: string): boolean {
     for (const gram of syllableBigrams(run)) if (left.has(gram)) return true;
   }
   return false;
+}
+
+/**
+ * Drop the excluded clause of a Korean negation query and keep what follows the
+ * last marker (`tf-idf 말고 순위 공식` → `순위 공식`), so retrieval and rerank
+ * never see the concept the user ruled out. Returns the query unchanged when a
+ * side would be empty or hold only `-term` exclusions, a `"` phrase is present, or
+ * no marker stands as its own token — a marker glued to X (`이거말고`) is not split.
+ */
+export function stripHangulNegation(query: string): string {
+  if (query.includes('"') || !containsHangul(query)) return query;
+  const tokens = query.trim().split(/\s+/);
+  const last = tokens.findLastIndex((token) => NEGATION_MARKERS.has(token));
+  if (last < 1 || last === tokens.length - 1) return query;
+  const kept = tokens.slice(last + 1);
+  // A Y of only `-term` exclusions leaves lex no positive term to match.
+  if (kept.every((token) => token.startsWith("-"))) return query;
+  return kept.join(" ");
 }
 
 /**
@@ -143,8 +171,8 @@ export function hangulTermQuery(term: string): string | null {
 
 /**
  * Hangul loanword spellings of Latin technical vocabulary. Notes name things by their
- * Latin identifier (`hybrid-search.md`, `lemon-web-core`) while questions spell the same
- * words in Hangul (`하이브리드 서치`, `레몬 웹 코어`), and neither bigrams nor the vector
+ * Latin identifier (`hybrid-search.md`, `react-web-core`) while questions spell the same
+ * words in Hangul (`하이브리드 서치`, `리액트 웹 코어`), and neither bigrams nor the vector
  * list bridge that on the lex side. Hand-written, one entry per line; forms are lowercase
  * ASCII words separated by single spaces so they are safe inside an FTS5 phrase.
  */
@@ -160,7 +188,7 @@ const LOANWORDS: Readonly<Record<string, readonly string[]>> = {
   "디시전": ["decision"],
   "랭크": ["rank"],
   "랭킹": ["ranking"],
-  "레몬": ["lemon"],
+  "리액트": ["react"],
   "레시프로컬": ["reciprocal"],
   "레코드": ["record"],
   "로그": ["log"],

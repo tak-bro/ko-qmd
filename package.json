@@ -1,7 +1,7 @@
 {
   "name": "ko-qmd",
   "version": "2.8.3-ko.5",
-  "description": "Query Markup Documents - On-device hybrid search for markdown files with BM25, vector search, and LLM reranking",
+  "description": "Local hybrid search for Korean Markdown notes and Obsidian vaults — BM25 with Korean particle stripping, Hangul bigram FTS, Qwen3 vector search and LLM reranking, as CLI, MCP server and SDK",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -109,7 +109,15 @@
     "reranking",
     "knowledge-base",
     "local-ai",
-    "llm"
+    "llm",
+    "korean",
+    "hangul",
+    "korean-nlp",
+    "obsidian",
+    "hybrid-search",
+    "mcp-server",
+    "claude-code",
+    "qwen3"
   ],
   "author": "Tobi Lutke <tobi@lutke.com>",
   "license": "MIT"

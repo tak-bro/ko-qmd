@@ -2,7 +2,93 @@
 
 ## [Unreleased]
 
-### Changes
+- `QMD_RERANK_CACHE=<path>` keeps rerank scores in their own sqlite file instead of the index's
+  `llm_cache`, so a store over a rebuilt index reuses them. The key carries the query, the rerank
+  model, the doc-token cap and the chunk text, not the scoring code in `src/llm.ts`, so the file is
+  safe across index rebuilds with the same reranker code. It is not trimmed to 1000 rows. With it
+  set, a second `scripts/bench-ko.sh` run on ko-vault gives the same lines and its `full` backend
+  spends 3.7 s reranking instead of 300 s (the whole run drops from 5:17 to 0:56). Unset, nothing
+  changes. A fallback result (no rerank context could be created, every score 0.5) is no longer
+  cached in either place.
+
+- The reranker now sees a better chunk of a long Korean note. The chunk is chosen by the
+  two-syllable pairs of the query's Hangul words of three or more syllables, instead of whole
+  words, so `임베딩은` still finds a chunk about `임베딩`. Generic two-syllable words such as 방법
+  and 경우 no longer steer the choice. A query word with no Hangul (an English term, say) counts double. When the chosen chunk
+  does not contain the note title, `# <title>` is put in front of it. An autonomous loop
+  (`scripts/autoresearch/`) found this over 28 experiments on a goldset generated from a private
+  vault. The goldset's held-out split, which the loop never saw, goes from full MRR 0.6589 to
+  0.7260 (32 queries). ko-vault seam and hard lines are unchanged. The bm25, vector and hybrid
+  results do not read the rerank input and are identical on both sets (`BASELINE.md`
+  2026-09-28). An intent word now counts 1 point in chunk selection (was 0.5), keeping it at half a
+  query word now that a non-Hangul query word counts 2; no goldset carries intent, so no bench
+  number moves.
+
+- The reranker's input (the query string, which chunk of each candidate is sent and the document
+  text) is now built in `src/rerank-input.ts` for both `hybridQuery` and `structuredSearch`, which
+  had copied the chunk-scoring loop. Results are unchanged.
+
+- A Korean query of the form "X 말고 Y" now searches for Y alone. `hybridQuery` (CLI `qmd query`,
+  plain MCP `query`) and the `lex`/`vec` lines of `structuredSearch` (MCP `searches`, typed lines)
+  drop everything up to the last whitespace-separated 말고, 빼고, 제외하고 or 제외한. The rerank
+  query follows. `hyde` lines, `intent` and `qmd search`/`vsearch` stay as written. Before this
+  change every list also searched for X, the concept the user ruled out, so a note about X often
+  took rank 1. `아닌` and bare `제외` are not markers, because they also state conditions or act as
+  nouns. On the ko-vault seam form, the `neg` queries' full MRR goes 0.4500 → 0.6944. Hard
+  `full_r1` goes 0.5111 → 0.6111 and hard `full_mrr` 0.7472 → 0.8287. No query outside `neg`
+  changed its results, and that run is the gate's new reference (`BASELINE.md` 2026-09-27,
+  "a Korean negation clause is stripped before search").
+
+- `structuredSearch` (MCP `searches`, SDK `search({ queries })`, typed `lex:`/`vec:` lines) now
+  counts a relaxed lex list, one that matched only through the any-word retry, at half its slot's
+  weight, as `hybridQuery` already did. At a flat 2.0 for the first list, a lex line that matched
+  some of a Korean question's words outranked the vector list, and a decoy sharing those words took
+  rank 1. This one weight was the whole gap between the two paths on the Korean ko-vault queries:
+  re-fusing each path's lists with the other's weights reproduced its top 10 for 85 of 85 queries.
+  On the seam form, hard `hybrid_r1` goes 0.3111 → 0.3778 and `hybrid_r5` 0.8996 → 0.9211, with
+  `full_r1` unchanged at 0.5111, and that run is the gate's new reference (`BASELINE.md` 2026-09-27).
+
+- A query with any Hangul is no longer expanded by the LLM on the hybrid path (`hybridQuery`). That
+  path serves CLI `qmd query`, including an explicit `expand:` line, as well as a plain MCP `query`
+  and SDK `search({ query })`; `qmd vsearch` still expands. On the ko-vault goldset the
+  expansion model wrapped Korean questions in English sentence templates and stray Chinese, and its
+  sampling alone moved hard rank 1 by up to five of 30 queries between runs. Without it, hard
+  `hybrid_r1` reads 0.3778 (0.2611–0.3611 with expansion), `full_r1` holds at 0.5111, the easy
+  queries lose nothing, and the median hybrid query drops from about 1 s to 20 ms. The Korean
+  queries now return the same results on every run. English-only queries are still expanded, and a
+  caller who wants variants for a Korean question can pass its own `searches`
+  (`BASELINE.md` 2026-09-26).
+
+- `scripts/bench-ko.sh` benches the seam form by default. Every one-line goldset query reaches
+  `qmd bench` as `lex: <q>` + `vec: <q>`, the shape REST/MCP callers send, which skips LLM query
+  expansion. `KO_FORM=plain` keeps the old path, and the `RESULT-HARD` line now ends with
+  `form=<seam|plain>`. The `dogfood.sh` gate refuses a bench whose form differs from its baseline
+  line's form. On the seam form it gates hard `hybrid_r1` as well as `full_r1`, against a reference
+  line with `tol=0`, since the seam form gave the same lines in every run. The reason is the plain
+  form's hard wobble, which turned out to be the expansion sampler alone. Replaying recorded
+  expansions reproduces every query's top 10, and every query that moved between same-commit runs
+  had drawn a different expansion. The draw moved `hybrid_r1` by up to five of 30 queries and once
+  put `full_r1` 0.0007 above the old gate's floor (`BASELINE.md` 2026-09-26). The gate also runs
+  the bench with any exported `KO_BENCH`/`KO_CORPUS`/`KO_FORM` removed, and `bench-ko.sh` refuses a
+  `KO_BENCH` inside `tmp/bench-ko/`, where the run clears its outputs.
+
+- `scripts/bench-ko.sh` takes `KO_CORPUS` (a corpus directory holding `wiki/` and
+  `distractors/`) and `KO_BENCH` (a goldset) so an A/B runs through the same isolated harness
+  and stdout lines. Overrides resolve against the caller's cwd and are checked before the
+  previous run's output is removed. The first use settled a question: three everyday-language
+  question lines per document, decoys included, did not move hard rank 1 on the REST-shaped
+  goldset (hybrid_r1 0.3111 → 0.2778, full_r1 flat at 0.5111; hard hit@5 up 2 of 30). Index-time
+  summaries are therefore not being built. The same runs point the `hybrid_r1` wobble at LLM
+  query expansion rather than re-embedding (`BASELINE.md` 2026-09-25).
+- ko-vault goldset: 69 near-topic distractor documents and 30 hard queries (`sem-hard` /
+  `multi` / `neg`) join the fixture; `bench-ko.sh` indexes both directories (97 files) and
+  prints a `RESULT-HARD hybrid_r1=… full_r1=… n=30` line next to `RESULT`. The `dogfood.sh`
+  gate now also fails when the hard `full_r1` falls below the baseline minus the `tol=` recorded
+  on that baseline line, and fails closed when `RESULT-HARD` or its `tol=` goes missing.
+  `full_r1` is gated rather than `hybrid_r1` because it held one value across eight same-commit
+  runs, while `hybrid_r1` moved by about 3.5 queries of 30.
+  Fixture invariants (no title-term leakage, no excluded concept among expected files, no basename
+  collisions) are enforced by `test/ko-bench-fixture.test.ts`.
 
 - Collection- or filter-scoped vector search is faster on indexes of up to
   4096 vectors. It now post-filters one sqlite-vec KNN over the whole table,
@@ -98,7 +184,7 @@ it to `scope`.
 - Plain Hangul lex terms that spell a common technical loanword (`서치`, `웹`,
   `코어`, `마이그레이션`, about 80 entries in a built-in table) also match the
   Latin spelling, so `하이브리드 서치` finds a note that only says
-  `hybrid-search` and `레몬 웹 코어` reaches `lemon-web-core`. The lookup runs
+  `hybrid-search` and `리액트 웹 코어` reaches `react-web-core`. The lookup runs
   on particle-stripped stems too (`서치를`), single-syllable entries (`웹`, `훅`)
   are bridged when they stand alone (not `웹을`), and terms with no entry produce the same FTS5 query as before.
   Query-side only; no re-index. On the ko-vault bench the eleven new loanword

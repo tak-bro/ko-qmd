@@ -20,7 +20,8 @@ import { readFileSync, realpathSync, statSync, mkdirSync } from "node:fs";
 // Note: node:path resolve is not imported — we export our own cross-platform resolve()
 import fastGlob from "fast-glob";
 import { qmdHomedir } from "./paths.js";
-import { estimateCharsPerToken, hangulBigramTail, hangulMixedQuery, hangulTermQuery } from "./hangul.js";
+import { containsHangul, estimateCharsPerToken, hangulBigramTail, hangulMixedQuery, hangulTermQuery, stripHangulNegation } from "./hangul.js";
+import { formatRerankDoc, formatRerankQuery, INTENT_WEIGHT_CHUNK, selectRerankChunk, type RerankChunk } from "./rerank-input.js";
 import {
   LlamaCpp,
   getDefaultLlamaCpp,
@@ -2286,11 +2287,15 @@ export function createStore(dbPath?: string): Store {
   const resolvedPath = dbPath || getDefaultDbPath();
   const db = openDatabase(resolvedPath);
   initializeDatabase(db);
+  const rerankCacheDb = openRerankCache(process.env.QMD_RERANK_CACHE);
 
   const store: Store = {
     db,
     dbPath: resolvedPath,
-    close: () => db.close(),
+    close: () => {
+      rerankCacheDb?.close();
+      db.close();
+    },
     ensureVecTable: (dimensions: number) => ensureVecTableInternal(db, dimensions),
 
     // Index health
@@ -2337,7 +2342,7 @@ export function createStore(dbPath?: string): Store {
       // singleton from models.rerank). Falling back to DEFAULT_RERANK_MODEL when
       // store.llm is unset made keys stable across config swaps (#764).
       const llm = getLlm(store);
-      return rerank(query, documents, model ?? llm.rerankModelName ?? DEFAULT_RERANK_MODEL, db, intent, llm, options);
+      return rerank(query, documents, model ?? llm.rerankModelName ?? DEFAULT_RERANK_MODEL, rerankCacheDb ?? db, intent, llm, options);
     },
 
     // Document retrieval
@@ -2723,10 +2728,30 @@ export function getCachedResult(db: Database, cacheKey: string): string | null {
   return row?.result ?? null;
 }
 
+// ko-qmd: rerank cache files opened from QMD_RERANK_CACHE, which are never trimmed.
+const UNCAPPED_CACHE_DBS = new WeakSet<Database>();
+
+/**
+ * ko-qmd: open the rerank cache file named by QMD_RERANK_CACHE, or undefined when it is unset.
+ * Rerank scores then live outside the index, so a rebuilt index (bench-ko starts from an empty
+ * one every run) reuses them. Only rerank entries move; expansion stays in the index's cache.
+ * The key carries the query, model, doc-token cap and chunk text, so the file is safe across index
+ * rebuilds with the same reranker code — not across a change to how llm.ts scores a chunk
+ * (template, context size, node-llama-cpp), which the key does not see. It is not trimmed to the
+ * index cache's 1000 rows.
+ */
+const openRerankCache = (path: string | undefined): Database | undefined => {
+  if (!path) return undefined;
+  const cacheDb = openDatabase(path);
+  cacheDb.exec(`CREATE TABLE IF NOT EXISTS llm_cache (hash TEXT PRIMARY KEY, result TEXT NOT NULL, created_at TEXT NOT NULL)`);
+  UNCAPPED_CACHE_DBS.add(cacheDb);
+  return cacheDb;
+};
+
 export function setCachedResult(db: Database, cacheKey: string, result: string): void {
   const now = new Date().toISOString();
   db.prepare(`INSERT OR REPLACE INTO llm_cache (hash, result, created_at) VALUES (?, ?, ?)`).run(cacheKey, result, now);
-  if (Math.random() < 0.01) {
+  if (!UNCAPPED_CACHE_DBS.has(db) && Math.random() < 0.01) {
     db.exec(`DELETE FROM llm_cache WHERE hash NOT IN (SELECT hash FROM llm_cache ORDER BY created_at DESC LIMIT 1000)`);
   }
 }
@@ -4861,8 +4886,7 @@ export type StoreRerankOptions = {
 };
 
 export async function rerank(query: string, documents: { file: string; text: string }[], model: string = DEFAULT_RERANK_MODEL, db: Database, intent?: string, llmOverride?: LlamaCpp, options: StoreRerankOptions = {}): Promise<{ file: string; score: number }[]> {
-  // Prepend intent to rerank query so the reranker scores with domain context
-  const rerankQuery = intent ? `${intent}\n\n${query}` : query;
+  const rerankQuery = formatRerankQuery(query, intent);
   const llm = llmOverride ?? getDefaultLlamaCpp();
   // Prefer the LLM instance's resolved URI so a models.rerank swap cannot
   // reuse another model's cache entries (#764).
@@ -4901,11 +4925,16 @@ export async function rerank(query: string, documents: { file: string; text: str
     });
 
     // Cache results by chunk text so identical chunks across files are scored once.
+    // A "fallback" result (no rerank context could be created) is a flat 0.5, not a score:
+    // it is returned but never cached, so it cannot outlive the failure.
+    const cacheable = rerankResult.model !== "fallback";
     const textByFile = new Map(uncachedDocs.map(d => [d.file, d.text]));
     for (const result of rerankResult.results) {
       const chunk = textByFile.get(result.file) || "";
-      const cacheKey = getCacheKey("rerank", { query: rerankQuery, model: cacheTag, chunk });
-      setCachedResult(db, cacheKey, result.score.toString());
+      if (cacheable) {
+        const cacheKey = getCacheKey("rerank", { query: rerankQuery, model: cacheTag, chunk });
+        setCachedResult(db, cacheKey, result.score.toString());
+      }
       cachedResults.set(chunk, result.score);
     }
   }
@@ -5564,8 +5593,7 @@ export type SnippetResult = {
 /** Weight for intent terms relative to query terms (1.0) in snippet scoring */
 export const INTENT_WEIGHT_SNIPPET = 0.3;
 
-/** Weight for intent terms relative to query terms (1.0) in chunk selection */
-export const INTENT_WEIGHT_CHUNK = 0.5;
+export { INTENT_WEIGHT_CHUNK };
 
 // Common stop words filtered from intent strings before tokenization.
 // Seeded from finetune/reward.py KEY_TERM_STOPWORDS, extended with common
@@ -5827,6 +5855,21 @@ export function getHybridRrfWeights(rankedListMeta: RankedListMeta[]): number[] 
 }
 
 /**
+ * RRF list weights for structuredSearch: the first list gets 2x (the caller ordered by
+ * importance), the rest 1x.
+ *
+ * ko-qmd: a relaxed FTS list counts half here too, as in getHybridRrfWeights. At a flat 2.0 a
+ * lex line that only matched some of a question's words outranked the vector list, and a decoy
+ * sharing a few of those words took rank 1 (test/fixtures/ko-vault/BASELINE.md 2026-09-27).
+ */
+export function getStructuredRrfWeights(rankedListMeta: RankedListMeta[]): number[] {
+  return rankedListMeta.map((meta, i) => {
+    const weight = i === 0 ? 2.0 : 1.0;
+    return meta.relaxed ? weight * RELAXED_LIST_WEIGHT : weight;
+  });
+}
+
+/**
  * How much of the blended score the retrieval position is worth. The reranker
  * decides; position only separates documents it scores alike.
  */
@@ -5858,6 +5901,48 @@ export function blendRerankScore(rrfRank: number, rerankScore: number, candidate
   return (1 - POSITION_TIEBREAK_WEIGHT) * rerankScore + POSITION_TIEBREAK_WEIGHT * positionScore;
 }
 
+type RerankCandidate = { file: string; displayPath: string; title: string; body: string };
+type CandidateChunks = { chunks: RerankChunk[]; bestIdx: number };
+
+/**
+ * Cut each candidate into chunks and pick the one to rerank (`selectRerankChunk`). A document
+ * with no chunks is left out of the map.
+ */
+const chunkCandidatesForRerank = async (
+  candidates: RerankCandidate[],
+  query: string,
+  intent: string | undefined,
+  chunkStrategy: ChunkStrategy | undefined,
+): Promise<Map<string, CandidateChunks>> => {
+  const intentTerms = intent ? extractIntentTerms(intent) : [];
+  const docChunkMap = new Map<string, CandidateChunks>();
+  for (const cand of candidates) {
+    // Same script-aware ratio the indexer uses, so a Korean body does not
+    // arrive at the reranker as one ~3600-char (≈2× English) chunk.
+    const { maxChars, overlapChars, windowChars } = scriptAwareCharBudgets(
+      cand.body,
+      CHUNK_SIZE_TOKENS,
+      CHUNK_OVERLAP_TOKENS,
+      CHUNK_WINDOW_TOKENS,
+      SEARCH_PATH_OTHER_CHARS_PER_TOKEN,
+    );
+    const chunks = await chunkDocumentAsync(cand.body, maxChars, overlapChars, windowChars, cand.file, chunkStrategy);
+    if (chunks.length === 0) continue;
+    docChunkMap.set(cand.file, { chunks, bestIdx: selectRerankChunk(chunks, query, intentTerms) });
+  }
+  return docChunkMap;
+};
+
+/** The reranker's documents, in candidate order: `formatRerankDoc` over each selected chunk. */
+const rerankDocuments = (
+  candidates: RerankCandidate[],
+  docChunkMap: Map<string, CandidateChunks>,
+): { file: string; text: string }[] =>
+  candidates.flatMap((cand) => {
+    const chunkInfo = docChunkMap.get(cand.file);
+    return chunkInfo ? [{ file: cand.file, text: formatRerankDoc(chunkInfo.chunks[chunkInfo.bestIdx]!.text, cand) }] : [];
+  });
+
 /**
  * Hybrid search: BM25 + vector + query expansion + RRF + chunked reranking.
  *
@@ -5873,9 +5958,11 @@ export function blendRerankScore(rrfRank: number, rerankScore: number, candidate
  */
 export async function hybridQuery(
   store: Store,
-  query: string,
+  rawQuery: string,
   options?: HybridQueryOptions
 ): Promise<HybridQueryResult[]> {
+  // ko-qmd: "X 말고 Y" names X to exclude — every list and the reranker see only Y.
+  const query = stripHangulNegation(rawQuery);
   const limit = options?.limit ?? 10;
   const minScore = options?.minScore ?? 0;
   const candidateLimit = options?.candidateLimit ?? RERANK_CANDIDATE_LIMIT;
@@ -5911,10 +5998,15 @@ export async function hybridQuery(
 
   if (hasStrongSignal) hooks?.onStrongSignal?.(topScore);
 
-  // Step 2: Expand query (or skip if strong signal)
+  // Step 2: Expand query (or skip if strong signal or Hangul)
+  // ko-qmd: a query with any Hangul is never expanded. On the ko-vault goldset the expansion model
+  // wrote English templates and stray Chinese around Korean questions, its sampling alone moved hard
+  // rank 1 by up to five of 30 queries between runs, and it cost ~1 s per query
+  // (test/fixtures/ko-vault/BASELINE.md 2026-09-26).
+  const skipsExpansion = hasStrongSignal || containsHangul(query);
   hooks?.onExpandStart?.();
   const expandStart = Date.now();
-  const expanded = hasStrongSignal
+  const expanded = skipsExpansion
     ? []
     : await store.expandQuery(query);
 
@@ -6025,46 +6117,7 @@ export async function hybridQuery(
 
   // Step 5: Chunk documents, pick best chunk per doc for reranking.
   // Reranking full bodies is O(tokens) — the critical perf lesson that motivated this refactor.
-  const queryTerms = query.toLowerCase().split(/\s+/).filter(t => t.length > 2);
-  const intentTerms = intent ? extractIntentTerms(intent) : [];
-  const docChunkMap = new Map<string, { chunks: { text: string; pos: number }[]; bestIdx: number }>();
-
-  const chunkStrategy = options?.chunkStrategy;
-  for (const cand of candidates) {
-    // Same script-aware ratio the indexer uses, so a Korean body does not
-    // arrive at the reranker as one ~3600-char (≈2× English) chunk.
-    const { maxChars, overlapChars, windowChars } = scriptAwareCharBudgets(
-      cand.body,
-      CHUNK_SIZE_TOKENS,
-      CHUNK_OVERLAP_TOKENS,
-      CHUNK_WINDOW_TOKENS,
-      SEARCH_PATH_OTHER_CHARS_PER_TOKEN,
-    );
-    const chunks = await chunkDocumentAsync(
-      cand.body,
-      maxChars,
-      overlapChars,
-      windowChars,
-      cand.file,
-      chunkStrategy,
-    );
-    if (chunks.length === 0) continue;
-
-    // Pick chunk with most keyword overlap (fallback: first chunk)
-    // Intent terms contribute at INTENT_WEIGHT_CHUNK (0.5) relative to query terms (1.0)
-    let bestIdx = 0;
-    let bestScore = -1;
-    for (let i = 0; i < chunks.length; i++) {
-      const chunkLower = chunks[i]!.text.toLowerCase();
-      let score = queryTerms.reduce((acc, term) => acc + (chunkLower.includes(term) ? 1 : 0), 0);
-      for (const term of intentTerms) {
-        if (chunkLower.includes(term)) score += INTENT_WEIGHT_CHUNK;
-      }
-      if (score > bestScore) { bestScore = score; bestIdx = i; }
-    }
-
-    docChunkMap.set(cand.file, { chunks, bestIdx });
-  }
+  const docChunkMap = await chunkCandidatesForRerank(candidates, query, intent, options?.chunkStrategy);
 
   if (skipRerank) {
     // Skip LLM reranking — return candidates scored by RRF only
@@ -6118,13 +6171,7 @@ export async function hybridQuery(
   }
 
   // Step 6: Rerank chunks (NOT full bodies)
-  const chunksToRerank: { file: string; text: string }[] = [];
-  for (const cand of candidates) {
-    const chunkInfo = docChunkMap.get(cand.file);
-    if (chunkInfo) {
-      chunksToRerank.push({ file: cand.file, text: chunkInfo.chunks[chunkInfo.bestIdx]!.text });
-    }
-  }
+  const chunksToRerank = rerankDocuments(candidates, docChunkMap);
 
   hooks?.onRerankStart?.(chunksToRerank.length);
   const rerankStart = Date.now();
@@ -6320,7 +6367,7 @@ export interface StructuredSearchOptions {
  */
 export async function structuredSearch(
   store: Store,
-  searches: ExpandedQuery[],
+  rawSearches: ExpandedQuery[],
   options?: StructuredSearchOptions
 ): Promise<HybridQueryResult[]> {
   const limit = options?.limit ?? 10;
@@ -6335,10 +6382,10 @@ export async function structuredSearch(
   const collections = options?.collections;
   const scope = options?.scope;
 
-  if (searches.length === 0) return [];
+  if (rawSearches.length === 0) return [];
 
   // Validate queries before executing
-  for (const search of searches) {
+  for (const search of rawSearches) {
     const location = search.line ? `Line ${search.line}` : 'Structured search';
     if (/[\r\n]/.test(search.query)) {
       throw new Error(`${location} (${search.type}): queries must be single-line. Remove newline characters.`);
@@ -6355,6 +6402,12 @@ export async function structuredSearch(
       }
     }
   }
+
+  // ko-qmd: "X 말고 Y" names X to exclude — lex and vec lines, and the rerank query taken from
+  // them, keep only Y. A hyde line is a passage, not a query, and stays as written.
+  const searches = rawSearches.map((search) =>
+    search.type === 'hyde' ? search : { ...search, query: stripHangulNegation(search.query) }
+  );
 
   const rankedLists: RankedResult[][] = [];
   const rankedListMeta: RankedListMeta[] = [];
@@ -6431,8 +6484,9 @@ export async function structuredSearch(
 
   if (rankedLists.length === 0) return [];
 
-  // Step 3: RRF fusion — first list gets 2x weight (assume caller ordered by importance)
-  const weights = rankedLists.map((_, i) => i === 0 ? 2.0 : 1.0);
+  // Step 3: RRF fusion — first list gets 2x weight (assume caller ordered by importance),
+  // a relaxed FTS list half of its slot's weight
+  const weights = getStructuredRrfWeights(rankedListMeta);
   const fused = reciprocalRankFusion(rankedLists, weights);
   const rrfTraceByFile = explain ? buildRrfTrace(rankedLists, weights, rankedListMeta) : null;
   const candidates = fused.slice(0, candidateLimit);
@@ -6446,44 +6500,7 @@ export async function structuredSearch(
   const primaryQuery = searches.find(s => s.type === 'lex')?.query
     || searches.find(s => s.type === 'vec')?.query
     || searches[0]?.query || "";
-  const queryTerms = primaryQuery.toLowerCase().split(/\s+/).filter(t => t.length > 2);
-  const intentTerms = intent ? extractIntentTerms(intent) : [];
-  const docChunkMap = new Map<string, { chunks: { text: string; pos: number }[]; bestIdx: number }>();
-  const ssChunkStrategy = options?.chunkStrategy;
-
-  for (const cand of candidates) {
-    const { maxChars, overlapChars, windowChars } = scriptAwareCharBudgets(
-      cand.body,
-      CHUNK_SIZE_TOKENS,
-      CHUNK_OVERLAP_TOKENS,
-      CHUNK_WINDOW_TOKENS,
-      SEARCH_PATH_OTHER_CHARS_PER_TOKEN,
-    );
-    const chunks = await chunkDocumentAsync(
-      cand.body,
-      maxChars,
-      overlapChars,
-      windowChars,
-      cand.file,
-      ssChunkStrategy,
-    );
-    if (chunks.length === 0) continue;
-
-    // Pick chunk with most keyword overlap
-    // Intent terms contribute at INTENT_WEIGHT_CHUNK (0.5) relative to query terms (1.0)
-    let bestIdx = 0;
-    let bestScore = -1;
-    for (let i = 0; i < chunks.length; i++) {
-      const chunkLower = chunks[i]!.text.toLowerCase();
-      let score = queryTerms.reduce((acc, term) => acc + (chunkLower.includes(term) ? 1 : 0), 0);
-      for (const term of intentTerms) {
-        if (chunkLower.includes(term)) score += INTENT_WEIGHT_CHUNK;
-      }
-      if (score > bestScore) { bestScore = score; bestIdx = i; }
-    }
-
-    docChunkMap.set(cand.file, { chunks, bestIdx });
-  }
+  const docChunkMap = await chunkCandidatesForRerank(candidates, primaryQuery, intent, options?.chunkStrategy);
 
   if (skipRerank) {
     // Skip LLM reranking — return candidates scored by RRF only
@@ -6537,13 +6554,7 @@ export async function structuredSearch(
   }
 
   // Step 5: Rerank chunks
-  const chunksToRerank: { file: string; text: string }[] = [];
-  for (const cand of candidates) {
-    const chunkInfo = docChunkMap.get(cand.file);
-    if (chunkInfo) {
-      chunksToRerank.push({ file: cand.file, text: chunkInfo.chunks[chunkInfo.bestIdx]!.text });
-    }
-  }
+  const chunksToRerank = rerankDocuments(candidates, docChunkMap);
 
   hooks?.onRerankStart?.(chunksToRerank.length);
   const rerankStart2 = Date.now();
