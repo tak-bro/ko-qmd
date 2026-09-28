@@ -892,3 +892,40 @@ is adopted:
 
 Train gains alone never count: the loop saw train, so only held-out and ko-vault can show that a
 gain generalizes.
+
+### Result (2026-09-28): adopted
+
+The loop ran 28 experiments in two hours. It kept 5, discarded 23 and had no crashes. Its best
+commit raised train `full_mrr` from 0.7132 to 0.7295. The gates were measured on that commit,
+with only `src/rerank-input.ts` changed:
+
+| check | reference | loop best | pass |
+|---|---|---|---|
+| held-out `full_mrr` (32) | 0.6589 | 0.7260 | yes |
+| ko-vault seam `full_mrr` | 0.9308 | 0.9308 | yes |
+| ko-vault hard `full_mrr` | 0.8287 | 0.8287 | yes |
+| held-out bm25/vector/hybrid `top_files` | — | same | yes |
+| ko-vault bm25/vector/hybrid r@5 | 0.8459 / 0.9050 / 0.9211 | same | yes |
+
+The ko-vault lines match the reference exactly:
+
+RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.9211 full_r5=0.9588 full_mrr=0.9308
+RESULT-HARD hybrid_r1=0.4111 hybrid_mrr=0.6356 full_r1=0.6111 full_mrr=0.8287 n=30 form=seam
+
+The gain on held-out (+0.067) is larger than on train (+0.016). Held-out has 32 queries, so a few
+queries moving one rank account for most of it. The loop also found that nearly identical variants
+scored 0.001–0.01 lower on train, so the finer weights (ASCII ×2, three-syllable minimum) are tuned
+to this goldset. The adopted rules:
+
+- chunk selection counts query Hangul syllable bigrams, taken only from Hangul runs of three or
+  more syllables, plus two points per ASCII query word longer than two characters. Intent words
+  still add half a point.
+- the document text is the chunk, led by `# <title>` when the chunk lacks the title.
+
+The loop also found two limits:
+
+- Any change that rewrites every (query, chunk) pair runs cold and takes 20–40 minutes per eval.
+  Stripping frontmatter from the text sent to the reranker and adding the display path both ran
+  out of the eval budget and were never measured.
+- Removing the title lead from the final version drops train to 0.7227, so the title lead is worth
+  about 0.007 on its own.

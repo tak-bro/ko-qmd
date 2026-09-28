@@ -11,6 +11,16 @@
   changes. A fallback result (no rerank context could be created, every score 0.5) is no longer
   cached in either place.
 
+- The reranker now sees a better chunk of a long Korean note. The chunk is chosen by the
+  two-syllable pairs of the query's Hangul words of three or more syllables, instead of whole
+  words, so `임베딩은` still finds a chunk about `임베딩`. Generic two-syllable words such as 방법
+  and 경우 no longer steer the choice. An English query word counts double. When the chosen chunk
+  does not contain the note title, `# <title>` is put in front of it. An autonomous loop
+  (`scripts/autoresearch/`) found this over 28 experiments on a goldset generated from a private
+  vault. The goldset's held-out split, which the loop never saw, goes from full MRR 0.6589 to
+  0.7260 (32 queries). ko-vault seam and hard lines are unchanged. The bm25, vector and hybrid
+  results are identical on both sets (`BASELINE.md` 2026-09-28).
+
 - The reranker's input (the query string, which chunk of each candidate is sent and the document
   text) is now built in `src/rerank-input.ts` for both `hybridQuery` and `structuredSearch`, which
   had copied the chunk-scoring loop. Results are unchanged.

@@ -21,17 +21,27 @@ export const formatRerankQuery = (query: string, intent?: string): string =>
   intent ? `${intent}\n\n${query}` : query;
 
 /**
+ * Hangul syllable bigrams of every Hangul run of three or more syllables in `text`, so a
+ * particle-suffixed word still matches its stem and a bare two-syllable word (`방법`) does not count.
+ */
+const hangulBigrams = (text: string): string[] =>
+  (text.match(/[가-힣]{3,}/g) ?? []).flatMap((run) => Array.from({ length: run.length - 1 }, (_, i) => run.slice(i, i + 2)));
+
+/**
  * Index of the chunk to rerank: the one containing the most query words longer than two
- * characters, each intent word adding half a point. Case-insensitive substring match; a tie
- * keeps the earlier chunk, and no match picks the first.
+ * characters (two points each) plus query Hangul syllable bigrams, each intent word adding half a point.
+ * Case-insensitive substring match; a tie keeps the earlier chunk, and no match picks the first.
  */
 export const selectRerankChunk = (chunks: RerankChunk[], query: string, intentTerms: string[]): number => {
-  const queryTerms = query.toLowerCase().split(/\s+/).filter((t) => t.length > 2);
+  const queryLower = query.toLowerCase();
+  const queryTerms = queryLower.split(/\s+/).filter((t) => t.length > 2 && !/[가-힣]/.test(t));
+  const bigrams = hangulBigrams(queryLower);
   let bestIdx = 0;
   let bestScore = -1;
   for (let i = 0; i < chunks.length; i++) {
     const chunkLower = chunks[i]!.text.toLowerCase();
-    let score = queryTerms.reduce((acc, term) => acc + (chunkLower.includes(term) ? 1 : 0), 0);
+    let score = queryTerms.reduce((acc, term) => acc + (chunkLower.includes(term) ? 2 : 0), 0);
+    score += bigrams.reduce((acc, bg) => acc + (chunkLower.includes(bg) ? 1 : 0), 0);
     for (const term of intentTerms) {
       if (chunkLower.includes(term)) score += INTENT_WEIGHT_CHUNK;
     }
@@ -40,5 +50,6 @@ export const selectRerankChunk = (chunks: RerankChunk[], query: string, intentTe
   return bestIdx;
 };
 
-/** The document text sent for one candidate: the selected chunk as it is. */
-export const formatRerankDoc = (chunkText: string, _meta: RerankDocMeta): string => chunkText;
+/** The document text sent for one candidate: the selected chunk, led by the note title when the chunk lacks it. */
+export const formatRerankDoc = (chunkText: string, meta: RerankDocMeta): string =>
+  meta.title && !chunkText.includes(meta.title) ? `# ${meta.title}\n\n${chunkText}` : chunkText;
