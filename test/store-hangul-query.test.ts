@@ -495,8 +495,8 @@ describe("negation queries through hybridQuery and structuredSearch", () => {
   test("structuredSearch leaves hyde passages and intent as written", async () => {
     reset();
     const hyde = "tf-idf 말고 흔한 단어에 패널티를 주는 순위 공식을 설명하는 문서";
-    const rerank = store.internal.rerank as unknown as ReturnType<typeof vi.fn>;
-    rerank.mockClear();
+    const rerank = vi.fn(store.internal.rerank);
+    store.internal.rerank = rerank;
     await structuredSearch(store.internal, [
       { type: "lex", query: "tf-idf 말고 순위 공식" },
       { type: "hyde", query: hyde },
