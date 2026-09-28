@@ -905,12 +905,14 @@ with only `src/rerank-input.ts` changed:
 | ko-vault seam `full_mrr` | 0.9308 | 0.9308 | yes |
 | ko-vault hard `full_mrr` | 0.8287 | 0.8287 | yes |
 | held-out bm25/vector/hybrid `top_files` | — | same | yes |
-| ko-vault bm25/vector/hybrid r@5 | 0.8459 / 0.9050 / 0.9211 | same | yes |
+| ko-vault bm25/vector/hybrid r@5 | 0.8459 / 0.9050 / 0.9211 | same | yes (by construction) |
 
-The ko-vault lines match the reference exactly:
+bm25, vector and rerank-less hybrid never read `src/rerank-input.ts`, so their ko-vault `top_files`
+cannot change; this run compared the r@5 averages, not the per-query lists. The ko-vault lines
+match the reference exactly:
 
 RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.9211 full_r5=0.9588 full_mrr=0.9308
-RESULT-HARD hybrid_r1=0.4111 hybrid_mrr=0.6356 full_r1=0.6111 full_mrr=0.8287 n=30 form=seam
+RESULT-HARD hybrid_r1=0.4111 hybrid_mrr=0.6356 full_r1=0.6111 full_mrr=0.8287 n=30 tol=0 form=seam
 
 The gain on held-out (+0.067) is larger than on train (+0.016). Held-out has 32 queries, so a few
 queries moving one rank account for most of it. The loop also found that nearly identical variants
@@ -919,7 +921,8 @@ to this goldset. The adopted rules:
 
 - chunk selection counts query Hangul syllable bigrams, taken only from Hangul runs of three or
   more syllables, plus two points per query word with no Hangul longer than two characters. Intent words
-  still add half a point.
+  add one point, raised from 0.5 after review so intent keeps half a query word's weight (no
+  goldset carries intent, so this moves no number).
 - the document text is the chunk, led by `# <title>` when the chunk lacks the title.
 
 The loop also found two limits:

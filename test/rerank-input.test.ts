@@ -28,9 +28,9 @@ describe("selectRerankChunk", () => {
     expect(selectRerankChunk(chunks("an of to", "tokenizer notes"), "an of tokenizer", [])).toBe(1);
   });
 
-  test("an intent word counts a quarter of an ASCII query word", () => {
-    expect(selectRerankChunk(chunks("latency budget x y z", "ranking formula"), "ranking", ["latency", "budget", "x", "y", "z"])).toBe(0);
-    expect(selectRerankChunk(chunks("latency budget", "ranking"), "ranking", ["latency", "budget"])).toBe(1);
+  test("an intent word counts half a non-Hangul query word", () => {
+    expect(selectRerankChunk(chunks("latency budget cost", "ranking formula"), "ranking", ["latency", "budget", "cost"])).toBe(0);
+    expect(selectRerankChunk(chunks("latency", "ranking"), "ranking", ["latency"])).toBe(1);
   });
 
   test("a Hangul query matches by syllable bigrams, so a particle-suffixed word finds its stem", () => {

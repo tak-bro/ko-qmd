@@ -98,8 +98,11 @@ const base = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 const mrr = run.summary?.full?.avg_mrr;
 if (!Number.isFinite(mrr)) { console.error("bench has no full backend summary"); process.exit(1); }
 const byId = new Map(base.results.map(r => [r.id, r]));
-const same = b => run.results.every(r =>
-  JSON.stringify(r.backends?.[b]?.top_files) === JSON.stringify(byId.get(r.id)?.backends?.[b]?.top_files));
+// A backend missing from either side counts as changed, so two absent lists never pass as "same".
+const same = b => run.results.every(r => {
+  const now = r.backends?.[b]?.top_files, ref = byId.get(r.id)?.backends?.[b]?.top_files;
+  return now !== undefined && ref !== undefined && JSON.stringify(now) === JSON.stringify(ref);
+});
 const invariant = ["bm25", "vector", "hybrid"].map(b => `${b}=${same(b) ? "same" : "changed"}`).join(" ");
 console.log(`METRIC train_full_mrr=${mrr.toFixed(4)}`);
 console.log(`INVARIANT ${invariant}`);

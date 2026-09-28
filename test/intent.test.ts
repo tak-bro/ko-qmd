@@ -338,7 +338,7 @@ describe("intent keyword extraction logic", () => {
 
   test("intent terms have lower weight than query terms (2.0)", () => {
     const intent = "looking for latency";
-    // Chunk 0 has "performance" (query: 2.0) + "latency" (intent: INTENT_WEIGHT_CHUNK) = 2.5
+    // Chunk 0 has "performance" (query: 2.0) + "latency" (intent: INTENT_WEIGHT_CHUNK) = 3.0
     const withBoth = scoreChunk(chunks[0]!, "performance", intent);
     const queryOnly = scoreChunk(chunks[0]!, "performance");
     expect(withBoth).toBe(queryOnly + INTENT_WEIGHT_CHUNK);
@@ -507,7 +507,7 @@ describe("intent constants", () => {
     expect(INTENT_WEIGHT_SNIPPET).toBe(0.3);
   });
 
-  test("INTENT_WEIGHT_CHUNK is 0.5", () => {
-    expect(INTENT_WEIGHT_CHUNK).toBe(0.5);
+  test("INTENT_WEIGHT_CHUNK is 1.0, half a non-Hangul query word", () => {
+    expect(INTENT_WEIGHT_CHUNK).toBe(1.0);
   });
 });

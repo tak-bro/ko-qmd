@@ -19,7 +19,10 @@
   (`scripts/autoresearch/`) found this over 28 experiments on a goldset generated from a private
   vault. The goldset's held-out split, which the loop never saw, goes from full MRR 0.6589 to
   0.7260 (32 queries). ko-vault seam and hard lines are unchanged. The bm25, vector and hybrid
-  results are identical on both sets (`BASELINE.md` 2026-09-28).
+  results do not read the rerank input and are identical on both sets (`BASELINE.md`
+  2026-09-28). An intent word now counts 1 point in chunk selection (was 0.5), keeping it at half a
+  query word now that a non-Hangul query word counts 2; no goldset carries intent, so no bench
+  number moves.
 
 - The reranker's input (the query string, which chunk of each candidate is sent and the document
   text) is now built in `src/rerank-input.ts` for both `hybridQuery` and `structuredSearch`, which
