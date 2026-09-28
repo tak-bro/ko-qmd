@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+Korean queries are handled better before and during reranking. A query written
+as "X 말고 Y" now searches for Y alone, and a Hangul query skips LLM expansion,
+which steadies hard-query results and cuts hybrid latency from about 1s to tens
+of ms per query. The reranker is now shown the chunk that best matches the
+query's Hangul syllable bigrams, led by the note title: held-out full MRR goes
+0.6589 → 0.7260 on a goldset generated from a real vault. Scoped vector search on
+small indexes runs one KNN (vector stage 250–1300ms → about 25ms). The README
+gains an English edition and an FAQ.
+
 - `QMD_RERANK_CACHE=<path>` keeps rerank scores in their own sqlite file instead of the index's
   `llm_cache`, so a store over a rebuilt index reuses them. The key carries the query, the rerank
   model, the doc-token cap and the chunk text, not the scoring code in `src/llm.ts`, so the file is
