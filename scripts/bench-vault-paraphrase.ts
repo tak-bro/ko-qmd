@@ -9,6 +9,10 @@
  *   --keep-rejects <path> write every rejected candidate with its reason, for tuning the gates
  *   --minutes <n>         stop after this many minutes and write what is done (default: no limit)
  *   --seed <n>            shuffle seed, so a truncated run samples the vault (default: 1)
+ *   --dirs <a,b,…>        vault subdirectories to read; answers are named <dir>/<path> (default: wiki)
+ *   --skip <goldset.json> leave out every document that is an answer in this goldset, so a second
+ *                         run adds new documents instead of re-asking the first run's (a document
+ *                         the first run tried but kept nothing from is tried again)
  *   --max-df <n>          a heading word in more than this many documents is common, not jargon,
  *                         and is not banned from questions (default: 12)
  *
@@ -52,7 +56,7 @@ import { spawn } from 'node:child_process'
 type Args = {
   vault: string; out: string; collection: string
   perDoc: number; docs: number; model: string; keepRejects: string | null
-  minutes: number; seed: number; maxDf: number
+  minutes: number; seed: number; maxDf: number; dirs: string[]; skip: string | null
 }
 
 const parseArgs = (argv: string[]): Args => {
@@ -72,6 +76,8 @@ const parseArgs = (argv: string[]): Args => {
     minutes: Number(flag('minutes', '0')),
     seed: Number(flag('seed', '1')),
     maxDf: Number(flag('max-df', '12')),
+    dirs: flag('dirs', 'wiki')!.split(',').filter(Boolean),
+    skip: flag('skip', null),
   }
 }
 
@@ -282,13 +288,18 @@ const shuffled = <T,>(items: T[], seed: number): T[] => {
 
 const main = async () => {
   const args = parseArgs(process.argv.slice(2))
-  const root = join(args.vault, 'wiki')
-  const all = walk(root).filter((f) => statSync(f).size < 400_000)
-    .map((f) => ({ file: f, rel: `wiki/${relative(root, f)}`, text: readFileSync(f, 'utf8') }))
+  const all = args.dirs.flatMap((dir) => {
+    const root = join(args.vault, dir)
+    return walk(root).filter((f) => statSync(f).size < 400_000)
+      .map((f) => ({ file: f, rel: `${dir}/${relative(root, f)}`, text: readFileSync(f, 'utf8') }))
+  })
+  const skipped = new Set<string>(args.skip
+    ? JSON.parse(readFileSync(args.skip, 'utf8')).queries.flatMap((q: { expected_files: string[] }) => q.expected_files)
+    : [])
   // Document frequency comes from the whole vault, not from the slice this run gets through: what
   // counts as a common word does not depend on where the time budget happened to stop.
   const df = documentFrequency(all)
-  const files = shuffled(all, args.seed).slice(0, args.docs)
+  const files = shuffled(all.filter((d) => !skipped.has(d.rel)), args.seed).slice(0, args.docs)
   const deadline = args.minutes > 0 ? Date.now() + args.minutes * 60_000 : Infinity
   let stoppedEarly = false
 
