@@ -136,7 +136,7 @@ spread.
 ## Real vaults — script-mixed query terms (2026-09-16)
 
 The synthetic fixture had run out of headroom (hybrid and full both 1.0000), so this round measured
-against a real 2nd-brain vault instead: 232 Korean wiki documents in `lemoncloud/lemon/knowledge`,
+against a real 2nd-brain vault instead: 232 Korean wiki documents in a team vault,
 with a 240-query goldset built by `scripts/bench-vault-goldset.mjs` from the vault's own unique
 headings and body clauses. The vault is not committed here; regenerate the goldset to reproduce.
 
@@ -176,8 +176,8 @@ Same change, same goldset generator, two more real vaults (lex only, after the f
 | vault | documents | queries | `bm25_r5` |
 | --- | --- | --- | --- |
 | 2nd-brain knowledge | 232 | 240 | 0.9333 |
-| muzly-wiki | 107 | 87 | 0.9770 |
-| ssocio-wiki | 28 | 65 | 1.0000 |
+| vault-b | 107 | 87 | 0.9770 |
+| vault-c | 28 | 65 | 1.0000 |
 
 Only the 232-document vault still separates good from bad. The two small ones sit at the ceiling,
 the same way the synthetic fixture did, so they confirm nothing broke but cannot rank anything.
@@ -313,7 +313,7 @@ RESULT bm25_r5=0.7857 vector_r5=1.0000 hybrid_r5=0.9921 full_r5=1.0000 full_mrr=
 Every loanword query returns zero lex results: FTS5 ANDs the terms and the Hangul loanword
 matches nothing. The vector path already finds all eleven, so the gap is lex-only — it matters
 where lex runs alone or carries the fusion (the knowledge-base seam sends raw query as lex + vec,
-and the standing miss `레몬 웹 코어` is this shape against a real vault).
+and the standing miss `리액트 웹 코어` is this shape against a real vault).
 
 After the loanword bridge (`hangulLoanwordForms` in `hangulTermQuery`):
 
@@ -547,7 +547,7 @@ dependency set.
 Where to generate, if ever: not in `qmd embed`, for the two reasons above. If a vault wants this
 surface anyway, it belongs on the authoring side as frontmatter, which is already indexed as body
 text and needs no ko-qmd change. Some vaults already have such a field: KB `summary:` in 62 of
-652 documents, vault-lemon `aliases:` in 59 of 236, muzly `aliases:` in 2 of 119.
+652 documents, vault A `aliases:` in 59 of 236, vault B `aliases:` in 2 of 119.
 
 Limits, both in the after side's favour: fixture documents are short (median 666 chars with the
 6000-char prompt cap applied, against 1837 on the live corpus, where 85 of 1057 hit the cap), so

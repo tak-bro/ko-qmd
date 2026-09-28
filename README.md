@@ -35,7 +35,7 @@ flowchart LR
   동사·명사화 어미(`토큰화하는` → `토큰화`, `검색하기` → `검색`), `한`/`된` 어미(`필요한` → `필요`), 하↔해 축약(`더하` ↔ `더해`).
   따옴표 구문·한자·가나는 그대로 둔다.
 - **외래어 다리** — 기술 용어의 한글 표기(`서치`·`웹`·`코어`·`마이그레이션` 등 약 80개 내장 표)는 영문 표기도 함께 찾는다.
-  `하이브리드 서치`가 `hybrid-search` 노트를, `레몬 웹 코어`가 `lemon-web-core`를 찾는다. 질의 쪽만 바뀌므로 재색인은 필요 없다.
+  `하이브리드 서치`가 `hybrid-search` 노트를, `리액트 웹 코어`가 `react-web-core`를 찾는다. 질의 쪽만 바뀌므로 재색인은 필요 없다.
 - **문자 체계가 섞인 토큰 분리** — `SKILL.md계약의핵심`은 `skill` AND `md` AND `계약의핵심`으로 나눈다.
 - **긴 질의 완화** — 세 단어 이상 질의가 AND 로 한 건도 안 맞으면 같은 단어를 OR 로 다시 찾는다. 자연어 문장 질의가 0건이 되지 않는다.
 - **음절 bigram 색인** — 한글 구간의 음절 bigram 을 FTS 필드에 덧붙인다. 붙여 쓴 복합어 안의 단어도 걸린다.
@@ -216,7 +216,7 @@ bash scripts/dogfood.sh --check "RESULT bm25_r5=…"   # 게이트 판정만
   seam form 은 같은 커밋에서 매번 같은 값이 나와 기준줄이 `tol=0` 이다. plain form 의 `hybrid_r1` 은 확장 샘플링만으로
   질의 5개만큼 흔들려서 게이트하지 않는다(BASELINE.md 2026-09-26).
 - `npm link` 가 아니라 pack 설치다. 링크하면 데몬이 작업 트리의 `dist/` 를 서빙해 빌드 중에 깨질 수 있다.
-- 머신 배선 env: `DOGFOOD_LABEL`(launchd 라벨, 기본 `com.lemoncloud.qmd-daemon`) · `DOGFOOD_URL`(기본 `http://127.0.0.1:8181`) ·
+- 머신 배선 env: `DOGFOOD_LABEL`(launchd 라벨, 기본 `io.github.ko-qmd.daemon`) · `DOGFOOD_URL`(기본 `http://127.0.0.1:8181`) ·
   `DOGFOOD_SMOKE` · `DOGFOOD_PIN_FILE`. 성공하면 `~/.cache/qmd/dogfood-deployed` 에 `<시각> <커밋>` 을 쓴다.
 
 ### ko-vault 벤치

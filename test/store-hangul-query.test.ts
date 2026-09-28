@@ -196,7 +196,7 @@ describe("searchLex with Hangul particles", () => {
     const docs = join(root, "docs");
     await mkdir(docs, { recursive: true });
     await writeFile(join(docs, "ko.md"), "# 검색 품질\n\n역색인 구조를 설명한다. qmd 색인은 FTS5 위에서 돈다.\n");
-    await writeFile(join(docs, "hybrid-search.md"), "# hybrid-search\n\nBM25 and vector lists fused over n-gram tokens. Notes on the lemon web core.\n");
+    await writeFile(join(docs, "hybrid-search.md"), "# hybrid-search\n\nBM25 and vector lists fused over n-gram tokens. Notes on the react web core.\n");
     await writeFile(join(docs, "zh.md"), "# 中文检索说明\n\n关键词检索。\n");
     await writeFile(join(docs, "ja.md"), "# 日本語検索メモ\n\n検索品質について。\n");
     store = await createStore({
@@ -235,11 +235,11 @@ describe("searchLex with Hangul particles", () => {
   test("Hangul loanword spellings reach Latin-identifier documents", async () => {
     expect(await files("하이브리드 서치")).toEqual([expect.stringContaining("hybrid-search.md")]);
     expect(await files("엔그램 토큰을")).toEqual([expect.stringContaining("hybrid-search.md")]);
-    expect(await files("레몬 웹 코어")).toEqual([expect.stringContaining("hybrid-search.md")]);
+    expect(await files("리액트 웹 코어")).toEqual([expect.stringContaining("hybrid-search.md")]);
   });
 
   // Hangul-only terms joined by a separator take the character-phrase fallback (no stems, no
-  // loanwords) — before and after upstream's separator split. `레몬-웹` / `검색-품질을` still miss.
+  // loanwords) — before and after upstream's separator split. `리액트-웹` / `검색-품질을` still miss.
   test("separator-joined and script-mixed Hangul terms keep matching", async () => {
     expect(await files("검색-품질")).toEqual([expect.stringContaining("ko.md")]);
     expect(await files('"검색-품질"')).toEqual([expect.stringContaining("ko.md")]);
