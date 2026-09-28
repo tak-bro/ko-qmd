@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.8.3-ko.6] - 2026-09-29
+
 Korean queries are handled better before and during reranking. A query written
 as "X 말고 Y" now searches for Y alone, and a Hangul query skips LLM expansion,
 which steadies hard-query results and cuts hybrid latency from about 1s to tens
