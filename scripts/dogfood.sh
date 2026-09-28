@@ -21,7 +21,7 @@
 # working tree's dist/, and rebuilding while it runs can break it mid-request.
 #
 # Machine wiring (env overrides):
-#   DOGFOOD_LABEL     launchd label of the daemon      (com.lemoncloud.qmd-daemon)
+#   DOGFOOD_LABEL     launchd label of the daemon      (io.github.ko-qmd.daemon)
 #   DOGFOOD_URL       daemon base URL                  (http://127.0.0.1:8181)
 #   DOGFOOD_SMOKE     optional extra smoke command; must print JSON with "status":"hit"
 #   DOGFOOD_PIN_FILE  file holding the `ko-qmd@<version>` pin used by --restore
@@ -36,7 +36,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASELINE="${DOGFOOD_BASELINE:-$ROOT/test/fixtures/ko-vault/BASELINE.md}"
-LABEL="${DOGFOOD_LABEL:-com.lemoncloud.qmd-daemon}"
+LABEL="${DOGFOOD_LABEL:-io.github.ko-qmd.daemon}"
 URL="${DOGFOOD_URL:-http://127.0.0.1:8181}"
 MARKER="${XDG_CACHE_HOME:-$HOME/.cache}/qmd/dogfood-deployed"
 BENCH="${DOGFOOD_BENCH:-bash scripts/bench-ko.sh}"

@@ -171,8 +171,8 @@ export function hangulTermQuery(term: string): string | null {
 
 /**
  * Hangul loanword spellings of Latin technical vocabulary. Notes name things by their
- * Latin identifier (`hybrid-search.md`, `lemon-web-core`) while questions spell the same
- * words in Hangul (`하이브리드 서치`, `레몬 웹 코어`), and neither bigrams nor the vector
+ * Latin identifier (`hybrid-search.md`, `react-web-core`) while questions spell the same
+ * words in Hangul (`하이브리드 서치`, `리액트 웹 코어`), and neither bigrams nor the vector
  * list bridge that on the lex side. Hand-written, one entry per line; forms are lowercase
  * ASCII words separated by single spaces so they are safe inside an FTS5 phrase.
  */
@@ -188,7 +188,7 @@ const LOANWORDS: Readonly<Record<string, readonly string[]>> = {
   "디시전": ["decision"],
   "랭크": ["rank"],
   "랭킹": ["ranking"],
-  "레몬": ["lemon"],
+  "리액트": ["react"],
   "레시프로컬": ["reciprocal"],
   "레코드": ["record"],
   "로그": ["log"],
