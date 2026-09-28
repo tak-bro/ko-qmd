@@ -865,3 +865,70 @@ RESULT-HARD hybrid_r1=0.4111 hybrid_mrr=0.6356 full_r1=0.6111 full_mrr=0.8287 n=
 
 Reproduce: `bash scripts/bench-ko.sh` at this commit. The per-query diff against the reference
 run's `tmp/bench-ko/bench.json` is not committed.
+
+## 2026-09-28 — rerank-input autoresearch: the keep rule, written before the loop
+
+An autonomous loop (`scripts/autoresearch/program.md`) edits only `src/rerank-input.ts` and keeps a
+commit when `train_full_mrr` rises on a generated train goldset. The goldset is paraphrased from a
+private team vault by `scripts/autoresearch/prepare.sh` and stays outside git. It holds 190 kept
+queries from 140 documents. A seeded split by answer document gives 151 train and 39 held-out
+queries. Review dropped 11 answer keys (4 train, 7 held-out) as wrong or too generic, leaving 147
+train and 32 held-out.
+
+Reference, taken at `fa5ae77` with `bash scripts/autoresearch/eval.sh --baseline`:
+
+| set | queries | `full_mrr` | eval seconds |
+|---|---|---|---|
+| train | 147 | 0.7132 | 33 (rerank cache warm) |
+| held-out | 32 | 0.6589 | 500 (cold) |
+
+The loop's best commit is adopted only if it passes every check below. If it misses one, nothing
+is adopted:
+
+1. held-out `full_mrr` ≥ 0.6589
+2. ko-vault seam `full_mrr` ≥ 0.9308 and hard `full_mrr` ≥ 0.8287 (`bash scripts/bench-ko.sh`)
+3. bm25, vector and hybrid `top_files` identical to the reference on held-out (eval.sh
+   `INVARIANT`) and on ko-vault
+
+Train gains alone never count: the loop saw train, so only held-out and ko-vault can show that a
+gain generalizes.
+
+### Result (2026-09-28): adopted
+
+The loop ran 28 experiments in two hours. It kept 5, discarded 23 and had no crashes. Its best
+commit raised train `full_mrr` from 0.7132 to 0.7295. The gates were measured on that commit,
+with only `src/rerank-input.ts` changed:
+
+| check | reference | loop best | pass |
+|---|---|---|---|
+| held-out `full_mrr` (32) | 0.6589 | 0.7260 | yes |
+| ko-vault seam `full_mrr` | 0.9308 | 0.9308 | yes |
+| ko-vault hard `full_mrr` | 0.8287 | 0.8287 | yes |
+| held-out bm25/vector/hybrid `top_files` | — | same | yes |
+| ko-vault bm25/vector/hybrid r@5 | 0.8459 / 0.9050 / 0.9211 | same | yes (by construction) |
+
+bm25, vector and rerank-less hybrid never read `src/rerank-input.ts`, so their ko-vault `top_files`
+cannot change; this run compared the r@5 averages, not the per-query lists. The ko-vault lines
+match the reference exactly:
+
+RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.9211 full_r5=0.9588 full_mrr=0.9308
+RESULT-HARD hybrid_r1=0.4111 hybrid_mrr=0.6356 full_r1=0.6111 full_mrr=0.8287 n=30 tol=0 form=seam
+
+The gain on held-out (+0.067) is larger than on train (+0.016). Held-out has 32 queries, so a few
+queries moving one rank account for most of it. The loop also found that nearly identical variants
+scored 0.001–0.01 lower on train, so the finer weights (ASCII ×2, three-syllable minimum) are tuned
+to this goldset. The adopted rules:
+
+- chunk selection counts query Hangul syllable bigrams, taken only from Hangul runs of three or
+  more syllables, plus two points per query word with no Hangul longer than two characters. Intent words
+  add one point, raised from 0.5 after review so intent keeps half a query word's weight (no
+  goldset carries intent, so this moves no number).
+- the document text is the chunk, led by `# <title>` when the chunk lacks the title.
+
+The loop also found two limits:
+
+- Any change that rewrites every (query, chunk) pair runs cold and takes 20–40 minutes per eval.
+  Stripping frontmatter from the text sent to the reranker and adding the display path both ran
+  out of the eval budget and were never measured.
+- Removing the title lead from the final version drops train to 0.7227, so the title lead is worth
+  about 0.007 on its own.

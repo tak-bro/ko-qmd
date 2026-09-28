@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+- `QMD_RERANK_CACHE=<path>` keeps rerank scores in their own sqlite file instead of the index's
+  `llm_cache`, so a store over a rebuilt index reuses them. The key carries the query, the rerank
+  model, the doc-token cap and the chunk text, not the scoring code in `src/llm.ts`, so the file is
+  safe across index rebuilds with the same reranker code. It is not trimmed to 1000 rows. With it
+  set, a second `scripts/bench-ko.sh` run on ko-vault gives the same lines and its `full` backend
+  spends 3.7 s reranking instead of 300 s (the whole run drops from 5:17 to 0:56). Unset, nothing
+  changes. A fallback result (no rerank context could be created, every score 0.5) is no longer
+  cached in either place.
+
+- The reranker now sees a better chunk of a long Korean note. The chunk is chosen by the
+  two-syllable pairs of the query's Hangul words of three or more syllables, instead of whole
+  words, so `임베딩은` still finds a chunk about `임베딩`. Generic two-syllable words such as 방법
+  and 경우 no longer steer the choice. A query word with no Hangul (an English term, say) counts double. When the chosen chunk
+  does not contain the note title, `# <title>` is put in front of it. An autonomous loop
+  (`scripts/autoresearch/`) found this over 28 experiments on a goldset generated from a private
+  vault. The goldset's held-out split, which the loop never saw, goes from full MRR 0.6589 to
+  0.7260 (32 queries). ko-vault seam and hard lines are unchanged. The bm25, vector and hybrid
+  results do not read the rerank input and are identical on both sets (`BASELINE.md`
+  2026-09-28). An intent word now counts 1 point in chunk selection (was 0.5), keeping it at half a
+  query word now that a non-Hangul query word counts 2; no goldset carries intent, so no bench
+  number moves.
+
+- The reranker's input (the query string, which chunk of each candidate is sent and the document
+  text) is now built in `src/rerank-input.ts` for both `hybridQuery` and `structuredSearch`, which
+  had copied the chunk-scoring loop. Results are unchanged.
+
 - A Korean query of the form "X 말고 Y" now searches for Y alone. `hybridQuery` (CLI `qmd query`,
   plain MCP `query`) and the `lex`/`vec` lines of `structuredSearch` (MCP `searches`, typed lines)
   drop everything up to the last whitespace-separated 말고, 빼고, 제외하고 or 제외한. The rerank
