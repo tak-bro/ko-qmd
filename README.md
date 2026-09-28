@@ -1,13 +1,20 @@
-# ko-qmd
+# ko-qmd — 한국어 마크다운 노트를 위한 로컬 하이브리드 검색 엔진
 
-한국어 마크다운 노트를 위한 로컬 검색 엔진. [tobi/qmd](https://github.com/tobi/qmd)(MIT)의 한국어 배포판이다.
-노트·회의록·문서를 색인해 키워드로도 자연어로도 찾고, 에이전트가 CLI·MCP·REST·SDK 로 쓴다.
-모든 모델은 [node-llama-cpp](https://github.com/withcatai/node-llama-cpp) 로 로컬에서 돈다(GGUF, 네트워크 호출 없음).
+[![npm](https://img.shields.io/npm/v/ko-qmd?label=npm%20ko-qmd)](https://www.npmjs.com/package/ko-qmd)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+**한국어** · [English](README.en.md)
+
+**ko-qmd 는 한국어 마크다운 노트(Obsidian 볼트·위키·회의록·문서 폴더)를 키워드와 자연어로 찾는 로컬 검색 엔진이다.**
+BM25 전문 검색, 벡터 검색, LLM 리랭크를 섞어 쓰고, 조사·어미가 붙은 한국어 질의도 어간으로 찾는다.
+모든 모델이 [node-llama-cpp](https://github.com/withcatai/node-llama-cpp) 로 내 컴퓨터에서 돌아 노트가 밖으로 나가지 않는다(GGUF, 네트워크 호출 없음).
+AI 에이전트(Claude Code·Claude Desktop 등)는 CLI·MCP 서버·REST·TypeScript SDK 로 쓴다.
+[tobi/qmd](https://github.com/tobi/qmd)(MIT)의 한국어 배포판이다.
 
 - 패키지: `ko-qmd` (npm). 실행 파일과 MCP 서버 이름은 업스트림과 같은 `qmd`
-- 버전: `<업스트림 버전>-ko.N` (예: `2.8.3-ko.4`)
+- 버전: `<업스트림 버전>-ko.N` (예: `2.8.3-ko.5`)
 - 영어 레퍼런스(전체 CLI 옵션·MCP 툴 파라미터·SDK API·점수 계산): [docs/REFERENCE.md](docs/REFERENCE.md)
-- 변경 이력: [CHANGELOG.md](CHANGELOG.md)
+- 변경 이력: [CHANGELOG.md](CHANGELOG.md) · 자주 묻는 질문: [FAQ](#자주-묻는-질문)
 
 ```mermaid
 flowchart LR
@@ -33,6 +40,7 @@ flowchart LR
 - **긴 질의 완화** — 세 단어 이상 질의가 AND 로 한 건도 안 맞으면 같은 단어를 OR 로 다시 찾는다. 자연어 문장 질의가 0건이 되지 않는다.
 - **음절 bigram 색인** — 한글 구간의 음절 bigram 을 FTS 필드에 덧붙인다. 붙여 쓴 복합어 안의 단어도 걸린다.
   기존 인덱스는 처음 열 때 FTS 를 한 번 다시 만든다.
+- **부정 절 제거** — "X 말고 Y" 꼴 질의는 Y 만 찾는다(`말고`·`빼고`·`제외하고`·`제외한`).
 
 ### 기본 모델과 청킹
 
@@ -51,6 +59,7 @@ flowchart LR
   질의당 약 1초에서 수십 ms 로 줄었다(BASELINE.md 2026-09-26). 영어 질의는 그대로 확장한다.
 - 리랭커가 실제로 1위를 바꿀 수 있게 점수 블렌드를 고쳤다. 검색 순위 항은 블렌드의 10% 인 선형 감쇠다.
   이전 블렌드에서는 리랭크 점수와 상관없이 검색 1위가 그대로 남았다.
+- 리랭커에는 질의의 한글 음절 bigram 이 가장 많이 겹치는 청크를 보내고, 청크에 노트 제목이 없으면 제목을 앞에 붙인다.
 
 ### 검색 범위와 도구
 
@@ -76,7 +85,7 @@ flowchart LR
 ## 설치
 
 ```sh
-npm install -g ko-qmd            # 또는 버전 핀: ko-qmd@2.8.3-ko.4
+npm install -g ko-qmd            # 또는 버전 핀: ko-qmd@2.8.3-ko.5
 ```
 
 - 업스트림 `@tobilu/qmd` 와 실행 파일 이름이 같아 함께 둘 수 없다. `npm uninstall -g @tobilu/qmd` 뒤 설치한다.
@@ -251,6 +260,28 @@ bun run lint && bun run test:types && bun run test:unit && bash scripts/bench-ko
   같은 이유로 이 브랜치는 squash·rebase 하지 않고, `develop`·`main` 을 upstream 위로 rebase 하지 않는다.
 - `pnpm install --frozen-lockfile --lockfile-only` 가 통과해야 한다. 낡은 `pnpm-lock.yaml` 은 GitHub 설치(`prepare`)와 릴리스 태그의 pre-push 검사를 막는다.
 - 업스트림 태그 위에 있을 때만 `v<업스트림 버전>-ko.N` 태그를 쓴다. `main` 스냅샷이면 버전은 마지막 태그 기준이다.
+
+## 자주 묻는 질문
+
+### ko-qmd 는 무엇인가?
+한국어 마크다운 노트를 로컬에서 검색하는 CLI·MCP 서버·SDK 다. 업스트림 qmd 에 한국어 조사·어미 처리, 한글 음절 bigram 색인,
+한국어에 맞춘 기본 임베딩(Qwen3-Embedding)과 융합 가중치를 더했다.
+
+### 업스트림 qmd 로 한국어를 검색하면 무엇이 안 되나?
+업스트림의 BM25 는 `검색을`·`청킹에서의` 처럼 조사가 붙은 단어를 다른 토큰으로 본다. 그래서 `검색` 이라고 적은 노트를 놓친다.
+ko-vault 벤치(질의 52)에서 bm25 recall@5 는 업스트림 2.8.3 의 0.6250 에서 이 배포판의 0.9519 로 올랐다([BASELINE.md](test/fixtures/ko-vault/BASELINE.md)).
+
+### Obsidian 볼트를 그대로 검색할 수 있나?
+그렇다. 볼트 폴더를 `qmd collection add <볼트 경로> --name <이름>` 으로 등록하면 그 안의 `*.md` 를 색인한다. 볼트 파일은 읽기만 한다.
+
+### 인터넷 연결이나 API 키가 필요한가?
+아니다. 임베딩·리랭크·질의 확장 모델은 처음 쓸 때 한 번 내려받고(`~/.cache/qmd/models/`), 그 뒤로는 오프라인에서 돈다.
+
+### Claude Code 같은 AI 에이전트에 붙이려면?
+`qmd mcp`(stdio) 또는 `qmd mcp --http --daemon`(HTTP, 여러 세션이 모델 공유)으로 MCP 서버를 띄운다. [에이전트에서 쓰기](#에이전트에서-쓰기) 참고.
+
+### 영어 노트도 되나?
+된다. 영어 질의와 영어 문서의 청크 경계·질의 확장은 업스트림과 같게 동작한다. 한국어와 영어가 섞인 노트도 한 인덱스에서 찾는다.
 
 ## 라이선스
 
