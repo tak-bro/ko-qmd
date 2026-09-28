@@ -14,7 +14,7 @@
 - The reranker now sees a better chunk of a long Korean note. The chunk is chosen by the
   two-syllable pairs of the query's Hangul words of three or more syllables, instead of whole
   words, so `임베딩은` still finds a chunk about `임베딩`. Generic two-syllable words such as 방법
-  and 경우 no longer steer the choice. An English query word counts double. When the chosen chunk
+  and 경우 no longer steer the choice. A query word with no Hangul (an English term, say) counts double. When the chosen chunk
   does not contain the note title, `# <title>` is put in front of it. An autonomous loop
   (`scripts/autoresearch/`) found this over 28 experiments on a goldset generated from a private
   vault. The goldset's held-out split, which the loop never saw, goes from full MRR 0.6589 to

@@ -13,7 +13,7 @@ export type RerankChunk = { text: string; pos: number };
 /** Candidate metadata a document text may draw on besides the chunk. */
 export type RerankDocMeta = { file: string; title: string; displayPath: string };
 
-/** Weight for intent terms relative to query terms (1.0) in chunk selection */
+/** Weight of an intent term in chunk selection; a non-Hangul query word counts 2, a Hangul bigram 1 */
 export const INTENT_WEIGHT_CHUNK = 0.5;
 
 /** The reranker's query: intent, a blank line, then the query; the query alone without intent. */
@@ -29,7 +29,7 @@ const hangulBigrams = (text: string): string[] =>
 
 /**
  * Index of the chunk to rerank: the one containing the most query words longer than two
- * characters (two points each) plus query Hangul syllable bigrams, each intent word adding half a point.
+ * characters with no Hangul (two points each) plus query Hangul syllable bigrams, each intent word adding half a point.
  * Case-insensitive substring match; a tie keeps the earlier chunk, and no match picks the first.
  */
 export const selectRerankChunk = (chunks: RerankChunk[], query: string, intentTerms: string[]): number => {

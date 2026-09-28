@@ -918,7 +918,7 @@ scored 0.001–0.01 lower on train, so the finer weights (ASCII ×2, three-sylla
 to this goldset. The adopted rules:
 
 - chunk selection counts query Hangul syllable bigrams, taken only from Hangul runs of three or
-  more syllables, plus two points per ASCII query word longer than two characters. Intent words
+  more syllables, plus two points per query word with no Hangul longer than two characters. Intent words
   still add half a point.
 - the document text is the chunk, led by `# <title>` when the chunk lacks the title.
 
