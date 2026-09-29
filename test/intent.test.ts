@@ -20,6 +20,7 @@ import {
   INTENT_WEIGHT_CHUNK,
   type ExpandedQuery,
 } from "../src/store.js";
+import { rerankChunkScorer } from "../src/rerank-input.js";
 
 // =============================================================================
 // parseStructuredQuery — duplicated from src/cli/qmd.ts for unit testing
@@ -298,16 +299,10 @@ describe("extractSnippet intent weight behavior", () => {
 // =============================================================================
 
 describe("intent keyword extraction logic", () => {
-  // Mirrors selectRerankChunk's scoring for non-Hangul queries (Hangul bigrams are pinned in
-  // rerank-input.test.ts), using the shared extractIntentTerms helper and INTENT_WEIGHT_CHUNK.
-  function scoreChunk(text: string, query: string, intent?: string): number {
-    const queryTerms = query.toLowerCase().split(/\s+/).filter(t => t.length > 2 && !/[가-힣]/.test(t));
-    const intentTerms = intent ? extractIntentTerms(intent) : [];
-    const lower = text.toLowerCase();
-    const qScore = queryTerms.reduce((acc, term) => acc + (lower.includes(term) ? 2 : 0), 0);
-    const iScore = intentTerms.reduce((acc, term) => acc + (lower.includes(term) ? INTENT_WEIGHT_CHUNK : 0), 0);
-    return qScore + iScore;
-  }
+  // The chunk-selection score (before the first chunk's head start), with intent terms as the search
+  // paths extract them.
+  const scoreChunk = (text: string, query: string, intent?: string): number =>
+    rerankChunkScorer(query, intent ? extractIntentTerms(intent) : [])(text);
 
   const chunks = [
     "Web performance: optimize page load times, reduce latency, improve rendering pipeline.",

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+- The reranker now gets a note's first chunk, its title and summary: the first chunk starts 16
+  points ahead in chunk selection (8 when an intent is given, so intent words can still pick a later
+  chunk). A later chunk needs 17 more points, about nine English words or seventeen Hangul syllable
+  pairs, so for a typical short query the first chunk is always sent. A second autoresearch loop found
+  this on a goldset of 320 train and 71 held-out queries drawn from four vault folders. Held-out full
+  MRR goes 0.7291 → 0.7459, ko-vault seam and hard lines are unchanged, and bm25, vector and hybrid
+  results are identical (`BASELINE.md` 2026-09-29).
+
 - `QMD_RERANK_CACHE=<path>` keeps rerank scores in their own sqlite file instead of the index's
   `llm_cache`, so a store over a rebuilt index reuses them. The key carries the query, the rerank
   model, the doc-token cap and the chunk text, not the scoring code in `src/llm.ts`, so the file is

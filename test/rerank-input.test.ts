@@ -4,7 +4,14 @@
  */
 
 import { describe, test, expect } from "vitest";
-import { formatRerankDoc, formatRerankQuery, selectRerankChunk } from "../src/rerank-input.js";
+import {
+  FIRST_CHUNK_HEAD_START,
+  FIRST_CHUNK_HEAD_START_WITH_INTENT,
+  formatRerankDoc,
+  formatRerankQuery,
+  rerankChunkScorer,
+  selectRerankChunk,
+} from "../src/rerank-input.js";
 
 const chunks = (...texts: string[]) => texts.map((text, i) => ({ text, pos: i * 100 }));
 
@@ -19,35 +26,45 @@ describe("formatRerankQuery", () => {
   });
 });
 
-describe("selectRerankChunk", () => {
-  test("picks the chunk with the most query words, case-insensitively", () => {
-    expect(selectRerankChunk(chunks("intro text", "BM25 ranking formula", "ranking only"), "bm25 ranking", [])).toBe(1);
-  });
-
-  test("ignores query words of two characters or fewer", () => {
-    expect(selectRerankChunk(chunks("an of to", "tokenizer notes"), "an of tokenizer", [])).toBe(1);
-  });
-
-  test("an intent word counts half a non-Hangul query word", () => {
-    expect(selectRerankChunk(chunks("latency budget cost", "ranking formula"), "ranking", ["latency", "budget", "cost"])).toBe(0);
-    expect(selectRerankChunk(chunks("latency", "ranking"), "ranking", ["latency"])).toBe(1);
+describe("rerankChunkScorer", () => {
+  test("a non-Hangul query word longer than two characters counts two points, case-insensitively", () => {
+    expect(rerankChunkScorer("BM25 ranking of", [])("bm25 RANKING formula")).toBe(4);
   });
 
   test("a Hangul query matches by syllable bigrams, so a particle-suffixed word finds its stem", () => {
-    expect(selectRerankChunk(chunks("서론", "임베딩 모델을 바꾼다"), "임베딩은 어떻게", [])).toBe(1);
+    expect(rerankChunkScorer("임베딩은 어떻게", [])("임베딩 모델을 바꾼다")).toBe(2);
   });
 
   test("a Hangul word of two syllables does not count", () => {
-    expect(selectRerankChunk(chunks("다른 내용", "방법 목록"), "방법", [])).toBe(0);
+    expect(rerankChunkScorer("방법", [])("방법 목록")).toBe(0);
   });
 
-  test("an ASCII query word outweighs one Hangul bigram", () => {
-    expect(selectRerankChunk(chunks("임베 설명", "bm25 설명"), "bm25 임베딩", [])).toBe(1);
+  test("an intent word counts one point, half a non-Hangul query word", () => {
+    expect(rerankChunkScorer("ranking", ["latency"])("latency ranking")).toBe(3);
+  });
+});
+
+describe("selectRerankChunk", () => {
+  const many = "alpha beta gamma delta epsilon zeta eta theta iota";
+
+  test("the first chunk wins unless a later one out-scores it by the head start", () => {
+    // Nine words = 18 points against the first chunk's head start of 16.
+    expect(selectRerankChunk(chunks("intro", many), many, [])).toBe(1);
+    expect(selectRerankChunk(chunks("intro", "alpha beta gamma delta"), many, [])).toBe(0);
+    expect(FIRST_CHUNK_HEAD_START).toBe(16);
+  });
+
+  test("with intent the head start is halved, so intent words can steer to a later chunk", () => {
+    const intent = ["latency", "budget", "cost", "throughput", "memory"];
+    // ranking (2) + five intent words (5) = 7 stays under the halved head start of 8; alpha (2) more makes 9.
+    expect(selectRerankChunk(chunks("intro", `ranking latency budget cost throughput memory`), "ranking", intent)).toBe(0);
+    expect(selectRerankChunk(chunks("intro", `ranking alpha latency budget cost throughput memory`), "ranking alpha", intent)).toBe(1);
+    expect(FIRST_CHUNK_HEAD_START_WITH_INTENT).toBe(8);
   });
 
   test("a tie keeps the earlier chunk, and no match picks the first", () => {
-    expect(selectRerankChunk(chunks("ranking a", "ranking b"), "ranking", [])).toBe(0);
     expect(selectRerankChunk(chunks("alpha", "beta"), "gamma", [])).toBe(0);
+    expect(selectRerankChunk(chunks("intro", "x", many), many, [])).toBe(2);
   });
 });
 
