@@ -932,3 +932,34 @@ The loop also found two limits:
   out of the eval budget and were never measured.
 - Removing the title lead from the final version drops train to 0.7227, so the title lead is worth
   about 0.007 on its own.
+
+## 2026-09-29 — rerank-input autoresearch, second loop: the first chunk's head start
+
+The goldset grew to 399 corpus documents (wiki plus three sibling folders of the same private
+vault) and 545 generated queries. Review dropped 154 more: questions whose answer was a run log, a
+weekly report or a lint report (several documents answer them equally), two whose answer held pay
+data, and seven too generic to have one answer. That leaves 320 train and 71 held-out queries. The
+first loop's split is unchanged; the new documents were split on their own.
+
+The keep rule was the first loop's, restated against the new reference after the loop ran rather
+than before it: held-out `full_mrr` at or above the reference, ko-vault lines unchanged, and
+bm25/vector/hybrid `top_files` identical.
+
+| check | reference (`d418abc`) | loop best | pass |
+|---|---|---|---|
+| train `full_mrr` (320) | 0.6589 | 0.7004 | — |
+| held-out `full_mrr` (71) | 0.7291 | 0.7459 | yes |
+| ko-vault seam / hard `full_mrr` | 0.9308 / 0.8287 | same | yes |
+| held-out bm25/vector/hybrid `top_files` | — | same | yes |
+
+RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.9211 full_r5=0.9588 full_mrr=0.9308
+RESULT-HARD hybrid_r1=0.4111 hybrid_mrr=0.6356 full_r1=0.6111 full_mrr=0.8287 n=30 tol=0 form=seam
+
+The loop ran 32 experiments (16 kept, 16 discarded). A head start for the first chunk rose
+steadily: +1 0.6751, +2 0.6829, +4 0.6954, +8 0.6996, +16 0.7004, and +32 tied +16. Under it,
+four earlier gains (a question-wording stoplist, a densest-window score, and two trigram bonuses)
+no longer moved train and were removed. Held-out rose by 0.017 against train's 0.042.
+
+The loop turned the head start off whenever intent was given, so intent words could still pick a
+later chunk. Review changed that to half the head start (8): a single intent word would otherwise
+switch the rule off entirely. No goldset carries intent, so this moves no number.

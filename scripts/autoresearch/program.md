@@ -25,7 +25,8 @@ ask questions, and you do not stop until the time budget is spent.
 
 - **Only `src/rerank-input.ts`.** It decides three things:
   - `formatRerankQuery` — the query string the reranker scores against (intent + query today)
-  - `selectRerankChunk` — which chunk of each candidate is sent (most query-word hits today)
+  - `selectRerankChunk` — which chunk of each candidate is sent (today: the first chunk, with a
+    16-point head start, 8 with intent, over the chunk with the most query-word hits)
   - `formatRerankDoc` — the document text built from that chunk (the chunk alone today; it may
     use the candidate's `title`, `file` and `displayPath`)
 - You may add pure helpers inside that file. You may not add dependencies.
