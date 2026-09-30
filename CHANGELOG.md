@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+- `scripts/autoresearch/prepare.sh` builds the goldset from more than the collection folder and over
+  several runs. `AR_EXTRA_DIRS="outputs docs"` copies sibling folders of the collection into the corpus
+  (names only, so no vault path lands in git), `AR_RUN=N` writes `generated-N.json` from documents no
+  earlier run answered (`bench-vault-paraphrase.ts --dirs`, `--skip`), and `split` merges every run,
+  drops the query ids listed in `dropped.txt`, and splits only each run's new documents, so an earlier
+  train/held-out assignment never moves.
+
 - The reranker now gets a note's first chunk, its title and summary: the first chunk starts 16
   points ahead in chunk selection (8 when an intent is given, so intent words can still pick a later
   chunk). A later chunk needs 17 more points, about nine English words or seventeen Hangul syllable
