@@ -33,10 +33,11 @@ import {
 import { getConfigPath } from "../collections.js";
 import { enableProductionMode } from "../store.js";
 import { checkRequestOrigin, resolveOriginGuard } from "./origin-guard.js";
-import { entryFromMcp, entryFromRest, logQuery, queryLogStatus } from "../query-log.js";
+import { entryFromMcp, entryFromRest, isoWithOffset, logQuery, queryLogStatus, type QueryLogStages, type QueryLogTimeout } from "../query-log.js";
+import { formatDaemonHealthLine, resolveHealthLogIntervalMs } from "./daemon-health.js";
 import { createStoreIndexRefresher, type IndexRefresher } from "../refresh.js";
 import { buildDocumentFilter, describeFilter, type DocumentFilter } from "../filters.js";
-import { countFilteredDocuments } from "../store.js";
+import { countFilteredDocuments, type SearchHooks } from "../store.js";
 import { normalizeRerankMaxDocTokens } from "../llm.js";
 import { compileGrepPattern, grepDocuments } from "../grep.js";
 
@@ -144,6 +145,64 @@ function getPackageVersion(): string {
  * its own last pass are what stop every query from walking the collection again.
  */
 const refreshers = new WeakMap<QMDStore, IndexRefresher>();
+
+/**
+ * ko-qmd: per-stage milliseconds for the query log. The hooks fill `stages` as
+ * the search runs; the caller adds `refresh` and `serialize` around it. A stage
+ * past its deadline lands in `timeouts`, with the ms it was waited on.
+ */
+function stageTimer(): { stages: QueryLogStages; timeouts: QueryLogTimeout[]; hooks: SearchHooks } {
+  const stages: QueryLogStages = {};
+  const timeouts: QueryLogTimeout[] = [];
+  return {
+    stages,
+    timeouts,
+    hooks: {
+      // A stage skipped outright (an abandoned call still running) gets no ms: absent, never 0.
+      onDeadline: (stage, ms) => { if (ms !== undefined) stages[stage] = ms; timeouts.push(stage); },
+      onModelLoad: (_stage, ms) => { stages.load = (stages.load ?? 0) + ms; },
+      // An empty list means expansion was skipped (pre-typed searches, Hangul, strong BM25 signal)
+      // or the model returned nothing; either way there are no expanded queries to account for.
+      onExpand: (_query, expanded, ms) => { if (expanded.length > 0) stages.expand = ms; },
+      onFtsDone: (ms) => { stages.fts = ms; },
+      onEmbedDone: (ms) => { stages.embed = ms; },
+      onVecDone: (ms) => { stages.vec = ms; },
+      onChunkDone: (ms) => { stages.chunk = ms; },
+      onRerankDone: (ms) => { stages.rerank = ms; },
+    },
+  };
+}
+
+/**
+ * ko-qmd: how long the daemon waits for query expansion and for the reranker before answering
+ * without them. QMD_EXPAND_DEADLINE_MS / QMD_RERANK_DEADLINE_MS: 0 = wait, a positive integer =
+ * that many ms, anything else = the default. One MCP query once took 85 s.
+ */
+const DEFAULT_EXPAND_DEADLINE_MS = 5_000;
+const DEFAULT_RERANK_DEADLINE_MS = 10_000;
+export function resolveDeadlineMs(envValue: string | undefined, fallback: number): number {
+  return envValue !== undefined && /^\d+$/.test(envValue) ? Number(envValue) : fallback;
+}
+function searchDeadlines(): { expandDeadlineMs: number; rerankDeadlineMs: number } {
+  return {
+    expandDeadlineMs: resolveDeadlineMs(process.env.QMD_EXPAND_DEADLINE_MS, DEFAULT_EXPAND_DEADLINE_MS),
+    rerankDeadlineMs: resolveDeadlineMs(process.env.QMD_RERANK_DEADLINE_MS, DEFAULT_RERANK_DEADLINE_MS),
+  };
+}
+
+/** `timeouts` for a search response — absent when every stage finished in time. */
+function timeoutField(timeouts: QueryLogTimeout[]): { timeouts?: QueryLogTimeout[] } {
+  return timeouts.length > 0 ? { timeouts } : {};
+}
+
+/** A line telling an agent its results were not reranked or not expanded, so it does not read scores as confident. */
+function describeTimeouts(timeouts: QueryLogTimeout[]): string {
+  if (timeouts.length === 0) return "";
+  const parts = timeouts.map(t => t === "rerank"
+    ? "the reranker timed out, so results are in retrieval order and scores are 1/rank"
+    : "query expansion timed out, so only the original query was searched");
+  return `\n\nNote: ${parts.join("; ")}.`;
+}
 
 /**
  * Bring the text index up to date for the collections a query is about to search. Never
@@ -506,7 +565,10 @@ Intent-aware lex (C++ performance, not sports):
         ? { query }
         : { queries: (searches ?? []).map(s => ({ type: s.type, query: s.query })) };
 
+      const timer = stageTimer();
+      const refreshStart = Date.now();
       await refreshBeforeQuery(store, effectiveCollections);
+      timer.stages.refresh = Date.now() - refreshStart;
 
       const results = await store.search({
         ...searchOptions,
@@ -520,7 +582,10 @@ Intent-aware lex (C++ performance, not sports):
         explain: rerank === false,
         intent,
         scope,
+        ...searchDeadlines(),
+        hooks: timer.hooks,
       });
+      const serializeStart = Date.now();
 
       // Use the plain query, or the first lex/vec sub-query, for snippet extraction
       const primaryQuery = query
@@ -544,7 +609,9 @@ Intent-aware lex (C++ performance, not sports):
         };
       });
 
-      // ko-qmd: opt-in query log (QMD_QUERY_LOG), HTTP transport only.
+      // ko-qmd: opt-in query log (QMD_QUERY_LOG), HTTP transport only. `serialize` here is snippet
+      // extraction only — the SDK writes the response after this handler returns.
+      timer.stages.serialize = Date.now() - serializeStart;
       if (httpHeaders) {
         logQuery(entryFromMcp({
           headers: httpHeaders,
@@ -555,6 +622,8 @@ Intent-aware lex (C++ performance, not sports):
           rerank,
           results: filtered,
           ms: Date.now() - startedAt,
+          stages: timer.stages,
+          timeouts: timer.timeouts,
         }), store);
       }
 
@@ -563,9 +632,9 @@ Intent-aware lex (C++ performance, not sports):
           type: "text",
           text: filtered.length === 0 && scope
             ? describeEmptyFilteredSearch(store, scope, effectiveCollections)
-            : formatSearchSummary(filtered, primaryQuery),
+            : formatSearchSummary(filtered, primaryQuery) + describeTimeouts(timer.timeouts),
         }],
-        structuredContent: { results: filtered },
+        structuredContent: { results: filtered, ...timeoutField(timer.timeouts) },
       };
     })
   );
@@ -1136,7 +1205,7 @@ export async function startMcpHttpServer(
 
   /** Format timestamp for request logging */
   function ts(): string {
-    return new Date().toISOString().slice(11, 23); // HH:mm:ss.SSS
+    return isoWithOffset(new Date()); // ko-qmd: dated local time, so a log line can be matched to a query-log row
   }
 
   type JsonRpcLikeBody = {
@@ -1173,6 +1242,14 @@ export async function startMcpHttpServer(
   function log(msg: string): void {
     if (!quiet) console.error(msg);
   }
+
+  // ko-qmd: /mcp requests whose response has not ended — a `subscriptions/listen` stays open for
+  // as long as its client keeps it, so these are what the hourly health line counts.
+  const openMcp = { listens: 0, inflight: 0 };
+  const healthIntervalMs = resolveHealthLogIntervalMs();
+  const healthTimer = healthIntervalMs > 0
+    ? setInterval(() => log(`${ts()} ${formatDaemonHealthLine(process.memoryUsage(), openMcp, Date.now() - startTime)}`), healthIntervalMs).unref()
+    : null;
 
   function nodeHeadersToWeb(nodeReq: IncomingMessage): Headers {
     const headers = new Headers();
@@ -1300,7 +1377,10 @@ export async function startMcpHttpServer(
           return;
         }
 
+        const timer = stageTimer();
+        const refreshStart = Date.now();
         await refreshBeforeQuery(store, effectiveCollections);
+        timer.stages.refresh = Date.now() - refreshStart;
 
         const rerank = typeof params.rerank === "boolean" ? params.rerank : undefined;
         const results = await store.search({
@@ -1316,7 +1396,10 @@ export async function startMcpHttpServer(
           // rerank:false scores are 1/rank; explain carries the raw backend scores.
           explain: rerank === false,
           scope: restScope,
+          ...searchDeadlines(),
+          hooks: timer.hooks,
         });
+        const serializeStart = Date.now();
 
         // Use first lex or vec query for snippet extraction
         const primaryQuery = searches.find((s) => s.type === 'lex')?.query
@@ -1339,9 +1422,10 @@ export async function startMcpHttpServer(
         });
 
         nodeRes.writeHead(200, { "Content-Type": "application/json" });
-        nodeRes.end(JSON.stringify({ results: formatted }));
+        nodeRes.end(JSON.stringify({ results: formatted, ...timeoutField(timer.timeouts) }));
+        timer.stages.serialize = Date.now() - serializeStart;
         // ko-qmd: opt-in query log (QMD_QUERY_LOG), written after the response.
-        logQuery(entryFromRest({ path: pathname, headers: nodeReq.headers, searches: queries, params, collections: effectiveCollections, results: formatted, ms: Date.now() - reqStart }), store);
+        logQuery(entryFromRest({ path: pathname, headers: nodeReq.headers, searches: queries, params, collections: effectiveCollections, results: formatted, ms: Date.now() - reqStart, stages: timer.stages, timeouts: timer.timeouts }), store);
         log(`${ts()} POST /query ${params.searches.length} queries (${Date.now() - reqStart}ms)`);
         return;
       }
@@ -1368,13 +1452,21 @@ export async function startMcpHttpServer(
           headers: nodeHeadersToWeb(nodeReq),
           ...(rawBody !== undefined ? { body: rawBody } : {}),
         });
-        const response = await mcpHandler.fetch(
-          request,
-          parsedBody !== undefined ? { parsedBody } : undefined,
-        );
+        const isListen = label === "subscriptions/listen";
+        openMcp.inflight++;
+        if (isListen) openMcp.listens++;
+        try {
+          const response = await mcpHandler.fetch(
+            request,
+            parsedBody !== undefined ? { parsedBody } : undefined,
+          );
 
-        nodeRes.writeHead(response.status, Object.fromEntries(response.headers));
-        nodeRes.end(Buffer.from(await response.arrayBuffer()));
+          nodeRes.writeHead(response.status, Object.fromEntries(response.headers));
+          nodeRes.end(Buffer.from(await response.arrayBuffer()));
+        } finally {
+          openMcp.inflight--;
+          if (isListen) openMcp.listens--;
+        }
         log(`${ts()} ${nodeReq.method} /mcp ${label} (${Date.now() - reqStart}ms)`);
         return;
       }
@@ -1399,6 +1491,7 @@ export async function startMcpHttpServer(
   const stop = async () => {
     if (stopping) return;
     stopping = true;
+    if (healthTimer) clearInterval(healthTimer);
     await mcpHandler.close();
     httpServer.close();
     await store.close();

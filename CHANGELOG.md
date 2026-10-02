@@ -2,6 +2,50 @@
 
 ## [Unreleased]
 
+The query path is now observable and bounded. Every query-log row breaks its latency into
+stages, the daemon logs its heap once an hour, and expansion and rerank stop waiting past a
+deadline instead of holding a query for 85 s. The reranker also sees a note's first chunk by default.
+
+- `qmd mcp` (stdio and HTTP) no longer waits on a slow LLM stage without bound. Past
+  `QMD_EXPAND_DEADLINE_MS` (default 5 s) a query searches its original text alone, and past
+  `QMD_RERANK_DEADLINE_MS` (default 10 s) it answers in RRF order; `0` restores waiting. The clock
+  starts once the model is loaded, so a cold start or a reload after the idle unload is not a timeout;
+  the query log records that wait as a `load` stage. One MCP `query` with expansion and rerank took
+  85 s. The REST `/query` response and the MCP `query` tool say which stage timed out (`timeouts`),
+  the query log row lists it the same way, and a timed-out rerank reads `rerank: "timeout"` there.
+  A fallback does not apply `minScore` to its 1/rank scores. An abandoned expansion or rerank keeps
+  running and fills its cache; until it finishes, later queries skip that stage (logged once) instead
+  of queueing behind it. The CLI search commands and the SDK (`rerankDeadlineMs`, `expandDeadlineMs`
+  options) never set a deadline on their own.
+
+- The daemon's query log row now carries `stages`, the milliseconds spent in each stage of the
+  search: `refresh` (the pre-query re-index check), `expand`, `fts`, `embed`, `vec`, `chunk`,
+  `rerank` and `serialize`; a stage that did not run is absent. REST `rerank:false` queries had a p95 of 2.9–5.3 s
+  against a p50 of 0.2–0.5 s with no rerank in the path, and the single `ms` could not say which
+  stage the tail came from. Daemon log lines now start with a dated local ISO timestamp instead of
+  a UTC `HH:mm:ss.SSS`, so a slow line can be matched to its row.
+
+- The HTTP daemon logs a `health` line every hour: heap used and total, rss, and how many
+  `subscriptions/listen` and other `/mcp` requests have a handler still waiting on its response. A daemon that ran ten days died with
+  "Reached heap limit" after its heap crept to 3.8 GB under idle discover/cancelled traffic, and
+  nothing in the log showed the slope or what was holding memory. `QMD_HEALTH_LOG_INTERVAL_MS`
+  changes the interval; `0` turns it off.
+
+- `scripts/autoresearch/prepare.sh` builds the goldset from more than the collection folder and over
+  several runs. `AR_EXTRA_DIRS="outputs docs"` copies sibling folders of the collection into the corpus
+  (names only, so no vault path lands in git), `AR_RUN=N` writes `generated-N.json` from documents no
+  earlier run answered (`bench-vault-paraphrase.ts --dirs`, `--skip`), and `split` merges every run,
+  drops the query ids listed in `dropped.txt`, and splits only each run's new documents, so an earlier
+  train/held-out assignment never moves.
+
+- The reranker now gets a note's first chunk, its title and summary: the first chunk starts 16
+  points ahead in chunk selection (8 when an intent is given, so intent words can still pick a later
+  chunk). A later chunk needs 17 more points, about nine English words or seventeen Hangul syllable
+  pairs, so for a typical short query the first chunk is always sent. A second autoresearch loop found
+  this on a goldset of 320 train and 71 held-out queries drawn from four vault folders. Held-out full
+  MRR goes 0.7291 → 0.7459, ko-vault seam and hard lines are unchanged, and bm25, vector and hybrid
+  results are identical (`BASELINE.md` 2026-09-29).
+
 ## [2.8.3-ko.6] - 2026-09-29
 
 Korean queries are handled better before and during reranking. A query written

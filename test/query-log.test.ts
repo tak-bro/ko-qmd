@@ -128,6 +128,27 @@ describe("row", () => {
     expect(JSON.stringify(row)).not.toMatch(/snippet|body/);
   });
 
+  test("per-stage timings ride along when the caller measured them and stay absent otherwise", async () => {
+    logQuery(baseEntry({ stages: { refresh: 3, embed: 40, rerank: 900 } }), fakeStore);
+    logQuery(baseEntry(), fakeStore);
+    await flushQueryLog();
+    const [timed, untimed] = readRows();
+    expect(timed.stages).toEqual({ refresh: 3, embed: 40, rerank: 900 });
+    expect(untimed).not.toHaveProperty("stages");
+  });
+
+  test("a stage past its deadline is listed in timeouts, and a timed-out rerank reads rerank:\"timeout\"", async () => {
+    logQuery(baseEntry({ rerank: true, stages: { rerank: 10_000 }, timeouts: ["rerank"] }), fakeStore);
+    logQuery(baseEntry({ rerank: true, timeouts: [] }), fakeStore);
+    await flushQueryLog();
+    const [timedOut, onTime] = readRows();
+    expect(timedOut.rerank).toBe("timeout");
+    expect(timedOut.timeouts).toEqual(["rerank"]);
+    expect(timedOut.stages).toEqual({ rerank: 10_000 });
+    expect(onTime.rerank).toBe(true);
+    expect(onTime).not.toHaveProperty("timeouts");
+  });
+
   test("raw backend scores ride along when present and stay absent otherwise", async () => {
     logQuery(baseEntry({
       results: [

@@ -48,6 +48,29 @@ type StatusSource = { getStatus(): Promise<IndexStatus> };
  */
 export type QueryLogResult = { file: string; score: number; vec_score?: number; fts_score?: number };
 
+/**
+ * Milliseconds each stage of one search took. A stage that did not run is
+ * absent, never 0: `refresh` is the pre-query re-index check, `expand` the LLM
+ * query expansion, `fts` the BM25 lookups, `embed` the query embeddings, `vec`
+ * the sqlite-vec lookups, `chunk` splitting candidates to pick each one's best
+ * chunk, `rerank` the LLM reranker, and `serialize` snippet extraction (plus
+ * writing the response on REST). RRF fusion and metadata lookups are not a
+ * stage, so the stages need not sum to `ms`.
+ */
+export type QueryLogTimeout = "expand" | "rerank";
+
+export type QueryLogStages = {
+  refresh?: number;
+  load?: number;
+  expand?: number;
+  fts?: number;
+  embed?: number;
+  vec?: number;
+  chunk?: number;
+  rerank?: number;
+  serialize?: number;
+};
+
 export type QueryLogEntry = {
   via: "rest" | "mcp";
   tool: string;
@@ -59,6 +82,9 @@ export type QueryLogEntry = {
   rerank: boolean | null;
   results: QueryLogResult[];
   ms: number;
+  stages?: QueryLogStages;
+  /** Stages that ran past their deadline; the search went on without them */
+  timeouts?: QueryLogTimeout[];
   /** Injectable clock for tests; defaults to the time of the call. */
   now?: Date;
 };
@@ -85,7 +111,7 @@ export const queryLogPath = (date: Date = new Date()): string =>
   join(queryLogDir(), `queries-${date.getFullYear()}-${pad2(date.getMonth() + 1)}.jsonl`);
 
 /** ISO-8601 in local time with the UTC offset, e.g. 2026-09-17T16:05:03.123+09:00. */
-const isoWithOffset = (date: Date): string => {
+export const isoWithOffset = (date: Date): string => {
   const offsetMin = -date.getTimezoneOffset();
   const sign = offsetMin >= 0 ? "+" : "-";
   const abs = Math.abs(offsetMin);
@@ -202,7 +228,8 @@ const queueRow = (entry: QueryLogEntry, store: StatusSource): void => {
     searches: entry.searches.map(({ type, query }) => ({ type, query })),
     collections: entry.collections,
     limit: entry.limit,
-    rerank: entry.rerank,
+    // A reranker past its deadline answered nothing: the results are in RRF order.
+    rerank: entry.timeouts?.includes("rerank") ? "timeout" : entry.rerank,
     results: entry.results.map((r, i) => ({
       file: normalizeResultFile(r.file),
       score: r.score,
@@ -211,6 +238,8 @@ const queueRow = (entry: QueryLogEntry, store: StatusSource): void => {
       rank: i + 1,
     })),
     ms: entry.ms,
+    ...(entry.stages && { stages: entry.stages }),
+    ...(entry.timeouts && entry.timeouts.length > 0 && { timeouts: entry.timeouts }),
     client: {
       tag: clip(readHeader(entry.headers, "x-qmd-tag"), TAG_MAX),
       qid: clip(readHeader(entry.headers, "x-qmd-qid"), QID_MAX),
@@ -283,6 +312,8 @@ export const entryFromRest = (input: {
   collections: string[];
   results: QueryLogResult[];
   ms: number;
+  stages?: QueryLogStages;
+  timeouts?: QueryLogTimeout[];
 }): QueryLogEntry => ({
     via: "rest",
     tool: input.path,
@@ -294,6 +325,8 @@ export const entryFromRest = (input: {
     rerank: typeof input.params.rerank === "boolean" ? input.params.rerank : null,
     results: input.results,
     ms: input.ms,
+    stages: input.stages,
+    timeouts: input.timeouts,
   });
 
 /** Map an MCP `query` tool call. Only the HTTP transport supplies headers. */
@@ -307,6 +340,8 @@ export const entryFromMcp = (input: {
   rerank: boolean;
   results: QueryLogResult[];
   ms: number;
+  stages?: QueryLogStages;
+  timeouts?: QueryLogTimeout[];
 }): QueryLogEntry => ({
     via: "mcp",
     tool: "query",
@@ -317,6 +352,8 @@ export const entryFromMcp = (input: {
     rerank: input.rerank,
     results: input.results,
     ms: input.ms,
+    stages: input.stages,
+    timeouts: input.timeouts,
   });
 
 export const _resetQueryLogForTesting = (): void => {

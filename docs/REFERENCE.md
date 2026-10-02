@@ -191,7 +191,23 @@ snippets or document text. On `rerank:false` rows each result also carries the
 raw backend scores the response returned, `vec_score` (cosine similarity) and
 `fts_score` (normalized BM25), since `score` there is only the 1/rank fusion
 position; each is absent, never 0, when that backend did not return the hit,
-and the row schema stays `v: 1`. Clients can annotate rows with request headers:
+and the row schema stays `v: 1`. `stages` splits the elapsed milliseconds by
+stage — `refresh` (the pre-query check that re-indexes collections changed on
+disk), `expand` (absent when skipped or empty), `fts`, `embed`, `vec`
+(sqlite-vec lookups, embedding excluded), `chunk` (best-chunk selection, run
+with or without rerank), `rerank` and `serialize` (snippets plus the response;
+snippets only for the MCP tool) — and a stage that did not run is absent. RRF
+fusion and metadata lookups are not timed, so the stages need not sum to `ms`.
+`load` is the time spent waiting for the expansion and rerank models to load
+(a cold start, or a reload after the idle unload); it is part of `expand` and
+`rerank`, shown on its own. A stage that ran past its deadline
+(`QMD_EXPAND_DEADLINE_MS`, `QMD_RERANK_DEADLINE_MS`) is listed in `timeouts`
+with the ms it was waited on after its model loaded in `stages`; one skipped
+outright because an earlier call is still running is listed in `timeouts` with
+no `stages` entry. A timed-out rerank reads `rerank: "timeout"` — those results
+are in RRF order. Daemon log lines
+(`daemon.err.log` under launchd) start with the same local ISO timestamp as the
+row's `ts`, so the two can be matched. Clients can annotate rows with request headers:
 
 | Header | Row field |
 |--------|-----------|
@@ -1408,6 +1424,9 @@ llm_cache       -- Cached LLM responses (query expansion, rerank scores)
 | `QMD_LLAMA_GPU` | `auto` | Force llama.cpp GPU backend (`metal`, `vulkan`, `cuda`) or disable GPU with `false` |
 | `QMD_FORCE_CPU` | unset | Set to `1`/`true` to force CPU mode before any CUDA/Vulkan/Metal probing. Equivalent CLI flag: `--no-gpu`. |
 | `QMD_QUERY_LOG` | unset | ko-qmd: set to `1`/`true`/`yes` on the HTTP daemon to append each REST or MCP search to `$XDG_CACHE_HOME/qmd/queries-YYYY-MM.jsonl` (see [Query log](#query-log-ko-qmd)) |
+| `QMD_HEALTH_LOG_INTERVAL_MS` | `3600000` | ko-qmd: how often the HTTP daemon logs a `health` line to stderr — heap used/total, rss, `listens` (`subscriptions/listen` requests whose handler is still waiting for the response body to finish — not open sockets) and `mcp_inflight` (the same for every `/mcp` request), in MB and hours. An interval above 2147483647 ms (Node's timer limit) falls back to the default. `0` turns it off. Like the request lines, it is not written when the server runs quiet (SDK `quiet: true`), and a listen sent inside a JSON-RPC batch counts only toward `mcp_inflight` |
+| `QMD_EXPAND_DEADLINE_MS` | `5000` | ko-qmd: `qmd mcp` (stdio and HTTP) stops waiting for query expansion this many ms after the generation model is loaded — loading itself is not bounded — and searches the original query alone; the response carries `timeouts: ["expand"]`. The abandoned expansion keeps running and fills the expansion cache; until it finishes, later queries skip expansion (logged once) rather than queue behind it. `0` waits. The CLI search commands and the SDK never set a deadline |
+| `QMD_RERANK_DEADLINE_MS` | `10000` | ko-qmd: `qmd mcp` (stdio and HTTP) stops waiting for the reranker this many ms after the rerank model is loaded and answers in RRF order, without applying `minScore` to those 1/rank scores. The rerank keeps running and fills the rerank cache; until it finishes, later queries skip the reranker (logged once) rather than queue behind it. The REST `/query` response and the MCP `query` tool's structured content then carry `timeouts: ["rerank"]` (and the tool's text says so). `0` waits. The CLI search commands and the SDK never set a deadline |
 | `QMD_LLM_IDLE_TIMEOUT_MS` | `300000` | ko-qmd: idle time in ms before loaded models and contexts are unloaded; `0` never unloads. Overrides the SDK's `createStore()` timeout, so a long-running HTTP daemon can skip the model reload on its first search after a quiet spell, at the cost of keeping that memory in use. |
 | `QMD_EMBED_PARALLELISM` | automatic | Override embedding/reranking context parallelism (1-8). Windows CUDA defaults to `1` because parallel CUDA contexts can crash with `ggml-cuda.cu:98`; use Vulkan or raise this only if your driver is stable. |
 

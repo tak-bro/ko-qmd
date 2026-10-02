@@ -213,6 +213,12 @@ export interface SearchOptions {
    * ANDed with `filter`.
    */
   scope?: DocumentFilter;
+  /** Past this many ms, answer in RRF order instead of waiting for the reranker (unset or 0 = wait) */
+  rerankDeadlineMs?: number;
+  /** Past this many ms, search the original query only instead of waiting for expansion (unset or 0 = wait) */
+  expandDeadlineMs?: number;
+  /** Progress callbacks for expansion, embedding and reranking */
+  hooks?: SearchHooks;
 }
 
 /**
@@ -474,6 +480,8 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
           skipRerank,
           chunkStrategy: opts.chunkStrategy,
           scope: opts.scope,
+          rerankDeadlineMs: opts.rerankDeadlineMs,
+          hooks: opts.hooks,
         });
       }
 
@@ -490,6 +498,9 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
         skipRerank,
         chunkStrategy: opts.chunkStrategy,
         scope: opts.scope,
+        rerankDeadlineMs: opts.rerankDeadlineMs,
+        expandDeadlineMs: opts.expandDeadlineMs,
+        hooks: opts.hooks,
       });
     },
     searchLex: async (q, opts) => {
