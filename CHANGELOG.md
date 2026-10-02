@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+- The daemon's query log row now carries `stages`, the milliseconds spent in each stage of the
+  search: `refresh` (the pre-query re-index check), `expand`, `fts`, `embed`, `vec`, `chunk`,
+  `rerank` and `serialize`; a stage that did not run is absent. REST `rerank:false` queries had a p95 of 2.9–5.3 s
+  against a p50 of 0.2–0.5 s with no rerank in the path, and the single `ms` could not say which
+  stage the tail came from. Daemon log lines now start with a dated local ISO timestamp instead of
+  a UTC `HH:mm:ss.SSS`, so a slow line can be matched to its row.
+
 - `scripts/autoresearch/prepare.sh` builds the goldset from more than the collection folder and over
   several runs. `AR_EXTRA_DIRS="outputs docs"` copies sibling folders of the collection into the corpus
   (names only, so no vault path lands in git), `AR_RUN=N` writes `generated-N.json` from documents no

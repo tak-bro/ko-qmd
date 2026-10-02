@@ -213,6 +213,8 @@ export interface SearchOptions {
    * ANDed with `filter`.
    */
   scope?: DocumentFilter;
+  /** Progress callbacks for expansion, embedding and reranking */
+  hooks?: SearchHooks;
 }
 
 /**
@@ -474,6 +476,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
           skipRerank,
           chunkStrategy: opts.chunkStrategy,
           scope: opts.scope,
+          hooks: opts.hooks,
         });
       }
 
@@ -490,6 +493,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
         skipRerank,
         chunkStrategy: opts.chunkStrategy,
         scope: opts.scope,
+        hooks: opts.hooks,
       });
     },
     searchLex: async (q, opts) => {

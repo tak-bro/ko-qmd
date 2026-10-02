@@ -5738,6 +5738,12 @@ export interface SearchHooks {
   onEmbedStart?: (count: number) => void;
   /** Embedding complete */
   onEmbedDone?: (elapsedMs: number) => void;
+  /** Every BM25 lookup of the search finished; elapsedMs is their total */
+  onFtsDone?: (elapsedMs: number) => void;
+  /** Every sqlite-vec lookup of the search finished (embedding excluded); elapsedMs is their total */
+  onVecDone?: (elapsedMs: number) => void;
+  /** Candidates were chunked and each one's best chunk picked (runs with or without rerank) */
+  onChunkDone?: (elapsedMs: number) => void;
   /** Reranking is about to start */
   onRerankStart?: (chunkCount: number) => void;
   /** Reranking finished */
@@ -5977,7 +5983,9 @@ export async function hybridQuery(
   // Pass collection and metadata filter directly into FTS query (filter at
   // SQL level, not post-hoc) — the strong-signal decision must be based only
   // on eligible documents.
+  let ftsStart = Date.now();
   const initialFts = store.searchFTS(query, 20, collection, filter, scope);
+  let ftsMs = Date.now() - ftsStart;
   const topScore = initialFts[0]?.score ?? 0;
   const secondScore = initialFts[1]?.score ?? 0;
   // ko-qmd: a relaxed match is never a strong signal — it did not match all the words.
@@ -6021,6 +6029,7 @@ export async function hybridQuery(
   // sqlite-vec lookups with pre-computed embeddings.
 
   // 3a: Run FTS for all lex expansions right away (no LLM needed)
+  ftsStart = Date.now();
   for (const q of expanded) {
     if (q.type === 'lex') {
       const ftsResults = store.searchFTS(q.query, 20, collection, filter, scope);
@@ -6037,6 +6046,7 @@ export async function hybridQuery(
       }
     }
   }
+  hooks?.onFtsDone?.(ftsMs + Date.now() - ftsStart);
 
   // 3b: Collect all texts that need vector search (original query + vec/hyde expansions)
   if (hasVectors) {
@@ -6059,6 +6069,7 @@ export async function hybridQuery(
     hooks?.onEmbedDone?.(Date.now() - embedStart);
 
     // Run sqlite-vec lookups with pre-computed embeddings
+    const vecStart = Date.now();
     for (let i = 0; i < vecQueries.length; i++) {
       const embedding = embeddings[i]?.embedding;
       if (!embedding) continue;
@@ -6080,6 +6091,7 @@ export async function hybridQuery(
         });
       }
     }
+    hooks?.onVecDone?.(Date.now() - vecStart);
   }
 
   // Step 3c: drop a cached expansion whose sub-queries all came back empty —
@@ -6106,7 +6118,9 @@ export async function hybridQuery(
 
   // Step 5: Chunk documents, pick best chunk per doc for reranking.
   // Reranking full bodies is O(tokens) — the critical perf lesson that motivated this refactor.
+  const chunkStart = Date.now();
   const docChunkMap = await chunkCandidatesForRerank(candidates, query, intent, options?.chunkStrategy);
+  hooks?.onChunkDone?.(Date.now() - chunkStart);
 
   if (skipRerank) {
     // Skip LLM reranking — return candidates scored by RRF only
@@ -6409,6 +6423,7 @@ export async function structuredSearch(
   const collectionList = collections ?? [undefined]; // undefined = all collections
 
   // Step 1: Run FTS for all lex searches (sync, instant)
+  const ftsStart = Date.now();
   for (const search of searches) {
     if (search.type === 'lex') {
       for (const coll of collectionList) {
@@ -6429,6 +6444,7 @@ export async function structuredSearch(
       }
     }
   }
+  if (searches.some(s => s.type === 'lex')) hooks?.onFtsDone?.(Date.now() - ftsStart);
 
   // Step 2: Batch embed and run vector searches for vec/hyde
   if (hasVectors) {
@@ -6445,6 +6461,7 @@ export async function structuredSearch(
       const embeddings = await llm.embedBatch(textsToEmbed);
       hooks?.onEmbedDone?.(Date.now() - embedStart);
 
+      const vecStart = Date.now();
       for (let i = 0; i < vecSearches.length; i++) {
         const embedding = embeddings[i]?.embedding;
         if (!embedding) continue;
@@ -6468,6 +6485,7 @@ export async function structuredSearch(
           }
         }
       }
+      hooks?.onVecDone?.(Date.now() - vecStart);
     }
   }
 
@@ -6489,7 +6507,9 @@ export async function structuredSearch(
   const primaryQuery = searches.find(s => s.type === 'lex')?.query
     || searches.find(s => s.type === 'vec')?.query
     || searches[0]?.query || "";
+  const chunkStart = Date.now();
   const docChunkMap = await chunkCandidatesForRerank(candidates, primaryQuery, intent, options?.chunkStrategy);
+  hooks?.onChunkDone?.(Date.now() - chunkStart);
 
   if (skipRerank) {
     // Skip LLM reranking — return candidates scored by RRF only

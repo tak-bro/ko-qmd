@@ -33,10 +33,10 @@ import {
 import { getConfigPath } from "../collections.js";
 import { enableProductionMode } from "../store.js";
 import { checkRequestOrigin, resolveOriginGuard } from "./origin-guard.js";
-import { entryFromMcp, entryFromRest, logQuery, queryLogStatus } from "../query-log.js";
+import { entryFromMcp, entryFromRest, isoWithOffset, logQuery, queryLogStatus, type QueryLogStages } from "../query-log.js";
 import { createStoreIndexRefresher, type IndexRefresher } from "../refresh.js";
 import { buildDocumentFilter, describeFilter, type DocumentFilter } from "../filters.js";
-import { countFilteredDocuments } from "../store.js";
+import { countFilteredDocuments, type SearchHooks } from "../store.js";
 import { normalizeRerankMaxDocTokens } from "../llm.js";
 import { compileGrepPattern, grepDocuments } from "../grep.js";
 
@@ -144,6 +144,27 @@ function getPackageVersion(): string {
  * its own last pass are what stop every query from walking the collection again.
  */
 const refreshers = new WeakMap<QMDStore, IndexRefresher>();
+
+/**
+ * ko-qmd: per-stage milliseconds for the query log. The hooks fill `stages` as
+ * the search runs; the caller adds `refresh` and `serialize` around it.
+ */
+function stageTimer(): { stages: QueryLogStages; hooks: SearchHooks } {
+  const stages: QueryLogStages = {};
+  return {
+    stages,
+    hooks: {
+      // An empty list means expansion was skipped (pre-typed searches, Hangul, strong BM25 signal)
+      // or the model returned nothing; either way there are no expanded queries to account for.
+      onExpand: (_query, expanded, ms) => { if (expanded.length > 0) stages.expand = ms; },
+      onFtsDone: (ms) => { stages.fts = ms; },
+      onEmbedDone: (ms) => { stages.embed = ms; },
+      onVecDone: (ms) => { stages.vec = ms; },
+      onChunkDone: (ms) => { stages.chunk = ms; },
+      onRerankDone: (ms) => { stages.rerank = ms; },
+    },
+  };
+}
 
 /**
  * Bring the text index up to date for the collections a query is about to search. Never
@@ -506,7 +527,10 @@ Intent-aware lex (C++ performance, not sports):
         ? { query }
         : { queries: (searches ?? []).map(s => ({ type: s.type, query: s.query })) };
 
+      const timer = stageTimer();
+      const refreshStart = Date.now();
       await refreshBeforeQuery(store, effectiveCollections);
+      timer.stages.refresh = Date.now() - refreshStart;
 
       const results = await store.search({
         ...searchOptions,
@@ -520,7 +544,9 @@ Intent-aware lex (C++ performance, not sports):
         explain: rerank === false,
         intent,
         scope,
+        hooks: timer.hooks,
       });
+      const serializeStart = Date.now();
 
       // Use the plain query, or the first lex/vec sub-query, for snippet extraction
       const primaryQuery = query
@@ -544,7 +570,9 @@ Intent-aware lex (C++ performance, not sports):
         };
       });
 
-      // ko-qmd: opt-in query log (QMD_QUERY_LOG), HTTP transport only.
+      // ko-qmd: opt-in query log (QMD_QUERY_LOG), HTTP transport only. `serialize` here is snippet
+      // extraction only — the SDK writes the response after this handler returns.
+      timer.stages.serialize = Date.now() - serializeStart;
       if (httpHeaders) {
         logQuery(entryFromMcp({
           headers: httpHeaders,
@@ -555,6 +583,7 @@ Intent-aware lex (C++ performance, not sports):
           rerank,
           results: filtered,
           ms: Date.now() - startedAt,
+          stages: timer.stages,
         }), store);
       }
 
@@ -1136,7 +1165,7 @@ export async function startMcpHttpServer(
 
   /** Format timestamp for request logging */
   function ts(): string {
-    return new Date().toISOString().slice(11, 23); // HH:mm:ss.SSS
+    return isoWithOffset(new Date()); // ko-qmd: dated local time, so a log line can be matched to a query-log row
   }
 
   type JsonRpcLikeBody = {
@@ -1300,7 +1329,10 @@ export async function startMcpHttpServer(
           return;
         }
 
+        const timer = stageTimer();
+        const refreshStart = Date.now();
         await refreshBeforeQuery(store, effectiveCollections);
+        timer.stages.refresh = Date.now() - refreshStart;
 
         const rerank = typeof params.rerank === "boolean" ? params.rerank : undefined;
         const results = await store.search({
@@ -1316,7 +1348,9 @@ export async function startMcpHttpServer(
           // rerank:false scores are 1/rank; explain carries the raw backend scores.
           explain: rerank === false,
           scope: restScope,
+          hooks: timer.hooks,
         });
+        const serializeStart = Date.now();
 
         // Use first lex or vec query for snippet extraction
         const primaryQuery = searches.find((s) => s.type === 'lex')?.query
@@ -1340,8 +1374,9 @@ export async function startMcpHttpServer(
 
         nodeRes.writeHead(200, { "Content-Type": "application/json" });
         nodeRes.end(JSON.stringify({ results: formatted }));
+        timer.stages.serialize = Date.now() - serializeStart;
         // ko-qmd: opt-in query log (QMD_QUERY_LOG), written after the response.
-        logQuery(entryFromRest({ path: pathname, headers: nodeReq.headers, searches: queries, params, collections: effectiveCollections, results: formatted, ms: Date.now() - reqStart }), store);
+        logQuery(entryFromRest({ path: pathname, headers: nodeReq.headers, searches: queries, params, collections: effectiveCollections, results: formatted, ms: Date.now() - reqStart, stages: timer.stages }), store);
         log(`${ts()} POST /query ${params.searches.length} queries (${Date.now() - reqStart}ms)`);
         return;
       }
