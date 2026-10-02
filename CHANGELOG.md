@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+- `qmd mcp` (stdio and HTTP) no longer waits on a slow LLM stage without bound. Past
+  `QMD_EXPAND_DEADLINE_MS` (default 5 s) a query searches its original text alone, and past
+  `QMD_RERANK_DEADLINE_MS` (default 10 s) it answers in RRF order; `0` restores waiting. The clock
+  starts once the model is loaded, so a cold start or a reload after the idle unload is not a timeout;
+  the query log records that wait as a `load` stage. One MCP `query` with expansion and rerank took
+  85 s. The REST `/query` response and the MCP `query` tool say which stage timed out (`timeouts`),
+  the query log row lists it the same way, and a timed-out rerank reads `rerank: "timeout"` there.
+  A fallback does not apply `minScore` to its 1/rank scores. An abandoned expansion or rerank keeps
+  running and fills its cache; until it finishes, later queries skip that stage (logged once) instead
+  of queueing behind it. The CLI search commands and the SDK (`rerankDeadlineMs`, `expandDeadlineMs`
+  options) never set a deadline on their own.
+
 - The daemon's query log row now carries `stages`, the milliseconds spent in each stage of the
   search: `refresh` (the pre-query re-index check), `expand`, `fts`, `embed`, `vec`, `chunk`,
   `rerank` and `serialize`; a stage that did not run is absent. REST `rerank:false` queries had a p95 of 2.9–5.3 s

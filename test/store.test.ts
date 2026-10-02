@@ -74,6 +74,8 @@ import {
   type SearchResult,
   type RankedResult,
   type RankedListMeta,
+  type StoreRerankOptions,
+  type ExpandedQuery,
 } from "../src/store.js";
 import type { CollectionConfig } from "../src/collections.js";
 
@@ -4906,6 +4908,146 @@ describe("Embedding batching", () => {
       expect(rerankedTexts.length).toBeGreaterThan(0);
       expect(rerankedTexts.every((t) => t.length <= 1800)).toBe(true);
       expect(rerankedTexts.every((t) => t.length >= 1000)).toBe(true);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("structuredSearch answers in RRF order when the reranker misses its deadline", async () => {
+    const store = await createTestStore();
+    const collectionName = await createTestCollection();
+    await insertTestDocument(store.db, collectionName, { name: "a", title: "A", body: "zebraqx alpha", displayPath: "test/a.md" });
+    await insertTestDocument(store.db, collectionName, { name: "b", title: "B", body: "zebraqx zebraqx beta", displayPath: "test/b.md" });
+    store.rerank = vi.fn((_q: string, _d: unknown, _m?: string, _i?: string, opts?: StoreRerankOptions) => {
+      opts?.onModelReady?.();
+      return new Promise<{ file: string; score: number }[]>(() => {});
+    });
+    const onDeadline = vi.fn();
+    const onRerankDone = vi.fn();
+
+    try {
+      const results = await structuredSearch(store, [{ type: "lex", query: "zebraqx" }], {
+        limit: 5, minScore: 0, rerankDeadlineMs: 20, hooks: { onDeadline, onRerankDone },
+      });
+      const rrfOnly = await structuredSearch(store, [{ type: "lex", query: "zebraqx" }], { limit: 5, minScore: 0, skipRerank: true });
+
+      expect(results.map((r) => [r.file, r.score])).toEqual(rrfOnly.map((r) => [r.file, r.score]));
+      expect(onDeadline).toHaveBeenCalledWith("rerank", expect.any(Number));
+      expect(onRerankDone).not.toHaveBeenCalled();
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("a deadline fallback ignores minScore, and a rerank still running after its deadline makes the next query skip the reranker", async () => {
+    const store = await createTestStore();
+    const collectionName = await createTestCollection();
+    await insertTestDocument(store.db, collectionName, { name: "a", title: "A", body: "zebraqx alpha", displayPath: "test/a.md" });
+    await insertTestDocument(store.db, collectionName, { name: "b", title: "B", body: "zebraqx zebraqx beta", displayPath: "test/b.md" });
+    await insertTestDocument(store.db, collectionName, { name: "c", title: "C", body: "zebraqx gamma gamma", displayPath: "test/c.md" });
+    let finishFirst: (value: { file: string; score: number }[]) => void = () => {};
+    const rerank = vi.fn((_q: string, _d: unknown, _m?: string, _i?: string, opts?: StoreRerankOptions) => {
+      opts?.onModelReady?.();
+      return new Promise<{ file: string; score: number }[]>((resolve) => { finishFirst = resolve; });
+    });
+    store.rerank = rerank;
+    const onDeadline = vi.fn();
+    const search = () => structuredSearch(store, [{ type: "lex", query: "zebraqx" }], {
+      limit: 5, minScore: 0.5, rerankDeadlineMs: 20, hooks: { onDeadline },
+    });
+
+    try {
+      const first = await search();
+      expect(first).toHaveLength(3); // 1/rank scores 1, 0.5, 0.33 — a 0.5 threshold would keep two
+      const second = await search();
+      expect(second).toHaveLength(3);
+      expect(rerank).toHaveBeenCalledTimes(1);
+      expect(onDeadline).toHaveBeenLastCalledWith("rerank");
+
+      finishFirst([]);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      rerank.mockImplementation(async () => []);
+      await search();
+      expect(rerank).toHaveBeenCalledTimes(2);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("the deadline clock starts after the model loads: a slow load alone is not a timeout", async () => {
+    const store = await createTestStore();
+    const collectionName = await createTestCollection();
+    await insertTestDocument(store.db, collectionName, { name: "a", title: "A", body: "zebraqx alpha", displayPath: "test/a.md" });
+    store.rerank = vi.fn(async (_q: string, docs: { file: string; text: string }[], _m?: string, _i?: string, opts?: StoreRerankOptions) => {
+      await new Promise((resolve) => setTimeout(resolve, 80)); // cold load
+      opts?.onModelReady?.();
+      return docs.map((d) => ({ file: d.file, score: 0.9 }));
+    });
+    const onDeadline = vi.fn();
+    const onModelLoad = vi.fn();
+    const onRerankDone = vi.fn();
+
+    try {
+      await structuredSearch(store, [{ type: "lex", query: "zebraqx" }], {
+        limit: 5, minScore: 0, rerankDeadlineMs: 20, hooks: { onDeadline, onModelLoad, onRerankDone },
+      });
+
+      expect(onDeadline).not.toHaveBeenCalled();
+      expect(onRerankDone).toHaveBeenCalled();
+      expect(onModelLoad).toHaveBeenCalledWith("rerank", expect.any(Number));
+      expect(onModelLoad.mock.calls[0]![1]).toBeGreaterThanOrEqual(70);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("structuredSearch keeps the reranked order when the reranker beats its deadline", async () => {
+    const store = await createTestStore();
+    const collectionName = await createTestCollection();
+    await insertTestDocument(store.db, collectionName, { name: "a", title: "A", body: "zebraqx alpha", displayPath: "test/a.md" });
+    store.rerank = vi.fn(async (_query: string, docs: { file: string; text: string }[]) => docs.map((d) => ({ file: d.file, score: 0.9 })));
+    const onDeadline = vi.fn();
+    const onRerankDone = vi.fn();
+
+    try {
+      await structuredSearch(store, [{ type: "lex", query: "zebraqx" }], {
+        limit: 5, minScore: 0, rerankDeadlineMs: 5_000, hooks: { onDeadline, onRerankDone },
+      });
+
+      expect(onRerankDone).toHaveBeenCalled();
+      expect(onDeadline).not.toHaveBeenCalled();
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("hybridQuery searches the original query alone when expansion misses its deadline", async () => {
+    const store = await createTestStore();
+    const collectionName = await createTestCollection();
+    await insertTestDocument(store.db, collectionName, { name: "a", title: "A", body: "zebraqx alpha", displayPath: "test/a.md" });
+    const expandQuery = vi.fn((_q: string, _m?: string, opts?: { onModelReady?: () => void }) => {
+      opts?.onModelReady?.();
+      return new Promise<ExpandedQuery[]>(() => {});
+    });
+    store.expandQuery = expandQuery;
+    store.searchVec = vi.fn(async () => [] as SearchResult[]);
+    const onDeadline = vi.fn();
+
+    try {
+      // An intent turns off the strong-signal shortcut, so expansion is attempted.
+      const results = await hybridQuery(store, "zebraqx", {
+        limit: 5, minScore: 0, intent: "test", skipRerank: true, expandDeadlineMs: 20, hooks: { onDeadline },
+      });
+
+      expect(onDeadline).toHaveBeenCalledWith("expand", expect.any(Number));
+      expect(results.map((r) => r.displayPath)).toEqual([expect.stringMatching(/test\/a\.md$/)]);
+
+      // The abandoned expansion never settles, so the next query skips expansion instead of starting another.
+      await hybridQuery(store, "zebraqx", {
+        limit: 5, minScore: 0, intent: "test", skipRerank: true, expandDeadlineMs: 20, hooks: { onDeadline },
+      });
+      expect(expandQuery).toHaveBeenCalledTimes(1);
+      expect(onDeadline).toHaveBeenLastCalledWith("expand");
     } finally {
       await cleanupTestDb(store);
     }

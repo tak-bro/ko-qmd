@@ -647,7 +647,7 @@ describe("search (unified API)", () => {
     }
 
     expect(spy).toHaveBeenCalled();
-    expect(spy.mock.calls[0]![2]).toEqual({ model: "hf:example/cap/cap.gguf", maxDocTokens: 128 });
+    expect(spy.mock.calls[0]![2]).toEqual({ model: "hf:example/cap/cap.gguf", maxDocTokens: 128, onModelReady: expect.any(Function) });
   });
 
   // Tests below use search({ query: ... }) which triggers LLM query expansion
