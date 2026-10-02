@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.8.3-ko.7] - 2026-10-02
+
 The query path is now observable and bounded. Every query-log row breaks its latency into
 stages, the daemon logs its heap once an hour, and expansion and rerank stop waiting past a
 deadline instead of holding a query for 85 s. The reranker also sees a note's first chunk by default.
