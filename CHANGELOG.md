@@ -9,6 +9,12 @@
   stage the tail came from. Daemon log lines now start with a dated local ISO timestamp instead of
   a UTC `HH:mm:ss.SSS`, so a slow line can be matched to its row.
 
+- The HTTP daemon logs a `health` line every hour: heap used and total, rss, and how many
+  `subscriptions/listen` and other `/mcp` requests have a handler still waiting on its response. A daemon that ran ten days died with
+  "Reached heap limit" after its heap crept to 3.8 GB under idle discover/cancelled traffic, and
+  nothing in the log showed the slope or what was holding memory. `QMD_HEALTH_LOG_INTERVAL_MS`
+  changes the interval; `0` turns it off.
+
 - `scripts/autoresearch/prepare.sh` builds the goldset from more than the collection folder and over
   several runs. `AR_EXTRA_DIRS="outputs docs"` copies sibling folders of the collection into the corpus
   (names only, so no vault path lands in git), `AR_RUN=N` writes `generated-N.json` from documents no
