@@ -1699,6 +1699,8 @@ describe("REST /query, MCP query and the query log", () => {
     });
     expect(rows[0].results).toHaveLength(json.results.length);
     expect(typeof rows[0].ms).toBe("number");
+    // lex-only and rerank:false: no expansion, embedding, vector lookup or rerank ran.
+    expect(rows[0].stages).toEqual({ refresh: expect.any(Number), fts: expect.any(Number), chunk: expect.any(Number), serialize: expect.any(Number) });
   });
 
   test("a malformed or non-object body gets 400 and writes no log row", async () => {
@@ -1752,6 +1754,7 @@ describe("REST /query, MCP query and the query log", () => {
       rerank: false,
       client: { tag: "explore", qid: "run-2", role: "probe" },
     });
+    expect(rows[0].stages).toEqual({ refresh: expect.any(Number), fts: expect.any(Number), chunk: expect.any(Number), serialize: expect.any(Number) });
     // Same path spelling as the REST row: no qmd:// prefix, no percent-encoding.
     expect(rows[0].results[0]).toEqual({
       file: "docs/readme.md",

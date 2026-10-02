@@ -128,6 +128,15 @@ describe("row", () => {
     expect(JSON.stringify(row)).not.toMatch(/snippet|body/);
   });
 
+  test("per-stage timings ride along when the caller measured them and stay absent otherwise", async () => {
+    logQuery(baseEntry({ stages: { refresh: 3, embed: 40, rerank: 900 } }), fakeStore);
+    logQuery(baseEntry(), fakeStore);
+    await flushQueryLog();
+    const [timed, untimed] = readRows();
+    expect(timed.stages).toEqual({ refresh: 3, embed: 40, rerank: 900 });
+    expect(untimed).not.toHaveProperty("stages");
+  });
+
   test("raw backend scores ride along when present and stay absent otherwise", async () => {
     logQuery(baseEntry({
       results: [
