@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [2.8.3-ko.7] - 2026-10-02
+
+The query path is now observable and bounded. Every query-log row breaks its latency into
+stages, the daemon logs its heap once an hour, and expansion and rerank stop waiting past a
+deadline instead of holding a query for 85 s. The reranker also sees a note's first chunk by default.
+
 - `qmd mcp` (stdio and HTTP) no longer waits on a slow LLM stage without bound. Past
   `QMD_EXPAND_DEADLINE_MS` (default 5 s) a query searches its original text alone, and past
   `QMD_RERANK_DEADLINE_MS` (default 10 s) it answers in RRF order; `0` restores waiting. The clock
@@ -41,6 +47,17 @@
   this on a goldset of 320 train and 71 held-out queries drawn from four vault folders. Held-out full
   MRR goes 0.7291 → 0.7459, ko-vault seam and hard lines are unchanged, and bm25, vector and hybrid
   results are identical (`BASELINE.md` 2026-09-29).
+
+## [2.8.3-ko.6] - 2026-09-29
+
+Korean queries are handled better before and during reranking. A query written
+as "X 말고 Y" now searches for Y alone, and a Hangul query skips LLM expansion,
+which steadies hard-query results and cuts hybrid latency from about 1s to tens
+of ms per query. The reranker is now shown the chunk that best matches the
+query's Hangul syllable bigrams, led by the note title: held-out full MRR goes
+0.6589 → 0.7260 on a goldset generated from a real vault. Scoped vector search on
+small indexes runs one KNN (vector stage 250–1300ms → about 25ms). The README
+gains an English edition and an FAQ.
 
 - `QMD_RERANK_CACHE=<path>` keeps rerank scores in their own sqlite file instead of the index's
   `llm_cache`, so a store over a rebuilt index reuses them. The key carries the query, the rerank
@@ -129,6 +146,14 @@
   runs, while `hybrid_r1` moved by about 3.5 queries of 30.
   Fixture invariants (no title-term leakage, no excluded concept among expected files, no basename
   collisions) are enforced by `test/ko-bench-fixture.test.ts`.
+
+- Collection- or filter-scoped vector search is faster on indexes of up to
+  4096 vectors. It now post-filters one sqlite-vec KNN over the whole table,
+  which is exact because vec0 KNN is a brute-force scan, instead of computing
+  `vec_distance_cosine` row by row. On the KB goldset (1047 of 3389 vectors,
+  M3 Max) the vector stage dropped from 250–1300ms to about 25ms, and a cold
+  capped query (cap 128, candidateLimit 15) went from p90 2000ms to 906ms with
+  identical rankings. Larger indexes keep the exact scan.
 
 ## [2.8.3-ko.5] - 2026-09-24
 
