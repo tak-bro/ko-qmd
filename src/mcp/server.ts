@@ -34,6 +34,7 @@ import { getConfigPath } from "../collections.js";
 import { enableProductionMode } from "../store.js";
 import { checkRequestOrigin, resolveOriginGuard } from "./origin-guard.js";
 import { entryFromMcp, entryFromRest, isoWithOffset, logQuery, queryLogStatus, type QueryLogStages } from "../query-log.js";
+import { formatDaemonHealthLine, resolveHealthLogIntervalMs } from "./daemon-health.js";
 import { createStoreIndexRefresher, type IndexRefresher } from "../refresh.js";
 import { buildDocumentFilter, describeFilter, type DocumentFilter } from "../filters.js";
 import { countFilteredDocuments, type SearchHooks } from "../store.js";
@@ -1203,6 +1204,14 @@ export async function startMcpHttpServer(
     if (!quiet) console.error(msg);
   }
 
+  // ko-qmd: /mcp requests whose response has not ended — a `subscriptions/listen` stays open for
+  // as long as its client keeps it, so these are what the hourly health line counts.
+  const openMcp = { listens: 0, inflight: 0 };
+  const healthIntervalMs = resolveHealthLogIntervalMs();
+  const healthTimer = healthIntervalMs > 0
+    ? setInterval(() => log(`${ts()} ${formatDaemonHealthLine(process.memoryUsage(), openMcp, Date.now() - startTime)}`), healthIntervalMs).unref()
+    : null;
+
   function nodeHeadersToWeb(nodeReq: IncomingMessage): Headers {
     const headers = new Headers();
     for (const [k, v] of Object.entries(nodeReq.headers)) {
@@ -1403,13 +1412,21 @@ export async function startMcpHttpServer(
           headers: nodeHeadersToWeb(nodeReq),
           ...(rawBody !== undefined ? { body: rawBody } : {}),
         });
-        const response = await mcpHandler.fetch(
-          request,
-          parsedBody !== undefined ? { parsedBody } : undefined,
-        );
+        const isListen = label === "subscriptions/listen";
+        openMcp.inflight++;
+        if (isListen) openMcp.listens++;
+        try {
+          const response = await mcpHandler.fetch(
+            request,
+            parsedBody !== undefined ? { parsedBody } : undefined,
+          );
 
-        nodeRes.writeHead(response.status, Object.fromEntries(response.headers));
-        nodeRes.end(Buffer.from(await response.arrayBuffer()));
+          nodeRes.writeHead(response.status, Object.fromEntries(response.headers));
+          nodeRes.end(Buffer.from(await response.arrayBuffer()));
+        } finally {
+          openMcp.inflight--;
+          if (isListen) openMcp.listens--;
+        }
         log(`${ts()} ${nodeReq.method} /mcp ${label} (${Date.now() - reqStart}ms)`);
         return;
       }
@@ -1434,6 +1451,7 @@ export async function startMcpHttpServer(
   const stop = async () => {
     if (stopping) return;
     stopping = true;
+    if (healthTimer) clearInterval(healthTimer);
     await mcpHandler.close();
     httpServer.close();
     await store.close();
