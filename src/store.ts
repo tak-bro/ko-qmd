@@ -1558,7 +1558,8 @@ export type Store = {
   searchVec: (query: string, model: string, limit?: number, collectionName?: string | readonly string[], session?: ILLMSession, precomputedEmbedding?: number[], filter?: MetadataFilter, scope?: DocumentFilter) => Promise<SearchResult[]>;
 
   // Query expansion & reranking
-  expandQuery: (query: string, model?: string) => Promise<ExpandedQuery[]>;
+  /** `onModelReady` fires once the generation model is loaded (not at all on a cache hit). */
+  expandQuery: (query: string, model?: string, options?: { onModelReady?: () => void }) => Promise<ExpandedQuery[]>;
   /** Drop the cached expansion for a query so the next call regenerates. */
   invalidateExpansionCache: (query: string) => void;
   rerank: (query: string, documents: { file: string; text: string }[], model?: string, intent?: string, options?: StoreRerankOptions) => Promise<{ file: string; score: number }[]>;
@@ -2335,7 +2336,8 @@ export function createStore(dbPath?: string): Store {
     searchVec: (query: string, model: string, limit?: number, collectionName?: string | readonly string[], session?: ILLMSession, precomputedEmbedding?: number[], filter?: MetadataFilter, scope?: DocumentFilter) => searchVec(db, query, model, limit, collectionName, session, precomputedEmbedding, getLlm(store), filter, scope),
 
     // Query expansion & reranking
-    expandQuery: (query: string, model?: string) => expandQuery(query, model ?? store.llm?.generateModelName ?? DEFAULT_QUERY_MODEL, db, store.llm),
+    expandQuery: (query: string, model?: string, options?: { onModelReady?: () => void }) =>
+      expandQuery(query, model ?? store.llm?.generateModelName ?? DEFAULT_QUERY_MODEL, db, store.llm, options),
     invalidateExpansionCache: (query: string) => deleteExpansionCacheEntry(db, query, store.llm?.generateModelName ?? DEFAULT_QUERY_MODEL),
     rerank: (query: string, documents: { file: string; text: string }[], model?: string, intent?: string, options?: StoreRerankOptions) => {
       // Cache keys must use the resolved rerank model (store.llm or the global
@@ -4813,7 +4815,7 @@ function removeIncompleteEmbeddings(db: Database, expectedChunksByHash: Map<stri
 // Query expansion
 // =============================================================================
 
-export async function expandQuery(query: string, model: string = DEFAULT_QUERY_MODEL, db: Database, llmOverride?: LlamaCpp): Promise<ExpandedQuery[]> {
+export async function expandQuery(query: string, model: string = DEFAULT_QUERY_MODEL, db: Database, llmOverride?: LlamaCpp, options: { onModelReady?: () => void } = {}): Promise<ExpandedQuery[]> {
   // Check cache first — stored as JSON preserving types. Intent is
   // deliberately absent from both the cache key and the generation call:
   // feeding caller intent to the expansion model contaminates sub-queries
@@ -4839,7 +4841,7 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
 
   const llm = llmOverride ?? getDefaultLlamaCpp();
   // Note: LlamaCpp uses hardcoded model, model parameter is ignored
-  const results = await llm.expandQuery(query);
+  const results = await llm.expandQuery(query, { onModelReady: options.onModelReady });
 
   // Map Queryable[] → ExpandedQuery[] (same shape, decoupled from llm.ts internals).
   // Filter out entries that duplicate the original query text.
@@ -4872,6 +4874,8 @@ export function deleteExpansionCacheEntry(db: Database, query: string, model: st
 export type StoreRerankOptions = {
   /** Doc token cap for this request; overrides QMD_RERANK_MAX_DOC_TOKENS. */
   maxDocTokens?: number;
+  /** Called once the rerank model is loaded (not at all when every chunk is cached). */
+  onModelReady?: () => void;
 };
 
 export async function rerank(query: string, documents: { file: string; text: string }[], model: string = DEFAULT_RERANK_MODEL, db: Database, intent?: string, llmOverride?: LlamaCpp, options: StoreRerankOptions = {}): Promise<{ file: string; score: number }[]> {
@@ -4911,6 +4915,7 @@ export async function rerank(query: string, documents: { file: string; text: str
     const rerankResult = await llm.rerank(rerankQuery, uncachedDocs, {
       model: cacheModel,
       ...(requestMaxDocTokens ? { maxDocTokens: requestMaxDocTokens } : {}),
+      onModelReady: options.onModelReady,
     });
 
     // Cache results by chunk text so identical chunks across files are scored once.
@@ -5744,6 +5749,14 @@ export interface SearchHooks {
   onVecDone?: (elapsedMs: number) => void;
   /** Candidates were chunked and each one's best chunk picked (runs with or without rerank) */
   onChunkDone?: (elapsedMs: number) => void;
+  /**
+   * A stage went without its LLM (expansion: original query only, rerank: RRF order). elapsedMs is
+   * how long it was waited on after its model loaded; undefined when it was skipped outright because
+   * an earlier call of that stage, abandoned at its deadline, is still running.
+   */
+  onDeadline?: (stage: DeadlineStage, elapsedMs?: number) => void;
+  /** The stage's model finished loading (cold start or reload after idle unload); elapsedMs is the wait */
+  onModelLoad?: (stage: DeadlineStage, elapsedMs: number) => void;
   /** Reranking is about to start */
   onRerankStart?: (chunkCount: number) => void;
   /** Reranking finished */
@@ -5760,6 +5773,8 @@ export interface HybridQueryOptions {
   explain?: boolean;        // include backend/RRF/rerank score traces
   intent?: string;          // domain intent hint for disambiguation
   skipRerank?: boolean;     // skip LLM reranking, use only RRF scores
+  rerankDeadlineMs?: number; // past this, answer in RRF order (unset or 0 = wait for the reranker)
+  expandDeadlineMs?: number; // past this, search the original query only (unset or 0 = wait)
   chunkStrategy?: ChunkStrategy;
   scope?: DocumentFilter;   // narrow the corpus by path glob and modified_at
   hooks?: SearchHooks;
@@ -5899,6 +5914,107 @@ export function blendRerankScore(rrfRank: number, rerankScore: number, candidate
 type RerankCandidate = { file: string; displayPath: string; title: string; body: string };
 type CandidateChunks = { chunks: RerankChunk[]; bestIdx: number };
 
+const TIMED_OUT = Symbol("timed out");
+
+/**
+ * The promise's value, or TIMED_OUT once `deadlineMs` passes (unset or 0 = no deadline). The
+ * promise is not cancelled: a late rerank still lands in the rerank cache for the next query.
+ */
+async function withDeadline<T>(promise: Promise<T>, deadlineMs: number | undefined): Promise<T | typeof TIMED_OUT> {
+  if (!deadlineMs || deadlineMs <= 0) return promise;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<typeof TIMED_OUT>((resolve) => {
+    timer = setTimeout(() => resolve(TIMED_OUT), deadlineMs);
+  });
+  try {
+    return await Promise.race([promise, deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export type DeadlineStage = "expand" | "rerank";
+
+/**
+ * LLM calls abandoned at their deadline and still running, per store and stage. While one runs, the
+ * next call of that stage would only queue behind it on the same model and time out too, so it is
+ * skipped instead: this caps the backlog at one abandoned call per stage instead of one per query.
+ */
+const abandoned = new WeakMap<Store, Record<DeadlineStage, { running: number; warned: boolean }>>();
+
+/**
+ * Run one LLM stage under a deadline. The clock starts once the stage's model is loaded
+ * (`onModelReady`): the deadline bounds computation, not a cold load, which is reported through
+ * `onModelLoad`. TIMED_OUT when the deadline passes, or at once while an earlier abandoned call of
+ * the stage is still running. Unset or 0 deadline = plain await.
+ */
+async function runWithDeadline<T>(
+  store: Store,
+  stage: DeadlineStage,
+  deadlineMs: number | undefined,
+  hooks: SearchHooks | undefined,
+  start: (onModelReady: () => void) => Promise<T>,
+): Promise<T | typeof TIMED_OUT> {
+  const started = Date.now();
+  let loadedAt: number | undefined;
+  const reportLoad = () => { if (loadedAt !== undefined) hooks?.onModelLoad?.(stage, loadedAt - started); };
+  if (!deadlineMs || deadlineMs <= 0) {
+    const value = await start(() => { loadedAt = Date.now(); });
+    reportLoad();
+    return value;
+  }
+
+  const byStage = abandoned.get(store) ?? { expand: { running: 0, warned: false }, rerank: { running: 0, warned: false } };
+  abandoned.set(store, byStage);
+  const state = byStage[stage];
+  if (state.running > 0) {
+    if (!state.warned) {
+      state.warned = true;
+      process.stderr.write(`qmd: a ${stage} abandoned at its deadline is still running — answering without ${stage} until it finishes\n`);
+    }
+    hooks?.onDeadline?.(stage);
+    return TIMED_OUT;
+  }
+
+  let markReady = () => {};
+  const ready = new Promise<void>((resolve) => { markReady = () => { loadedAt = Date.now(); resolve(); }; });
+  const pending = start(markReady);
+  // Wait out the model load with no deadline; a cache hit or a fast call may finish before it fires.
+  const finishedFirst = await Promise.race([ready.then(() => false), pending.then(() => true, () => true)]);
+  reportLoad();
+  if (finishedFirst) return pending;
+
+  const result = await withDeadline(pending, deadlineMs);
+  if (result === TIMED_OUT) {
+    state.running++;
+    const settle = () => {
+      state.running--;
+      if (state.running === 0) state.warned = false;
+    };
+    pending.then(settle, settle);
+    hooks?.onDeadline?.(stage, Date.now() - (loadedAt ?? started));
+  }
+  return result;
+}
+
+/** Rerank `chunks`, or null when the reranker misses `deadlineMs` (the caller then answers in RRF order). */
+async function rerankWithDeadline(
+  store: Store,
+  query: string,
+  chunks: { file: string; text: string }[],
+  intent: string | undefined,
+  options: { rerankMaxDocTokens?: number; rerankDeadlineMs?: number; hooks?: SearchHooks } | undefined,
+): Promise<{ file: string; score: number }[] | null> {
+  const hooks = options?.hooks;
+  hooks?.onRerankStart?.(chunks.length);
+  const start = Date.now();
+  const reranked = await runWithDeadline(store, "rerank", options?.rerankDeadlineMs, hooks, (onModelReady) =>
+    store.rerank(query, chunks, undefined, intent, { maxDocTokens: options?.rerankMaxDocTokens, onModelReady }));
+  if (reranked === TIMED_OUT) return null;
+  hooks?.onRerankDone?.(Date.now() - start);
+  return reranked;
+}
+
 /**
  * Cut each candidate into chunks and pick the one to rerank (`selectRerankChunk`). A document
  * with no chunks is left out of the map.
@@ -6003,9 +6119,11 @@ export async function hybridQuery(
   const skipsExpansion = hasStrongSignal || containsHangul(query);
   hooks?.onExpandStart?.();
   const expandStart = Date.now();
-  const expanded = skipsExpansion
+  const expansion = skipsExpansion
     ? []
-    : await store.expandQuery(query);
+    : await runWithDeadline(store, "expand", options?.expandDeadlineMs, hooks, (onModelReady) =>
+        store.expandQuery(query, undefined, { onModelReady }));
+  const expanded = expansion === TIMED_OUT ? [] : expansion;
 
   hooks?.onExpand?.(query, expanded, Date.now() - expandStart);
 
@@ -6122,7 +6240,12 @@ export async function hybridQuery(
   const docChunkMap = await chunkCandidatesForRerank(candidates, query, intent, options?.chunkStrategy);
   hooks?.onChunkDone?.(Date.now() - chunkStart);
 
-  if (skipRerank) {
+  // Step 6: Rerank chunks (NOT full bodies). No reranker, or one past its deadline, means RRF order.
+  const reranked = skipRerank
+    ? null
+    : await rerankWithDeadline(store, query, rerankDocuments(candidates, docChunkMap), intent, options);
+
+  if (reranked === null) {
     // Skip LLM reranking — return candidates scored by RRF only
     const seenFiles = new Set<string>();
     const rrfResults = candidates
@@ -6168,18 +6291,13 @@ export async function hybridQuery(
         seenFiles.add(r.file);
         return true;
       })
-      .filter(r => r.score >= minScore)
+      // minScore is a threshold on blended rerank scores; a deadline fallback's 1/rank scores would
+      // cut a 0.5 threshold to two results, so only a caller that skipped rerank gets it applied here.
+      .filter(r => !skipRerank || r.score >= minScore)
       .slice(0, limit);
     return attachResultMetadata(store.db, rrfResults);
   }
 
-  // Step 6: Rerank chunks (NOT full bodies)
-  const chunksToRerank = rerankDocuments(candidates, docChunkMap);
-
-  hooks?.onRerankStart?.(chunksToRerank.length);
-  const rerankStart = Date.now();
-  const reranked = await store.rerank(query, chunksToRerank, undefined, intent, { maxDocTokens: options?.rerankMaxDocTokens });
-  hooks?.onRerankDone?.(Date.now() - rerankStart);
 
   // Step 7: Blend RRF position score with reranker score
   // Position-aware weights: top retrieval results get more protection from reranker disagreement
@@ -6344,6 +6462,7 @@ export interface StructuredSearchOptions {
   intent?: string;
   /** Skip LLM reranking, use only RRF scores */
   skipRerank?: boolean;
+  rerankDeadlineMs?: number; // past this, answer in RRF order (unset or 0 = wait for the reranker)
   chunkStrategy?: ChunkStrategy;
   /** Narrow the corpus by path glob and modified_at before anything is ranked */
   scope?: DocumentFilter;
@@ -6511,7 +6630,12 @@ export async function structuredSearch(
   const docChunkMap = await chunkCandidatesForRerank(candidates, primaryQuery, intent, options?.chunkStrategy);
   hooks?.onChunkDone?.(Date.now() - chunkStart);
 
-  if (skipRerank) {
+  // Step 5: Rerank chunks. No reranker, or one past its deadline, means RRF order.
+  const reranked = skipRerank
+    ? null
+    : await rerankWithDeadline(store, primaryQuery, rerankDocuments(candidates, docChunkMap), intent, options);
+
+  if (reranked === null) {
     // Skip LLM reranking — return candidates scored by RRF only
     const seenFiles = new Set<string>();
     const rrfResults = candidates
@@ -6557,18 +6681,13 @@ export async function structuredSearch(
         seenFiles.add(r.file);
         return true;
       })
-      .filter(r => r.score >= minScore)
+      // minScore is a threshold on blended rerank scores; a deadline fallback's 1/rank scores would
+      // cut a 0.5 threshold to two results, so only a caller that skipped rerank gets it applied here.
+      .filter(r => !skipRerank || r.score >= minScore)
       .slice(0, limit);
     return attachResultMetadata(store.db, rrfResults);
   }
 
-  // Step 5: Rerank chunks
-  const chunksToRerank = rerankDocuments(candidates, docChunkMap);
-
-  hooks?.onRerankStart?.(chunksToRerank.length);
-  const rerankStart2 = Date.now();
-  const reranked = await store.rerank(primaryQuery, chunksToRerank, undefined, intent, { maxDocTokens: options?.rerankMaxDocTokens });
-  hooks?.onRerankDone?.(Date.now() - rerankStart2);
 
   // Step 6: Blend RRF position score with reranker score
   const candidateMap = new Map(candidates.map(c => [c.file, {

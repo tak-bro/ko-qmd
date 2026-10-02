@@ -233,6 +233,8 @@ export type RerankOptions = {
   model?: string;
   /** Per-call doc token cap; overrides QMD_RERANK_MAX_DOC_TOKENS, never raises the context budget. */
   maxDocTokens?: number;
+  /** Called once the rerank model and contexts are loaded, before any scoring (ko-qmd: deadlines start here). */
+  onModelReady?: () => void;
 };
 
 /**
@@ -253,7 +255,7 @@ export type LLMSessionOptions = {
 export interface ILLMSession {
   embed(text: string, options?: EmbedOptions): Promise<EmbeddingResult | null>;
   embedBatch(texts: string[], options?: EmbedOptions): Promise<(EmbeddingResult | null)[]>;
-  expandQuery(query: string, options?: { context?: string; includeLexical?: boolean }): Promise<Queryable[]>;
+  expandQuery(query: string, options?: { context?: string; includeLexical?: boolean; onModelReady?: () => void }): Promise<Queryable[]>;
   rerank(query: string, documents: RerankDocument[], options?: RerankOptions): Promise<RerankResult>;
   /** Whether this session is still valid (not released or aborted) */
   readonly isValid: boolean;
@@ -686,7 +688,7 @@ export interface LLM {
    * Expand a search query into multiple variations for different backends.
    * Returns a list of Queryable objects.
    */
-  expandQuery(query: string, options?: { context?: string, includeLexical?: boolean }): Promise<Queryable[]>;
+  expandQuery(query: string, options?: { context?: string, includeLexical?: boolean, onModelReady?: () => void }): Promise<Queryable[]>;
 
   /**
    * Rerank documents by relevance to a query
@@ -1729,13 +1731,14 @@ export class LlamaCpp implements LLM {
   // High-level abstractions
   // ==========================================================================
 
-  async expandQuery(query: string, options: { context?: string, includeLexical?: boolean } = {}): Promise<Queryable[]> {
+  async expandQuery(query: string, options: { context?: string, includeLexical?: boolean, onModelReady?: () => void } = {}): Promise<Queryable[]> {
     if (this._ciMode) throw new Error("LLM operations are disabled in CI (set CI=true)");
     // Ping activity at start to keep models alive during this operation
     this.touchActivity();
 
     const llama = await this.ensureLlama();
     await this.ensureGenerateModel();
+    options.onModelReady?.();
 
     const includeLexical = options.includeLexical ?? true;
     const context = options.context;
@@ -1824,6 +1827,7 @@ export class LlamaCpp implements LLM {
     this.touchActivity();
 
     const contexts = await this.ensureRerankContexts();
+    options.onModelReady?.();
     if (contexts.length === 0) {
       return {
         results: documents.map((d) => ({ ...d, score: 0.5, index: 0 })),
@@ -2164,7 +2168,7 @@ class LLMSession implements ILLMSession {
 
   async expandQuery(
     query: string,
-    options?: { context?: string; includeLexical?: boolean }
+    options?: { context?: string; includeLexical?: boolean; onModelReady?: () => void }
   ): Promise<Queryable[]> {
     return this.withOperation(() => this.manager.getLlamaCpp().expandQuery(query, options));
   }

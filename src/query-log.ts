@@ -57,8 +57,11 @@ export type QueryLogResult = { file: string; score: number; vec_score?: number; 
  * writing the response on REST). RRF fusion and metadata lookups are not a
  * stage, so the stages need not sum to `ms`.
  */
+export type QueryLogTimeout = "expand" | "rerank";
+
 export type QueryLogStages = {
   refresh?: number;
+  load?: number;
   expand?: number;
   fts?: number;
   embed?: number;
@@ -80,6 +83,8 @@ export type QueryLogEntry = {
   results: QueryLogResult[];
   ms: number;
   stages?: QueryLogStages;
+  /** Stages that ran past their deadline; the search went on without them */
+  timeouts?: QueryLogTimeout[];
   /** Injectable clock for tests; defaults to the time of the call. */
   now?: Date;
 };
@@ -223,7 +228,8 @@ const queueRow = (entry: QueryLogEntry, store: StatusSource): void => {
     searches: entry.searches.map(({ type, query }) => ({ type, query })),
     collections: entry.collections,
     limit: entry.limit,
-    rerank: entry.rerank,
+    // A reranker past its deadline answered nothing: the results are in RRF order.
+    rerank: entry.timeouts?.includes("rerank") ? "timeout" : entry.rerank,
     results: entry.results.map((r, i) => ({
       file: normalizeResultFile(r.file),
       score: r.score,
@@ -233,6 +239,7 @@ const queueRow = (entry: QueryLogEntry, store: StatusSource): void => {
     })),
     ms: entry.ms,
     ...(entry.stages && { stages: entry.stages }),
+    ...(entry.timeouts && entry.timeouts.length > 0 && { timeouts: entry.timeouts }),
     client: {
       tag: clip(readHeader(entry.headers, "x-qmd-tag"), TAG_MAX),
       qid: clip(readHeader(entry.headers, "x-qmd-qid"), QID_MAX),
@@ -306,6 +313,7 @@ export const entryFromRest = (input: {
   results: QueryLogResult[];
   ms: number;
   stages?: QueryLogStages;
+  timeouts?: QueryLogTimeout[];
 }): QueryLogEntry => ({
     via: "rest",
     tool: input.path,
@@ -318,6 +326,7 @@ export const entryFromRest = (input: {
     results: input.results,
     ms: input.ms,
     stages: input.stages,
+    timeouts: input.timeouts,
   });
 
 /** Map an MCP `query` tool call. Only the HTTP transport supplies headers. */
@@ -332,6 +341,7 @@ export const entryFromMcp = (input: {
   results: QueryLogResult[];
   ms: number;
   stages?: QueryLogStages;
+  timeouts?: QueryLogTimeout[];
 }): QueryLogEntry => ({
     via: "mcp",
     tool: "query",
@@ -343,6 +353,7 @@ export const entryFromMcp = (input: {
     results: input.results,
     ms: input.ms,
     stages: input.stages,
+    timeouts: input.timeouts,
   });
 
 export const _resetQueryLogForTesting = (): void => {

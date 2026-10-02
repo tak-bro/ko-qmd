@@ -5,10 +5,10 @@
  * Uses mocked Ollama responses and a test database.
  */
 
-import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { openDatabase, loadSqliteVec } from "../src/db.js";
 import type { Database } from "../src/db.js";
-import { getDefaultLlamaCpp, disposeDefaultLlamaCpp } from "../src/llm";
+import { getDefaultLlamaCpp, disposeDefaultLlamaCpp, LlamaCpp } from "../src/llm";
 import { unlinkSync } from "node:fs";
 import { mkdtemp, writeFile, readdir, unlink, rmdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -935,7 +935,7 @@ describe("MCP Server", () => {
 // HTTP Transport Tests
 // =============================================================================
 
-import { startMcpHttpServer, type HttpServerHandle } from "../src/mcp/server";
+import { resolveDeadlineMs, startMcpHttpServer, type HttpServerHandle } from "../src/mcp/server";
 import { normalizeRerankMaxDocTokens } from "../src/llm";
 import { _resetProductionModeForTesting } from "../src/store";
 
@@ -1523,7 +1523,7 @@ describe("REST /query, MCP query and the query log", () => {
   });
 
   type RawScoredResult = { file: string; score: number; vec_score?: number; fts_score?: number };
-  type RestQueryResponse = { results: (RawScoredResult & { snippet: string })[] };
+  type RestQueryResponse = { results: (RawScoredResult & { snippet: string })[]; timeouts?: string[] };
 
   const postSearches = async (body: Record<string, unknown>, headers: Record<string, string> = {}) => {
     const res = await fetch(`${baseUrl}/query`, {
@@ -1563,7 +1563,7 @@ describe("REST /query, MCP query and the query log", () => {
   };
 
   type QueryToolResponse = {
-    result: { structuredContent: { results: RawScoredResult[] } };
+    result: { structuredContent: { results: RawScoredResult[]; timeouts?: string[] } };
   };
 
   const callQueryTool = async (
@@ -1796,6 +1796,45 @@ describe("REST /query, MCP query and the query log", () => {
     expect(after.status).toBe(200);
     expect(after.json).toEqual(before.json);
     expect(queryLogStatus().lastError).not.toBeNull();   // the write was attempted and failed
+  });
+
+  // Last in this block: the reranker it abandons never settles, so this store skips rerank afterwards.
+  test("a rerank past its deadline is reported in the REST body, the MCP tool result and the log row", async () => {
+    process.env.QMD_QUERY_LOG = "1";
+    const origDeadline = process.env.QMD_RERANK_DEADLINE_MS;
+    process.env.QMD_RERANK_DEADLINE_MS = "20";
+    // The reranker loads, then never answers.
+    const rerankSpy = vi.spyOn(LlamaCpp.prototype, "rerank").mockImplementation((_query, _docs, options) => {
+      options?.onModelReady?.();
+      return new Promise(() => {});
+    });
+    // A fresh intent changes the rerank cache key, so no score cached by an earlier test answers instead.
+    const intent = `deadline test ${Date.now()}`;
+    try {
+      const rest = await postSearches({ searches: [{ type: "lex", query: "readme" }], collections: ["docs"], rerank: true, intent });
+      expect(rest.status).toBe(200);
+      expect(rest.json.timeouts).toEqual(["rerank"]);
+      expect(rest.json.results.length).toBeGreaterThan(0);
+
+      const mcp = await callQueryTool({ searches: [{ type: "lex", query: "readme" }], collections: ["docs"], rerank: true, intent });
+      expect(mcp.status).toBe(200);
+      expect(mcp.json.result.structuredContent.timeouts).toEqual(["rerank"]);
+
+      await flushQueryLog();
+      const rows = logRows();
+      expect(rows.map((r) => [r.via, r.rerank, r.timeouts])).toEqual([
+        ["rest", "timeout", ["rerank"]],
+        ["mcp", "timeout", ["rerank"]],
+      ]);
+      expect(rows[0].stages.rerank).toEqual(expect.any(Number));
+      // Skipped outright — the first rerank is still running — so no rerank ms at all.
+      expect(rows[1].stages).not.toHaveProperty("rerank");
+      expect(rerankSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      rerankSpy.mockRestore();
+      if (origDeadline !== undefined) process.env.QMD_RERANK_DEADLINE_MS = origDeadline;
+      else delete process.env.QMD_RERANK_DEADLINE_MS;
+    }
   });
 });
 
@@ -2121,5 +2160,16 @@ describe("REST /query rerankMaxDocTokens validation", () => {
 
   test.each([0, -1, 1.5, "128", null, undefined])("%j is ignored", (value) => {
     expect(normalizeRerankMaxDocTokens(value)).toBeUndefined();
+  });
+});
+
+describe("search deadlines", () => {
+  test("unset or malformed falls back, 0 turns it off, a positive integer overrides", () => {
+    expect(resolveDeadlineMs(undefined, 10_000)).toBe(10_000);
+    expect(resolveDeadlineMs("", 10_000)).toBe(10_000);
+    expect(resolveDeadlineMs("abc", 10_000)).toBe(10_000);
+    expect(resolveDeadlineMs("-5", 10_000)).toBe(10_000);
+    expect(resolveDeadlineMs("0", 10_000)).toBe(0);
+    expect(resolveDeadlineMs("2500", 10_000)).toBe(2_500);
   });
 });
