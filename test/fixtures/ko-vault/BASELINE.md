@@ -1005,6 +1005,34 @@ RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.9211 full_r5=0.9588 full_mrr=
 RESULT-HARD hybrid_r1=0.4111 hybrid_mrr=0.6356 full_r1=0.6111 full_mrr=0.8287 n=30 form=plain
 ```
 
+## 2026-10-09 — adaptivity probe: no pre-rerank signal separates the tied pairs (no change)
+
+Two open items from the C+A branch asked whether anything before rerank can do better. Both
+answered no, with numbers. Nothing below changes a weight, a stem or the table.
+
+**sem-08 vs hmu-05 (adaptive routing?).** `hmu-05` wants the vector rank 1 to win ties, `sem-08`
+wants the lex rank 1 to win them, and both are relaxed-first fusions. Candidate signal: the lex
+top1-vs-runnerup BM25 margin. Measured over all 30 hard queries' stripped lex lists
+(`tmp/probe-ca/probe3.ts`, read-only over the bench index): every relaxed list scores its top at
+0.89–0.98 with a runner-up gap of 0.000–0.030. The two cases sit inside the same noise —
+`sem-08` (lex right) 0.965 vs 0.951, gap 0.014; `hmu-05` (lex wrong) 0.954 vs 0.948, gap 0.006 —
+so no threshold separates "lex is right" from "lex is wrong". List agreement does not separate
+them either: both pairs split the two lists the same way, mirrored. The only asymmetry is
+document content, which is what the reranker already reads: `full` rank 1 holds on both queries.
+Static — or margin-adaptive — pre-rerank fusion cannot split a mirrored tie; stop tuning there.
+
+**hneg-07 (vocabulary gap).** Its kept clause shares zero content words with the expected note
+(every word lands only in the decoy), both lists agree on the decoy at rank 1, and the expected
+note sits at vec rank 3. No query rewrite reaches a document with no shared surface; the in-scope
+fixes are exhausted (expansion stays off for Hangul, index-time summaries were rejected
+2026-09-25, a bigger embedding model is a separate A/B). The reranker already carries it to
+`full` rank 2. Left open.
+
+Follow-up with a real signal, not taken here: weight a relaxed list by per-document term
+coverage (how many of the query's words each document actually matched) instead of one global
+constant. That needs match counts out of FTS per candidate — new retrieval machinery, designed
+and benched on its own, not a constant tweak inside this branch.
+
 The seam reference moves to the R run above. The gate reads the last two lines below:
 
 RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.9211 full_r5=0.9588 full_mrr=0.9309
