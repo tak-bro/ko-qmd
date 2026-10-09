@@ -2928,11 +2928,13 @@ describe("Reciprocal Rank Fusion", () => {
     ];
     expect(getStructuredRrfWeights(meta)).toEqual([2.0, 0.5, 1.0]);
 
+    // A relaxed first list forfeits the positional boost and halves again: its
+    // rank 1 is worth less than a strict list's rank 4 (hmu-05 probe 2026-10-09).
     const relaxedFirst: RankedListMeta[] = [
       { source: "fts", queryType: "lex", query: "relaxed", relaxed: true },
       { source: "fts", queryType: "lex", query: "strict" },
     ];
-    expect(getStructuredRrfWeights(relaxedFirst)).toEqual([1.0, 1.0]);
+    expect(getStructuredRrfWeights(relaxedFirst)).toEqual([0.25, 1.0]);
 
     // A vector list keeps the first-list boost; only a relaxed FTS list is halved.
     const vecFirst: RankedListMeta[] = [
