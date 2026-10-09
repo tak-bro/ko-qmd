@@ -72,6 +72,23 @@ export function sharesHangulBigram(a: string, b: string): boolean {
 }
 
 /**
+ * Split a "X 말고 Y" query at its last exclusion marker into the excluded (X)
+ * and kept (Y) token lists. Null when there is no rewrite: a `"` phrase is
+ * present, no Hangul, no standalone marker, an empty side, or a Y of only
+ * `-term` exclusions (lex needs a positive term to match).
+ */
+function splitHangulNegation(query: string): { excluded: string[]; kept: string[] } | null {
+  if (query.includes('"') || !containsHangul(query)) return null;
+  const tokens = query.trim().split(/\s+/);
+  const last = tokens.findLastIndex((token) => NEGATION_MARKERS.has(token));
+  if (last < 1 || last === tokens.length - 1) return null;
+  const kept = tokens.slice(last + 1);
+  // A Y of only `-term` exclusions leaves lex no positive term to match.
+  if (kept.every((token) => token.startsWith("-"))) return null;
+  return { excluded: tokens.slice(0, last), kept };
+}
+
+/**
  * Drop the excluded clause of a Korean negation query and keep what follows the
  * last marker (`tf-idf 말고 순위 공식` → `순위 공식`), so retrieval and rerank
  * never see the concept the user ruled out. Returns the query unchanged when a
@@ -79,14 +96,8 @@ export function sharesHangulBigram(a: string, b: string): boolean {
  * no marker stands as its own token — a marker glued to X (`이거말고`) is not split.
  */
 export function stripHangulNegation(query: string): string {
-  if (query.includes('"') || !containsHangul(query)) return query;
-  const tokens = query.trim().split(/\s+/);
-  const last = tokens.findLastIndex((token) => NEGATION_MARKERS.has(token));
-  if (last < 1 || last === tokens.length - 1) return query;
-  const kept = tokens.slice(last + 1);
-  // A Y of only `-term` exclusions leaves lex no positive term to match.
-  if (kept.every((token) => token.startsWith("-"))) return query;
-  return kept.join(" ");
+  const split = splitHangulNegation(query);
+  return split ? split.kept.join(" ") : query;
 }
 
 /**

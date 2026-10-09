@@ -6084,6 +6084,9 @@ export async function hybridQuery(
   options?: HybridQueryOptions
 ): Promise<HybridQueryResult[]> {
   // ko-qmd: "X 말고 Y" names X to exclude — every list and the reranker see only Y.
+  // (Tried demoting X with lex -terms: falsified 2026-10-09 — the expected note
+  // often discusses X itself, e.g. bm25-ranking.md mentions TF-IDF, so NOT
+  // removes the answer along with the decoy.)
   const query = stripHangulNegation(rawQuery);
   const limit = options?.limit ?? 10;
   const minScore = options?.minScore ?? 0;
