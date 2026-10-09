@@ -123,6 +123,27 @@ describe("hangulLoanwordForms", () => {
   test("looks up the particle-stripped stem, once", () => {
     expect(hangulLoanwordForms("서치를")).toEqual(["search"]);
   });
+
+  test("query-log loanwords bridge to their Latin spellings", () => {
+    expect(hangulLoanwordForms("지연")).toEqual(["latency"]);
+    expect(hangulLoanwordForms("병렬")).toEqual(["parallel"]);
+    expect(hangulLoanwordForms("게이트")).toEqual(["gate"]);
+    expect(hangulLoanwordForms("가드")).toEqual(["guard"]);
+    expect(hangulLoanwordForms("패널")).toEqual(["panel"]);
+    expect(hangulLoanwordForms("팔레트")).toEqual(["palette"]);
+    expect(hangulLoanwordForms("하네스")).toEqual(["harness"]);
+    expect(hangulLoanwordForms("옵시디언")).toEqual(["obsidian"]);
+    expect(hangulLoanwordForms("백링크")).toEqual(["backlink"]);
+    expect(hangulLoanwordForms("포즈")).toEqual(["pause"]);
+    expect(hangulLoanwordForms("루프")).toEqual(["loop"]);
+  });
+
+  test("native words from the same logs stay unbridged", () => {
+    expect(hangulLoanwordForms("색인")).toEqual([]);
+    expect(hangulLoanwordForms("질의")).toEqual([]);
+    expect(hangulLoanwordForms("요약")).toEqual([]);
+    expect(hangulLoanwordForms("문서")).toEqual([]);
+  });
 });
 
 describe("hangulTermQuery with loanwords", () => {
@@ -422,8 +443,8 @@ describe("structuredSearch weight for a relaxed lex list", () => {
     expect(await lexWeight("검색 품질")).toBe(2.0);
   });
 
-  test("a lex line that only matched through the any-word retry counts half", async () => {
-    expect(await lexWeight("역색인 구조를 설명하는 문서를 찾고 싶다")).toBe(1.0);
+  test("a lex line that only matched through the any-word retry forfeits the first-list boost", async () => {
+    expect(await lexWeight("역색인 구조를 설명하는 문서를 찾고 싶다")).toBe(0.25);
   });
 });
 

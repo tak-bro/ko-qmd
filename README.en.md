@@ -38,7 +38,7 @@ flowchart LR
   (`검색을` → `검색`), a two-particle chain (`청킹에서의` → `청킹`), verb and nominalizing endings
   (`토큰화하는` → `토큰화`, `검색하기` → `검색`), `한`/`된` endings (`필요한` → `필요`) and the 하↔해
   contraction. Quoted phrases, Hanja and kana are left as written.
-- **Loanword bridge** — about 80 built-in Hangul spellings of technical terms (`서치`, `웹`, `코어`,
+- **Loanword bridge** — about 90 built-in Hangul spellings of technical terms (`서치`, `웹`, `코어`,
   `마이그레이션`, …) also search their English spelling, so `하이브리드 서치` finds a `hybrid-search` note.
   Only the query changes; no re-index is needed.
 - **Mixed-script token split** — `SKILL.md계약의핵심` becomes `skill` AND `md` AND `계약의핵심`.
