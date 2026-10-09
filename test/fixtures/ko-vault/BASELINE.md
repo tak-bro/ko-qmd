@@ -963,3 +963,47 @@ no longer moved train and were removed. Held-out rose by 0.017 against train's 0
 The loop turned the head start off whenever intent was given, so intent words could still pick a
 later chunk. Review changed that to half the head start (8): a single intent word would otherwise
 switch the rule off entirely. No goldset carries intent, so this moves no number.
+
+## 2026-10-09 — a relaxed first lex list forfeits the positional boost
+
+`getStructuredRrfWeights` gave the first list 2.0 and halved a relaxed list to 1.0 — the same
+weight as the vector list. A probe over the seam reference run's per-list ranks showed that is
+still a tie a decoy wins: `hmu-05` has the decoy at lex r1 + vec r2 against the expected note at
+lex r4 + vec r1, which fuses to 0.0743 vs 0.0742 once the top-rank bonus lands on both. A relaxed
+first list now counts 0.25; non-first relaxed lists still count half, `getHybridRrfWeights` is
+untouched, and the `hybridQuery` (plain) path measures byte-identical to its old lines below.
+
+Rule R was fixed before the run (seam form, one run decides — deterministic):
+
+- R0: `bm25_r5` = 0.8459 and `vector_r5` = 0.9050 (neither goes through RRF).
+- R1: hard `hybrid_r1` > 0.4111.
+- R2: hard `full_r1` ≥ 0.6111 and every easy recall@5 line holds.
+- R3: `bm25` per-query recall@5·MRR identical (the lex path is untouched).
+
+Keep if all hold. Against a stashed-base rerun for the per-query diff:
+
+```
+RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.9211 full_r5=0.9588 full_mrr=0.9309
+RESULT-HARD hybrid_r1=0.4444 hybrid_mrr=0.6773 full_r1=0.6111 full_mrr=0.8292 n=30 tol=0 form=seam
+```
+
+Verdict: **keep**. R0 holds. R1 is 0.4444 (`hmu-03`, `hmu-05` take hybrid rank 1). R2 holds and hard
+`full_mrr` rises 0.8287 → 0.8292. R3 holds: no `bm25` or `vector` top_files moved on any of the 93
+queries — the 41 moved queries move on `hybrid`/`full` only, and all movement is at rank 2 or
+below except three rank-1 flips: `hmu-03` and `hmu-05` from decoy to expected, and `sem-08` from
+expected to decoy (its relaxed lex rank 1 is the correct note, the one case the blunter weight
+punishes; its `full` rank 1 and every recall@5 line hold). `hneg-07` does not move: both lists
+agree on the decoy, so no static weight reaches it. The loanword additions in the same branch
+(`지연` → `latency` et al.) move nothing: no bench query uses the new words.
+
+The plain form (`KO_FORM=plain`, reference only since the gate moved to seam) at the same commit:
+
+```
+RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.9211 full_r5=0.9588 full_mrr=0.9308
+RESULT-HARD hybrid_r1=0.4111 hybrid_mrr=0.6356 full_r1=0.6111 full_mrr=0.8287 n=30 form=plain
+```
+
+The seam reference moves to the R run above. The gate reads the last two lines below:
+
+RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.9211 full_r5=0.9588 full_mrr=0.9309
+RESULT-HARD hybrid_r1=0.4444 hybrid_mrr=0.6773 full_r1=0.6111 full_mrr=0.8292 n=30 tol=0 form=seam
