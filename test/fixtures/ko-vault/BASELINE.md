@@ -963,3 +963,77 @@ no longer moved train and were removed. Held-out rose by 0.017 against train's 0
 The loop turned the head start off whenever intent was given, so intent words could still pick a
 later chunk. Review changed that to half the head start (8): a single intent word would otherwise
 switch the rule off entirely. No goldset carries intent, so this moves no number.
+
+## 2026-10-09 — a relaxed first lex list forfeits the positional boost
+
+`getStructuredRrfWeights` gave the first list 2.0 and halved a relaxed list to 1.0 — the same
+weight as the vector list. A probe over the seam reference run's per-list ranks showed that is
+still a tie a decoy wins: `hmu-05` has the decoy at lex r1 + vec r2 against the expected note at
+lex r4 + vec r1, which fuses to 0.0743 vs 0.0742 once the top-rank bonus lands on both. A relaxed
+first list now counts 0.25; non-first relaxed lists still count half, `getHybridRrfWeights` is
+untouched, and the `hybridQuery` (plain) path measures byte-identical to its old lines below.
+
+Rule R was fixed before the run (seam form, one run decides — deterministic):
+
+- R0: `bm25_r5` = 0.8459 and `vector_r5` = 0.9050 (neither goes through RRF).
+- R1: hard `hybrid_r1` > 0.4111.
+- R2: hard `full_r1` ≥ 0.6111 and every easy recall@5 line holds.
+- R3: `bm25` per-query recall@5·MRR identical (the lex path is untouched).
+
+Keep if all hold. Against a stashed-base rerun for the per-query diff:
+
+```
+RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.9211 full_r5=0.9588 full_mrr=0.9309
+RESULT-HARD hybrid_r1=0.4444 hybrid_mrr=0.6773 full_r1=0.6111 full_mrr=0.8292 n=30 tol=0 form=seam
+```
+
+Verdict: **keep**. R0 holds. R1 is 0.4444 (`hmu-03`, `hmu-05` take hybrid rank 1). R2 holds and hard
+`full_mrr` rises 0.8287 → 0.8292. R3 holds: no `bm25` or `vector` top_files moved on any of the 93
+queries — the 41 moved queries move on `hybrid`/`full` only, and all movement is at rank 2 or
+below except three rank-1 flips: `hmu-03` and `hmu-05` from decoy to expected, and `sem-08` from
+expected to decoy (its relaxed lex rank 1 is the correct note, the one case the blunter weight
+punishes; its `full` rank 1 and every recall@5 line hold). Per-bucket `neg` numbers against the
+stashed-base rerun: `neg` full MRR 0.6944 → 0.6958, `neg` hybrid MRR 0.4408 → 0.4560; `hneg-01`
+hybrid MRR 0.125 → 0.143 (rank 8 → 7), `hneg-07` hybrid unchanged at 0.000 (both lists agree on
+the decoy — see the 2026-10-09 probe note). The loanword additions in the same branch
+(`지연` → `latency` et al.) move nothing: no bench query uses the new words.
+
+The plain form (`KO_FORM=plain`, reference only since the gate moved to seam) at the same commit:
+
+```
+RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.9211 full_r5=0.9588 full_mrr=0.9308
+RESULT-HARD hybrid_r1=0.4111 hybrid_mrr=0.6356 full_r1=0.6111 full_mrr=0.8287 n=30 form=plain
+```
+
+## 2026-10-09 — adaptivity probe: no pre-rerank signal separates the tied pairs (no change)
+
+Two open items from the C+A branch asked whether anything before rerank can do better. Both
+answered no, with numbers. Nothing below changes a weight, a stem or the table.
+
+**sem-08 vs hmu-05 (adaptive routing?).** `hmu-05` wants the vector rank 1 to win ties, `sem-08`
+wants the lex rank 1 to win them, and both are relaxed-first fusions. Candidate signal: the lex
+top1-vs-runnerup BM25 margin. Measured over all 30 hard queries' stripped lex lists
+(`tmp/probe-ca/probe3.ts`, read-only over the bench index): every relaxed list scores its top at
+0.89–0.98 with a runner-up gap of 0.000–0.030. The two cases sit inside the same noise —
+`sem-08` (lex right) 0.965 vs 0.951, gap 0.014; `hmu-05` (lex wrong) 0.954 vs 0.948, gap 0.006 —
+so no threshold separates "lex is right" from "lex is wrong". List agreement does not separate
+them either: both pairs split the two lists the same way, mirrored. The only asymmetry is
+document content, which is what the reranker already reads: `full` rank 1 holds on both queries.
+Static — or margin-adaptive — pre-rerank fusion cannot split a mirrored tie; stop tuning there.
+
+**hneg-07 (vocabulary gap).** Its kept clause shares zero content words with the expected note
+(every word lands only in the decoy), both lists agree on the decoy at rank 1, and the expected
+note sits at vec rank 3. No query rewrite reaches a document with no shared surface; the in-scope
+fixes are exhausted (expansion stays off for Hangul, index-time summaries were rejected
+2026-09-25, a bigger embedding model is a separate A/B). The reranker already carries it to
+`full` rank 2. Left open.
+
+Follow-up with a real signal, not taken here: weight a relaxed list by per-document term
+coverage (how many of the query's words each document actually matched) instead of one global
+constant. That needs match counts out of FTS per candidate — new retrieval machinery, designed
+and benched on its own, not a constant tweak inside this branch.
+
+The seam reference moves to the R run above. The gate reads the last two lines below:
+
+RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.9211 full_r5=0.9588 full_mrr=0.9309
+RESULT-HARD hybrid_r1=0.4444 hybrid_mrr=0.6773 full_r1=0.6111 full_mrr=0.8292 n=30 tol=0 form=seam

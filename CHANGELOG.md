@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+- `structuredSearch` (MCP `searches`, SDK `search({ queries })`) no longer lets a relaxed
+  (any-word) first lex list keep the 2x positional boost: it now counts 0.25 instead of 1.0.
+  Even halved, a relaxed rank 1 still tied a vector rank 1 against a lex rank 4 (`hmu-05`
+  probe), so the decoy sharing a few question words kept rank 1 on the `rerank:false` path.
+  On the ko-vault seam form, hard `hybrid_r1` goes 0.4111 → 0.4444 with `full_r1` unchanged at
+  0.6111; one easy query (`sem-08`) trades hybrid rank 1 for 2 while its `full` rank 1 and all
+  recall@5 lines hold. Non-first relaxed lists still count half, as before.
+- Hangul loanword table gains 11 entries mined from real query-log traffic (`지연` →
+  `latency`, `병렬` → `parallel`, `게이트` → `gate`, `가드` → `guard`, `패널` → `panel`,
+  `팔레트` → `palette`, `하네스` → `harness`, `옵시디언` → `obsidian`, `백링크` → `backlink`,
+  `포즈` → `pause`, `루프` → `loop`). Native words from the same logs (`색인`·`질의`·`요약`·`문서`
+  …) stay unbridged. Query-side only, no re-index; ko-vault bench lines are unchanged.
+- Negation routing stays strip-only by measurement: demoting X with lex `-term`s was tried
+  and reverted — the expected note often discusses X itself (`bm25-ranking.md` mentions TF-IDF),
+  so NOT removed the answer with the decoy (`hybrid_r1` 0.4111 → 0.3778). `stripHangulNegation`
+  now shares its parsing through an internal split helper; behavior is unchanged.
+
 ## [2.8.3-ko.7] - 2026-10-02
 
 The query path is now observable and bounded. Every query-log row breaks its latency into

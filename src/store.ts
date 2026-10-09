@@ -5882,11 +5882,14 @@ export function getHybridRrfWeights(rankedListMeta: RankedListMeta[]): number[] 
  * ko-qmd: a relaxed FTS list counts half here too, as in getHybridRrfWeights. At a flat 2.0 a
  * lex line that only matched some of a question's words outranked the vector list, and a decoy
  * sharing a few of those words took rank 1 (test/fixtures/ko-vault/BASELINE.md 2026-09-27).
+ * ko-qmd: a relaxed first list forfeits the positional boost and halves again (0.25) — even
+ * halved, its rank 1 still tied a vector rank 1 with a lex rank 4 (hmu-05, 2026-10-09 probe).
  */
+const RELAXED_FIRST_LIST_WEIGHT = 0.25;
 export function getStructuredRrfWeights(rankedListMeta: RankedListMeta[]): number[] {
   return rankedListMeta.map((meta, i) => {
-    const weight = i === 0 ? 2.0 : 1.0;
-    return meta.relaxed ? weight * RELAXED_LIST_WEIGHT : weight;
+    if (meta.relaxed) return i === 0 ? RELAXED_FIRST_LIST_WEIGHT : RELAXED_LIST_WEIGHT;
+    return i === 0 ? 2.0 : 1.0;
   });
 }
 
@@ -6084,6 +6087,9 @@ export async function hybridQuery(
   options?: HybridQueryOptions
 ): Promise<HybridQueryResult[]> {
   // ko-qmd: "X 말고 Y" names X to exclude — every list and the reranker see only Y.
+  // (Tried demoting X with lex -terms: falsified 2026-10-09 — the expected note
+  // often discusses X itself, e.g. bm25-ranking.md mentions TF-IDF, so NOT
+  // removes the answer along with the decoy.)
   const query = stripHangulNegation(rawQuery);
   const limit = options?.limit ?? 10;
   const minScore = options?.minScore ?? 0;
