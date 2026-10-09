@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.8.3-ko.8] - 2026-10-09
+
 - `structuredSearch` (MCP `searches`, SDK `search({ queries })`) no longer lets a relaxed
   (any-word) first lex list keep the 2x positional boost: it now counts 0.25 instead of 1.0.
   Even halved, a relaxed rank 1 still tied a vector rank 1 against a lex rank 4 (`hmu-05`
