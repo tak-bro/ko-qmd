@@ -992,8 +992,10 @@ Verdict: **keep**. R0 holds. R1 is 0.4444 (`hmu-03`, `hmu-05` take hybrid rank 1
 queries — the 41 moved queries move on `hybrid`/`full` only, and all movement is at rank 2 or
 below except three rank-1 flips: `hmu-03` and `hmu-05` from decoy to expected, and `sem-08` from
 expected to decoy (its relaxed lex rank 1 is the correct note, the one case the blunter weight
-punishes; its `full` rank 1 and every recall@5 line hold). `hneg-07` does not move: both lists
-agree on the decoy, so no static weight reaches it. The loanword additions in the same branch
+punishes; its `full` rank 1 and every recall@5 line hold). Per-bucket `neg` numbers against the
+stashed-base rerun: `neg` full MRR 0.6944 → 0.6958, `neg` hybrid MRR 0.4408 → 0.4560; `hneg-01`
+hybrid MRR 0.125 → 0.143 (rank 8 → 7), `hneg-07` hybrid unchanged at 0.000 (both lists agree on
+the decoy — see the 2026-10-09 probe note). The loanword additions in the same branch
 (`지연` → `latency` et al.) move nothing: no bench query uses the new words.
 
 The plain form (`KO_FORM=plain`, reference only since the gate moved to seam) at the same commit:
