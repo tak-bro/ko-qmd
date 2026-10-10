@@ -6042,8 +6042,8 @@ export const DEFAULT_LOAD_TIMEOUT_MS = 120_000;
 
 /** Load-timeout resolver for runWithDeadline; exported for tests. */
 export function resolveLoadTimeoutMs(): number {
-  const raw = process.env.QMD_LLM_LOAD_TIMEOUT_MS;
-  if (raw === undefined) return DEFAULT_LOAD_TIMEOUT_MS;
+  const raw = process.env.QMD_LLM_LOAD_TIMEOUT_MS?.trim();
+  if (raw === undefined || raw === "") return DEFAULT_LOAD_TIMEOUT_MS;
   return /^\d+$/.test(raw) ? Number(raw) : DEFAULT_LOAD_TIMEOUT_MS;
 }
 

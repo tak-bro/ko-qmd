@@ -3103,14 +3103,25 @@ describe("Reciprocal Rank Fusion", () => {
       const store = {
         rerank: vi.fn(async () => new Promise<never>(() => {})),
       } as Store; // fake-store stub: only rerank() is exercised below
-      const out = await rerankWithDeadline(
-        store,
-        "q",
-        [{ file: "a.md", text: "t" }],
-        undefined,
-        undefined,
-      );
+      const hooks = {
+        onModelLoad: vi.fn(),
+        onDeadline: vi.fn(),
+      };
+      const out = await rerankWithDeadline(store, "q", [{ file: "a.md", text: "t" }], undefined, {
+        hooks,
+      });
       expect(out).toBeNull();
+      // The bounded wait is reported as the load stage with a deadline entry.
+      expect(hooks.onModelLoad).toHaveBeenCalledTimes(1);
+      expect(hooks.onModelLoad.mock.calls[0]![1]).toBeGreaterThanOrEqual(40);
+      expect(hooks.onDeadline).toHaveBeenCalledTimes(1);
+      expect(hooks.onDeadline.mock.calls[0]).toHaveLength(2);
+      // The abandoned slot is held: a later deadline call skips at once.
+      const again = await rerankWithDeadline(store, "q", [{ file: "a.md", text: "t" }], undefined, {
+        rerankDeadlineMs: 5000,
+      });
+      expect(again).toBeNull();
+      expect(store.rerank).toHaveBeenCalledTimes(1);
     } finally {
       if (prev === undefined) delete process.env.QMD_LLM_LOAD_TIMEOUT_MS;
       else process.env.QMD_LLM_LOAD_TIMEOUT_MS = prev;
