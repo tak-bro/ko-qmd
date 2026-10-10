@@ -1145,3 +1145,36 @@ The seam reference moves to this run. The gate reads the last two lines below:
 
 RESULT bm25_r5=0.8428 vector_r5=0.8794 hybrid_r5=0.8957 full_r5=0.9485 full_mrr=0.9165
 RESULT-HARD hybrid_r1=0.4519 hybrid_mrr=0.6429 full_r1=0.5963 full_mrr=0.8007 n=45 tol=0 form=seam
+
+## 2026-10-10 — hard rewords applied (4 of 5 vector-miss queries), reference re-measured
+
+Task B's scratch-index diagnosis (same code path, Qwen3-Embedding-0.6B) classified the
+five new-query vector r5=0s: hsh-16 query artifact ("눈으로" drags to the
+result-highlighting distractor), hmu-09/hmu-12 two-concept dilution (each half fails
+alone, so the query measured nothing), hneg-13 unretrievable Y-half. hneg-15 kept:
+its Y-half already retrieves at #1, so it stands as a clean negation-isolation probe
+(vector provably cannot subtract "미세 조정", later stages must). Rewords verified
+rank ≤5 on the scratch index before adoption; exact strings matter (hmu-12's balanced
+wording — 키워드/벡터-heavy variants push query-expansion to #18–19).
+
+Reworded (`ko-bench.json`, count locks unchanged):
+- hsh-16 → `1차 검색이 고른 후보들을 질의와 함께 다시 살펴 순서를 바로잡는 단계`
+- hmu-09 → `임베딩으로 의미가 비슷한 글을 찾은 뒤 리랭커로 후보 순서를 다시 매기기`
+- hmu-12 → `짧은 질의를 동의어로 넓히고 키워드와 벡터 점수를 합쳐 찾는 방식`
+- hneg-13 → `자동 완성 말고 짧은 질의에 동의어를 덧붙여 놓치는 문서를 줄이는 기법`
+
+`bash scripts/bench-ko.sh` (defaults, seam) after the rewords:
+
+```
+RESULT bm25_r5=0.8713 vector_r5=0.9119 hybrid_r5=0.9282 full_r5=0.9648 full_mrr=0.9352
+RESULT-HARD hybrid_r1=0.5185 hybrid_mrr=0.7256 full_r1=0.6407 full_mrr=0.8519 n=45 form=seam
+```
+
+Movement vs the pre-reword n=45 reference: bm25 +0.0285, vector +0.0325, hard
+hybrid_r1 +0.0666 (~3 queries), hard full_r1 +0.0444 (~2 queries) — every line up,
+as the probe predicted. The seam form is deterministic; tolerance stays 0.
+
+The seam reference moves to this run. The gate reads the last two lines below:
+
+RESULT bm25_r5=0.8713 vector_r5=0.9119 hybrid_r5=0.9282 full_r5=0.9648 full_mrr=0.9352
+RESULT-HARD hybrid_r1=0.5185 hybrid_mrr=0.7256 full_r1=0.6407 full_mrr=0.8519 n=45 tol=0 form=seam

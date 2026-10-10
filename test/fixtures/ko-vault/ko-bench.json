@@ -1140,7 +1140,7 @@
     },
     {
       "id": "hsh-16",
-      "query": "뽑힌 후보를 묻는 말과 나란히 놓고 눈으로 다시 줄을 세우는 손질",
+      "query": "1차 검색이 고른 후보들을 질의와 함께 다시 살펴 순서를 바로잡는 단계",
       "type": "sem-hard",
       "description": "ko:sem-hard — 리랭킹·인코더 용어 미사용",
       "expected_files": [
@@ -1160,7 +1160,7 @@
     },
     {
       "id": "hmu-09",
-      "query": "뜻이 비슷한 글을 뽑아낸 뒤 묻는 말과 견주어 줄을 다시 세우기",
+      "query": "임베딩으로 의미가 비슷한 글을 찾은 뒤 리랭커로 후보 순서를 다시 매기기",
       "type": "multi",
       "description": "ko:multi",
       "expected_files": [
@@ -1193,7 +1193,7 @@
     },
     {
       "id": "hmu-12",
-      "query": "짧은 물음을 넓힌 뒤 낱말 점수와 뜻 점수를 섞어 찾기",
+      "query": "짧은 질의를 동의어로 넓히고 키워드와 벡터 점수를 합쳐 찾는 방식",
       "type": "multi",
       "description": "ko:multi",
       "expected_files": [
@@ -1237,7 +1237,7 @@
     },
     {
       "id": "hneg-13",
-      "query": "입력 제안 말고 짧은 물음에 살을 붙이는 기법",
+      "query": "자동 완성 말고 짧은 질의에 동의어를 덧붙여 놓치는 문서를 줄이는 기법",
       "type": "neg",
       "description": "ko:neg",
       "excluded": "distractors/autocomplete.md",
