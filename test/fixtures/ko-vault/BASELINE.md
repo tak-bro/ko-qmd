@@ -1073,3 +1073,21 @@ The seam reference moves to this run. The gate reads the last two lines below:
 
 RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.9211 full_r5=0.9695 full_mrr=0.9314
 RESULT-HARD hybrid_r1=0.4778 hybrid_mrr=0.6948 full_r1=0.6111 full_mrr=0.8306 n=30 tol=0 form=seam
+
+## 2026-10-10 — cascade latency probe (no gate change)
+
+`tmp/probe-cascade.ts` (uncommitted): two fresh ko-vault indexes, the 30 hard
+seam queries through `structuredSearch` with `candidateLimit: 40`, first query
+dropped (model load), rerank stage ms per query, cascade on vs
+`QMD_RERANK_CASCADE=0`:
+
+| | p50 | p90 | mean | docs scored (mean) | skipped |
+|---|---|---|---|---|---|
+| cascade on | 1436 ms | 3057 ms | 2053 ms | 22 | 16/29 |
+| cascade off | 2985 ms | 3330 ms | 2938 ms | 31 | — |
+
+Top-1 agreement 29/29: the skipped tails change no answer on this set. The
+p50 halves while the p90 barely moves — contested heads still score all 40,
+so the 15 / 0.08 constants buy the median, not the tail. A p90-motivated
+tuning would need a tighter gate or a smaller first batch, measured the same
+way. Quality lines are untouched by this probe (same commit, switch only).
