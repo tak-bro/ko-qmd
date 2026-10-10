@@ -1190,10 +1190,36 @@ Per-query rows from this run's `tmp/bench-ko/bench.json` (seam, uncommitted):
   zero-overlap shape as `hneg-08` (none of 벌여/놓고/섞어/푸는/연습 in the doc).
   Scratch-index probe (repo code path, 97 docs, `stripHangulNegation` + `searchFTS`
   top-20): miss → strict rank 1 with one appended sentence, five spaced-repetition
-  controls byte-identical. Upstream patch below, not applied here (`wiki/` is
-  re-copied from 2nd-brain, never edited in this repo):
+  controls byte-identical. (2026-10-11: 2nd-brain is not upstream — `wiki/` is owned
+  here, so both sentences were applied directly; see the section below.)
   - `wiki/spaced-repetition.md` += `여러 유형을 벌여 놓고 섞어 푸는 연습과 함께 돌리는 복습 리듬이다.`
   - `wiki/provenance-tracking.md` += `누가 썼는지 남기는 기록 관리를 위한 규칙이다.`
     (verified miss → strict rank 1 on the same probe shape, Task B).
 - `hneg-08`/`hneg-04` still miss everywhere without those sentences — expected,
   the fixture intentionally carries no such surface.
+
+## 2026-10-11 — alias sentences applied to owned wiki/, reference re-measured
+
+2nd-brain is not upstream: `wiki/` is owned here (fixture README policy updated,
+re-copy note removed). Both verified sentences applied to Details paragraphs:
+`spaced-repetition.md` += `여러 유형을 벌여 놓고 섞어 푸는 연습과 함께 돌리는 복습 리듬이다.`,
+`provenance-tracking.md` += `누가 썼는지 남기는 기록 관리를 위한 규칙이다.`
+
+`bash scripts/bench-ko.sh` (defaults, seam) after the doc change:
+
+```
+RESULT bm25_r5=0.8875 vector_r5=0.9119 hybrid_r5=0.9444 full_r5=0.9729 full_mrr=0.9434
+RESULT-HARD hybrid_r1=0.5630 hybrid_mrr=0.7701 full_r1=0.6630 full_mrr=0.8741 n=45 form=seam
+```
+
+Per-query rows (`tmp/bench-ko/bench.json`): `hneg-08` bm25 rank 2 → hybrid/full r1=1
+(fixed end to end); `hneg-07` bm25/hybrid r1=1 but full rank 2 — the reranker still
+prefers the literal-match `interleaving-practice` decoy on top. So the alias fixed
+lex/hybrid while exposing a rerank preference for literal overlap; hard full_r1 still
+rose 0.6407 → 0.6630 (+1 query of 45). Vector backend untouched at 0.9119, as expected
+— one sentence per doc does not move embeddings.
+
+The seam reference moves to this run. The gate reads the last two lines below:
+
+RESULT bm25_r5=0.8875 vector_r5=0.9119 hybrid_r5=0.9444 full_r5=0.9729 full_mrr=0.9434
+RESULT-HARD hybrid_r1=0.5630 hybrid_mrr=0.7701 full_r1=0.6630 full_mrr=0.8741 n=45 tol=0 form=seam
