@@ -1198,6 +1198,27 @@ Per-query rows from this run's `tmp/bench-ko/bench.json` (seam, uncommitted):
 - `hneg-08`/`hneg-04` still miss everywhere without those sentences — expected,
   the fixture intentionally carries no such surface.
 
+## 2026-10-11 — rerank-input autoresearch, third loop: long-frontmatter strip
+
+24 experiments on the 320-train / 71-held-out goldset (corpus unchanged,
+fresh baseline at loop head: train 0.6769). Kept 4, discarded 19, 0 crashes.
+Best (`exp/rerank-loop3`, adopted as `c141fe8`, only `src/rerank-input.ts`):
+
+| check | before | after |
+|---|---|---|
+| train `full_mrr` (320) | 0.6769 | 0.6880 |
+| held-out `full_mrr` (71) | 0.7459 | 0.7572 |
+| ko-vault seam / hard `full_r1` | 0.9434 / 0.6630 | identical |
+
+Rules: send the chunk alone (title prepend deleted, tied), strip a leading
+`---` YAML block over 350 chars (500 → 0.6839, 400 → 0.6854, 350 → 0.6880;
+325/360/375 within one query of the peak, 400/500 are sturdier fallbacks).
+Dead ends: chunk-selection and bigram reweightings all tie (head start 16
+means the first chunk always wins); keeping FM metadata while dropping only
+`sources:` scores worse (0.6797). Follow-up, out of loop scope: `---`
+horizontal-rule false positives in non-first chunks (`formatRerankDoc` cannot
+see the chunk index today).
+
 ## 2026-10-11 — alias sentences applied to owned wiki/, reference re-measured
 
 2nd-brain is not upstream: `wiki/` is owned here (fixture README policy updated,
