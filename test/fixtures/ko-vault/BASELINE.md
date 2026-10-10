@@ -1178,3 +1178,22 @@ The seam reference moves to this run. The gate reads the last two lines below:
 
 RESULT bm25_r5=0.8713 vector_r5=0.9119 hybrid_r5=0.9282 full_r5=0.9648 full_mrr=0.9352
 RESULT-HARD hybrid_r1=0.5185 hybrid_mrr=0.7256 full_r1=0.6407 full_mrr=0.8519 n=45 tol=0 form=seam
+
+## 2026-10-10 — neg tail: hneg-15 handled downstream, hneg-07 alias verified (upstream)
+
+Per-query rows from this run's `tmp/bench-ko/bench.json` (seam, uncommitted):
+- `hneg-15`: vector r1=0 (excluded fine-tuning #1) but hybrid r1=1 and full r1=1.
+  The negation vector alone cannot do is absorbed by fusion — the probe's purpose
+  (measure later stages) is fulfilled, keep as is.
+- `hneg-09`: full r1=1 (rerank fixes the decoy ranking). No action.
+- `hneg-07`: full mrr=0.5 (rank 2, interleaving-practice decoy on top). Same
+  zero-overlap shape as `hneg-08` (none of 벌여/놓고/섞어/푸는/연습 in the doc).
+  Scratch-index probe (repo code path, 97 docs, `stripHangulNegation` + `searchFTS`
+  top-20): miss → strict rank 1 with one appended sentence, five spaced-repetition
+  controls byte-identical. Upstream patch below, not applied here (`wiki/` is
+  re-copied from 2nd-brain, never edited in this repo):
+  - `wiki/spaced-repetition.md` += `여러 유형을 벌여 놓고 섞어 푸는 연습과 함께 돌리는 복습 리듬이다.`
+  - `wiki/provenance-tracking.md` += `누가 썼는지 남기는 기록 관리를 위한 규칙이다.`
+    (verified miss → strict rank 1 on the same probe shape, Task B).
+- `hneg-08`/`hneg-04` still miss everywhere without those sentences — expected,
+  the fixture intentionally carries no such surface.
