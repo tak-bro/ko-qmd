@@ -45,6 +45,7 @@ import {
   type BreakPoint,
   type CodeFenceRegion,
   reciprocalRankFusion,
+  buildRrfTrace,
   extractSnippet,
   getCacheKey,
   normalizeVirtualPath,
@@ -65,6 +66,7 @@ import {
   getHybridRrfWeights,
   getStructuredRrfWeights,
   relaxedDocCoverage,
+  rrfDocMultipliers,
   cascadeNeedsSecondBatch,
   rerankWithDeadline,
   blendRerankScore,
@@ -2997,16 +2999,16 @@ describe("Reciprocal Rank Fusion", () => {
     // Baseline: the double leader wins.
     expect(reciprocalRankFusion([relaxedLex, vector], weights)[0]!.file).toBe("decoy.md");
 
-    // With coverage multipliers the fully-covering answer wins.
-    const multipliers = [
-      new Map([
-        ["decoy.md", 0.5 + 0.5 * relaxedDocCoverage(query, decoyBody)],
-        ["answer.md", 0.5 + 0.5 * relaxedDocCoverage(query, answerBody)],
-      ]),
-      undefined,
-    ];
+    // With coverage multipliers from the real wiring the fully-covering answer wins.
+    const multipliers = rrfDocMultipliers([relaxedLex, vector], meta);
+    expect(multipliers[1]).toBeUndefined();
     expect(reciprocalRankFusion([relaxedLex, vector], weights, 60, multipliers)[0]!.file)
       .toBe("answer.md");
+    // The explain trace agrees with fusion to the last digit.
+    const traces = buildRrfTrace([relaxedLex, vector], weights, meta, 60, multipliers);
+    for (const r of reciprocalRankFusion([relaxedLex, vector], weights, 60, multipliers)) {
+      expect(traces.get(r.file)!.totalScore).toBeCloseTo(r.score, 10);
+    }
   });
 
   test("per-document coverage keeps a fully-covering relaxed leader", () => {
@@ -3025,13 +3027,7 @@ describe("Reciprocal Rank Fusion", () => {
       { source: "vec", queryType: "vec", query },
     ];
     const weights = getStructuredRrfWeights(meta);
-    const multipliers = [
-      new Map([
-        ["answer.md", 0.5 + 0.5 * relaxedDocCoverage(query, answerBody)],
-        ["decoy.md", 0.5 + 0.5 * relaxedDocCoverage(query, decoyBody)],
-      ]),
-      undefined,
-    ];
+    const multipliers = rrfDocMultipliers([relaxedLex, vector], meta);
     expect(reciprocalRankFusion([relaxedLex, vector], weights, 60, multipliers)[0]!.file)
       .toBe("answer.md");
   });
@@ -3043,6 +3039,9 @@ describe("Reciprocal Rank Fusion", () => {
     expect(cascadeNeedsSecondBatch([])).toBe(false);
     expect(cascadeNeedsSecondBatch([0.9, 0.85], 0.1)).toBe(true);
     expect(cascadeNeedsSecondBatch([0.9, 0.75], 0.2)).toBe(true);
+    // A corrupt head score never reads as decisive.
+    expect(cascadeNeedsSecondBatch([Number.NaN, 0.1])).toBe(true);
+    expect(cascadeNeedsSecondBatch([0.9, Number.NaN])).toBe(true);
   });
 
   test("rerank cascade scores the tail only when the top is contested", async () => {
@@ -3054,7 +3053,7 @@ describe("Reciprocal Rank Fusion", () => {
         for (const d of docs) scored.set(d.file, scores.get(d.file) ?? 0);
         return docs.map((d) => ({ file: d.file, score: scores.get(d.file) ?? 0 }));
       }),
-    }) as Store;
+    }) as Store; // fake-store stub: only rerank() is exercised below
 
     // Decisive top: doc0 far ahead — one batch of 15, tail keeps score 0.
     const wide = new Map(chunks.map((c, i) => [c.file, i === 0 ? 0.95 : 0.5 - i * 0.01]));
@@ -3074,6 +3073,41 @@ describe("Reciprocal Rank Fusion", () => {
     expect(store2.rerank).toHaveBeenCalledTimes(2);
     expect(out2!.map((r) => r.file).sort()).toEqual(chunks.map((c) => c.file).sort());
     for (const r of out2!) expect(r.score).toBeCloseTo(tight.get(r.file)!, 10);
+  });
+
+  test("rerank cascade keeps one deadline across both batches", async () => {
+    const chunks = Array.from({ length: 20 }, (_, i) => ({ file: `doc${i}.md`, text: `text ${i}` }));
+    const calls: string[][] = [];
+    // Contested head (margin 0) forces the second batch; the second batch hangs.
+    const store = {
+      rerank: vi.fn(
+        async (
+          _query: string,
+          docs: { file: string; text: string }[],
+          _model?: string,
+          _intent?: string,
+          options?: { onModelReady?: () => void },
+        ) => {
+          calls.push(docs.map((d) => d.file));
+          if (calls.length === 1) return docs.map((d) => ({ file: d.file, score: 0.5 }));
+          options?.onModelReady?.();
+          return new Promise<never>(() => {});
+        },
+      ),
+    } as Store; // fake-store stub: only rerank() is exercised below
+    const hooks = { onRerankStart: vi.fn(), onRerankDone: vi.fn() };
+    const out = await rerankWithDeadline(store, "q", chunks, undefined, {
+      rerankDeadlineMs: 50,
+      hooks: hooks as never,
+    });
+    // The hung tail resolves as a timeout, not a second full deadline: null, so
+    // the caller falls back to RRF order, and the done hook never fires.
+    expect(out).toBeNull();
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toHaveLength(15);
+    expect(calls[1]).toHaveLength(5);
+    expect(hooks.onRerankStart).toHaveBeenCalledTimes(1);
+    expect(hooks.onRerankDone).not.toHaveBeenCalled();
   });
 
   test("reranker can displace the top retrieval hit", () => {

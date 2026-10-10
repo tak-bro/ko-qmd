@@ -2503,8 +2503,9 @@ export type RRFContributionTrace = {
   query: string;
   rank: number;            // 1-indexed rank within list
   weight: number;
+  multiplier?: number; // per-document coverage multiplier (1.0 when none)
   backendScore: number;    // Backend-normalized score before fusion
-  rrfContribution: number; // weight / (k + rank)
+  rrfContribution: number; // weight * multiplier / (k + rank)
 };
 
 export type RRFScoreTrace = {
@@ -5109,6 +5110,7 @@ export function buildRrfTrace(
         query: meta.query,
         rank,
         weight,
+        multiplier,
         backendScore: result.score,
         rrfContribution: contribution,
       };
@@ -6101,7 +6103,9 @@ export function cascadeNeedsSecondBatch(
   margin: number = RERANK_CASCADE_MARGIN,
 ): boolean {
   if (sortedScores.length < 2) return false;
-  return sortedScores[0]! - sortedScores[1]! < margin;
+  const [top, second] = [sortedScores[0]!, sortedScores[1]!];
+  if (!Number.isFinite(top) || !Number.isFinite(second)) return true;
+  return top - second < margin;
 }
 
 export async function rerankWithDeadline(
@@ -6114,8 +6118,11 @@ export async function rerankWithDeadline(
   const hooks = options?.hooks;
   hooks?.onRerankStart?.(chunks.length);
   const start = Date.now();
-  const scoreBatch = (docs: { file: string; text: string }[]) =>
-    runWithDeadline(store, "rerank", options?.rerankDeadlineMs, hooks, (onModelReady) =>
+  const scoreBatch = (
+    docs: { file: string; text: string }[],
+    deadlineMs: number | undefined,
+  ) =>
+    runWithDeadline(store, "rerank", deadlineMs, hooks, (onModelReady) =>
       store.rerank(query, docs, undefined, intent, { maxDocTokens: options?.rerankMaxDocTokens, onModelReady }));
   // Cascade: score the RRF head first. On a decisive top margin the tail keeps
   // score 0 (RRF position tiebreak only) instead of paying for 25 more
@@ -6123,19 +6130,25 @@ export async function rerankWithDeadline(
   if (chunks.length > RERANK_CASCADE_FIRST_BATCH) {
     const first = chunks.slice(0, RERANK_CASCADE_FIRST_BATCH);
     const rest = chunks.slice(RERANK_CASCADE_FIRST_BATCH);
-    const firstScored = await scoreBatch(first);
+    const firstScored = await scoreBatch(first, options?.rerankDeadlineMs);
     if (firstScored === TIMED_OUT) return null;
     const headroom = [...firstScored].sort((a, b) => b.score - a.score).map((r) => r.score);
     if (!cascadeNeedsSecondBatch(headroom)) {
       hooks?.onRerankDone?.(Date.now() - start);
       return [...firstScored, ...rest.map((d) => ({ file: d.file, score: 0 }))];
     }
-    const restScored = await scoreBatch(rest);
+    // The second batch shares the caller's deadline: it gets only the remaining
+    // budget, so the worst case stays one deadline, not two. An exhausted budget
+    // is the same as a timeout — the caller falls back to RRF order.
+    const deadlineMs = options?.rerankDeadlineMs;
+    const remaining = deadlineMs ? deadlineMs - (Date.now() - start) : undefined;
+    if (remaining !== undefined && remaining <= 0) return null;
+    const restScored = await scoreBatch(rest, remaining);
     if (restScored === TIMED_OUT) return null;
     hooks?.onRerankDone?.(Date.now() - start);
     return [...firstScored, ...restScored];
   }
-  const reranked = await scoreBatch(chunks);
+  const reranked = await scoreBatch(chunks, options?.rerankDeadlineMs);
   if (reranked === TIMED_OUT) return null;
   hooks?.onRerankDone?.(Date.now() - start);
   return reranked;
