@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+ko-qmd 2.8.3-ko.9 buys rank-1 accuracy and rerank latency at once. Per-document
+coverage weighting on relaxed lex lists takes hard `hybrid_r1` from 0.4444 to
+0.4778, and head-first rerank cascade halves rerank p50 with identical top-1
+answers. A load timeout (default 120 s) stops one stuck model load from hanging
+the query, as the scoring deadlines never covered the pre-ready wait.
+
 - `runWithDeadline` now bounds the model-load wait itself (`QMD_LLM_LOAD_TIMEOUT_MS`,
   default 120 s, `0` = wait forever). The scoring deadlines never covered a load
   that reports ready never: the pre-ready race hung with no timer, so one stuck
@@ -23,22 +29,6 @@
   constant could not split the mirrored tie of `hmu-05` vs `sem-08` (2026-10-09
   probe); both lead one list and take the same top-rank bonus, so only a per-doc
   signal separates them. List weights are unchanged.
-- `structuredSearch` (MCP `searches`, SDK `search({ queries })`) no longer lets a relaxed
-  (any-word) first lex list keep the 2x positional boost: it now counts 0.25 instead of 1.0.
-  Even halved, a relaxed rank 1 still tied a vector rank 1 against a lex rank 4 (`hmu-05`
-  probe), so the decoy sharing a few question words kept rank 1 on the `rerank:false` path.
-  On the ko-vault seam form, hard `hybrid_r1` goes 0.4111 → 0.4444 with `full_r1` unchanged at
-  0.6111; one easy query (`sem-08`) trades hybrid rank 1 for 2 while its `full` rank 1 and all
-  recall@5 lines hold. Non-first relaxed lists still count half, as before.
-- Hangul loanword table gains 11 entries mined from real query-log traffic (`지연` →
-  `latency`, `병렬` → `parallel`, `게이트` → `gate`, `가드` → `guard`, `패널` → `panel`,
-  `팔레트` → `palette`, `하네스` → `harness`, `옵시디언` → `obsidian`, `백링크` → `backlink`,
-  `포즈` → `pause`, `루프` → `loop`). Native words from the same logs (`색인`·`질의`·`요약`·`문서`
-  …) stay unbridged. Query-side only, no re-index; ko-vault bench lines are unchanged.
-- Negation routing stays strip-only by measurement: demoting X with lex `-term`s was tried
-  and reverted — the expected note often discusses X itself (`bm25-ranking.md` mentions TF-IDF),
-  so NOT removed the answer with the decoy (`hybrid_r1` 0.4111 → 0.3778). `stripHangulNegation`
-  now shares its parsing through an internal split helper; behavior is unchanged.
 
 ## [2.8.3-ko.7] - 2026-10-02
 
