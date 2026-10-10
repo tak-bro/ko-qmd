@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.8.3-ko.9] - 2026-10-10
+
 ko-qmd 2.8.3-ko.9 buys rank-1 accuracy and rerank latency at once. Per-document
 coverage weighting on relaxed lex lists takes hard `hybrid_r1` from 0.4444 to
 0.4778, and head-first rerank cascade halves rerank p50 with identical top-1
