@@ -75,6 +75,7 @@ import {
   structuredSearch,
   vectorSearchQuery,
   type Store,
+  type SearchHooks,
   type DocumentResult,
   type SearchResult,
   type RankedResult,
@@ -3095,10 +3096,10 @@ describe("Reciprocal Rank Fusion", () => {
         },
       ),
     } as Store; // fake-store stub: only rerank() is exercised below
-    const hooks = { onRerankStart: vi.fn(), onRerankDone: vi.fn() };
+    const hooks: SearchHooks = { onRerankStart: vi.fn(), onRerankDone: vi.fn() };
     const out = await rerankWithDeadline(store, "q", chunks, undefined, {
       rerankDeadlineMs: 50,
-      hooks: hooks as never,
+      hooks,
     });
     // The hung tail resolves as a timeout, not a second full deadline: null, so
     // the caller falls back to RRF order, and the done hook never fires.

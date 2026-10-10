@@ -6140,8 +6140,9 @@ export async function rerankWithDeadline(
     // The second batch shares the caller's deadline: it gets only the remaining
     // budget, so the worst case stays one deadline, not two. An exhausted budget
     // is the same as a timeout — the caller falls back to RRF order.
+    // Same "no deadline" rule as runWithDeadline: unset or <= 0 waits unbounded.
     const deadlineMs = options?.rerankDeadlineMs;
-    const remaining = deadlineMs ? deadlineMs - (Date.now() - start) : undefined;
+    const remaining = deadlineMs && deadlineMs > 0 ? deadlineMs - (Date.now() - start) : undefined;
     if (remaining !== undefined && remaining <= 0) return null;
     const restScored = await scoreBatch(rest, remaining);
     if (restScored === TIMED_OUT) return null;
