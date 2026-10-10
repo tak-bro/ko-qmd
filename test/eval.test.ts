@@ -142,21 +142,21 @@ describe("BM25 Search (FTS)", () => {
     expect(hitRate).toBeGreaterThanOrEqual(0.8);
   });
 
-  test("medium queries: ≥15% Hit@3 (BM25 struggles with semantic)", () => {
+  test("medium queries: ≥75% Hit@3 (measured 100% on 8, 2026-10-10)", () => {
     const mediumQueries = evalQueries.filter(q => q.difficulty === "medium");
     const hitRate = calcHitRate(mediumQueries, q => searchFTS(db, q, 5), 3);
-    expect(hitRate).toBeGreaterThanOrEqual(0.15);
+    expect(hitRate).toBeGreaterThanOrEqual(0.75);
   });
 
-  test("hard queries: ≥15% Hit@5 (BM25 baseline)", () => {
+  test("hard queries: ≥75% Hit@5 (measured 100% on 8, 2026-10-10)", () => {
     const hardQueries = evalQueries.filter(q => q.difficulty === "hard");
     const hitRate = calcHitRate(hardQueries, q => searchFTS(db, q, 5), 5);
-    expect(hitRate).toBeGreaterThanOrEqual(0.15);
+    expect(hitRate).toBeGreaterThanOrEqual(0.75);
   });
 
-  test("overall Hit@3 ≥40% (BM25 baseline)", () => {
+  test("overall Hit@3 ≥75% (measured 100% on 32, 2026-10-10)", () => {
     const hitRate = calcHitRate(evalQueries, q => searchFTS(db, q, 5), 3);
-    expect(hitRate).toBeGreaterThanOrEqual(0.4);
+    expect(hitRate).toBeGreaterThanOrEqual(0.75);
   });
 });
 

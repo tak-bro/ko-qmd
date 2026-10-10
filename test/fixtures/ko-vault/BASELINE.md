@@ -133,6 +133,13 @@ without the word `언어` anywhere. That is a vocabulary gap, which is vector's 
 `full_mrr` moved 0.9359 → 0.9173 — rank order inside the top 5, within this fixture's run-to-run
 spread.
 
+> Correction (2026-10-10, Task B probe): "misses on lex" no longer holds. The relaxed retry
+> (OR fallback, 2026-09-16) retrieves `ko-14` at lex rank 1 — verified on a scratch index of
+> the current 97-doc corpus (`searchFTS(stripHangulNegation(q), 20)` → rank 1, relaxed mode).
+> The vocabulary gap is real but currently bridged by the fallback, not by stemming or vector.
+> An authoring-side alias sentence moves it to a strict match (robustness, less decoy exposure),
+> not a rank fix. This section is left as written; read the claim as pre-retry.
+
 ## Real vaults — script-mixed query terms (2026-09-16)
 
 The synthetic fixture had run out of headroom (hybrid and full both 1.0000), so this round measured
