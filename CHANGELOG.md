@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- Dependencies: `node-llama-cpp` 3.20.0 → **3.22.1**. ko-vault seam bench lines
+  are byte-identical before and after; Nix flake `qmd-node-modules` FOD hashes
+  refreshed for the new tree.
+
 ## [2.8.3-ko.9] - 2026-10-10
 
 ko-qmd 2.8.3-ko.9 buys rank-1 accuracy and rerank latency at once. Per-document
