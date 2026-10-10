@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- Rerank now cascades: the RRF head (15) is scored first, and the tail is
+  skipped with score 0 (RRF position order only) when the head's top-2 margin
+  reaches 0.08 (`RERANK_CASCADE_FIRST_BATCH`/`RERANK_CASCADE_MARGIN` in
+  `src/store.ts`). A contested top scores everything, as before; deadlines and
+  the rerank cache are unchanged (a skipped tail writes no cache entries).
 - `structuredSearch` and `hybridQuery` now weight a relaxed (any-word) lex list per
   document by query coverage (`relaxedDocCoverage` in `src/store.ts`: 0.5 + 0.5 ×
   matched units, mirroring the rerank chunk scorer's Hangul bigrams). A global

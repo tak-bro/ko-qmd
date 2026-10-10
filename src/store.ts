@@ -6087,7 +6087,24 @@ async function runWithDeadline<T>(
 }
 
 /** Rerank `chunks`, or null when the reranker misses `deadlineMs` (the caller then answers in RRF order). */
-async function rerankWithDeadline(
+export const RERANK_CASCADE_FIRST_BATCH = 15;
+/** Skip the tail past the first batch when the top-2 rerank margin reaches this. */
+export const RERANK_CASCADE_MARGIN = 0.08;
+
+/**
+ * True when the first cascade batch's top-2 margin is too tight to skip the
+ * tail: a contested top means an unscored document could still win the blend.
+ * A batch of fewer than two holds nothing to contest.
+ */
+export function cascadeNeedsSecondBatch(
+  sortedScores: number[],
+  margin: number = RERANK_CASCADE_MARGIN,
+): boolean {
+  if (sortedScores.length < 2) return false;
+  return sortedScores[0]! - sortedScores[1]! < margin;
+}
+
+export async function rerankWithDeadline(
   store: Store,
   query: string,
   chunks: { file: string; text: string }[],
@@ -6097,8 +6114,28 @@ async function rerankWithDeadline(
   const hooks = options?.hooks;
   hooks?.onRerankStart?.(chunks.length);
   const start = Date.now();
-  const reranked = await runWithDeadline(store, "rerank", options?.rerankDeadlineMs, hooks, (onModelReady) =>
-    store.rerank(query, chunks, undefined, intent, { maxDocTokens: options?.rerankMaxDocTokens, onModelReady }));
+  const scoreBatch = (docs: { file: string; text: string }[]) =>
+    runWithDeadline(store, "rerank", options?.rerankDeadlineMs, hooks, (onModelReady) =>
+      store.rerank(query, docs, undefined, intent, { maxDocTokens: options?.rerankMaxDocTokens, onModelReady }));
+  // Cascade: score the RRF head first. On a decisive top margin the tail keeps
+  // score 0 (RRF position tiebreak only) instead of paying for 25 more
+  // cross-encoder pairs; a contested top scores everything, as before.
+  if (chunks.length > RERANK_CASCADE_FIRST_BATCH) {
+    const first = chunks.slice(0, RERANK_CASCADE_FIRST_BATCH);
+    const rest = chunks.slice(RERANK_CASCADE_FIRST_BATCH);
+    const firstScored = await scoreBatch(first);
+    if (firstScored === TIMED_OUT) return null;
+    const headroom = [...firstScored].sort((a, b) => b.score - a.score).map((r) => r.score);
+    if (!cascadeNeedsSecondBatch(headroom)) {
+      hooks?.onRerankDone?.(Date.now() - start);
+      return [...firstScored, ...rest.map((d) => ({ file: d.file, score: 0 }))];
+    }
+    const restScored = await scoreBatch(rest);
+    if (restScored === TIMED_OUT) return null;
+    hooks?.onRerankDone?.(Date.now() - start);
+    return [...firstScored, ...restScored];
+  }
+  const reranked = await scoreBatch(chunks);
   if (reranked === TIMED_OUT) return null;
   hooks?.onRerankDone?.(Date.now() - start);
   return reranked;

@@ -65,6 +65,8 @@ import {
   getHybridRrfWeights,
   getStructuredRrfWeights,
   relaxedDocCoverage,
+  cascadeNeedsSecondBatch,
+  rerankWithDeadline,
   blendRerankScore,
   _resetProductionModeForTesting,
   hybridQuery,
@@ -3032,6 +3034,46 @@ describe("Reciprocal Rank Fusion", () => {
     ];
     expect(reciprocalRankFusion([relaxedLex, vector], weights, 60, multipliers)[0]!.file)
       .toBe("answer.md");
+  });
+
+  test("cascade gate skips the tail only on a decisive top margin", () => {
+    expect(cascadeNeedsSecondBatch([0.9, 0.75])).toBe(false);
+    expect(cascadeNeedsSecondBatch([0.9, 0.85])).toBe(true);
+    expect(cascadeNeedsSecondBatch([0.9])).toBe(false);
+    expect(cascadeNeedsSecondBatch([])).toBe(false);
+    expect(cascadeNeedsSecondBatch([0.9, 0.85], 0.1)).toBe(true);
+    expect(cascadeNeedsSecondBatch([0.9, 0.75], 0.2)).toBe(true);
+  });
+
+  test("rerank cascade scores the tail only when the top is contested", async () => {
+    const chunks = Array.from({ length: 20 }, (_, i) => ({ file: `doc${i}.md`, text: `text ${i}` }));
+    const scored = new Map<string, number>();
+
+    const fakeStore = (scores: Map<string, number>) => ({
+      rerank: vi.fn(async (_query: string, docs: { file: string; text: string }[]) => {
+        for (const d of docs) scored.set(d.file, scores.get(d.file) ?? 0);
+        return docs.map((d) => ({ file: d.file, score: scores.get(d.file) ?? 0 }));
+      }),
+    }) as Store;
+
+    // Decisive top: doc0 far ahead — one batch of 15, tail keeps score 0.
+    const wide = new Map(chunks.map((c, i) => [c.file, i === 0 ? 0.95 : 0.5 - i * 0.01]));
+    const store1 = fakeStore(wide);
+    const out1 = await rerankWithDeadline(store1, "q", chunks, undefined, undefined);
+    expect(store1.rerank).toHaveBeenCalledTimes(1);
+    expect(store1.rerank).toHaveBeenCalledWith("q", chunks.slice(0, 15), undefined, undefined, expect.anything());
+    expect(out1).toHaveLength(20);
+    expect(out1!.slice(0, 15).map((r) => r.score)).toEqual(chunks.slice(0, 15).map((c) => wide.get(c.file)));
+    expect(out1!.slice(15).map((r) => r.score)).toEqual([0, 0, 0, 0, 0]);
+
+    // Contested top: doc0 and doc1 within the margin — both batches run.
+    scored.clear();
+    const tight = new Map(chunks.map((c, i) => [c.file, 0.9 - i * 0.001]));
+    const store2 = fakeStore(tight);
+    const out2 = await rerankWithDeadline(store2, "q", chunks, undefined, undefined);
+    expect(store2.rerank).toHaveBeenCalledTimes(2);
+    expect(out2!.map((r) => r.file).sort()).toEqual(chunks.map((c) => c.file).sort());
+    for (const r of out2!) expect(r.score).toBeCloseTo(tight.get(r.file)!, 10);
   });
 
   test("reranker can displace the top retrieval hit", () => {
