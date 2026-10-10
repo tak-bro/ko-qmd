@@ -2503,8 +2503,9 @@ export type RRFContributionTrace = {
   query: string;
   rank: number;            // 1-indexed rank within list
   weight: number;
+  multiplier?: number; // per-document coverage multiplier (1.0 when none)
   backendScore: number;    // Backend-normalized score before fusion
-  rrfContribution: number; // weight / (k + rank)
+  rrfContribution: number; // weight * multiplier / (k + rank)
 };
 
 export type RRFScoreTrace = {
@@ -4954,10 +4955,80 @@ export async function rerank(query: string, documents: { file: string; text: str
 // Reciprocal Rank Fusion
 // =============================================================================
 
+const COVERAGE_HANGUL_RUN_PATTERN = /\p{Script=Hangul}+/gu;
+const COVERAGE_LATIN_RUN_PATTERN = /[a-z0-9]+/gi;
+
+/**
+ * Fraction of the query's units present in the document body, used to weight a
+ * relaxed (any-word) FTS list per document instead of one global constant
+ * (BASELINE.md 2026-10-09 follow-up: a global weight cannot split the mirrored
+ * tie of `hmu-05` vs `sem-08`).
+ *
+ * Units mirror the rerank chunk scorer: one per Hangul run of two or more
+ * syllables (a run of three or more also matches on any shared syllable
+ * bigram, so a particle-suffixed word meets its stem), one per Latin/digit run
+ * longer than two characters. Single syllables and short tokens carry no
+ * signal and are skipped. A query with no units covers everything (1.0) so it
+ * never punishes.
+ */
+export function relaxedDocCoverage(query: string, body: string): number {
+  const lower = body.toLowerCase();
+  let total = 0;
+  let matched = 0;
+  for (const token of query.toLowerCase().split(/\s+/)) {
+    if (!token) continue;
+    for (const run of token.match(COVERAGE_HANGUL_RUN_PATTERN) ?? []) {
+      const syllables = Array.from(run);
+      if (syllables.length < 2) continue;
+      total++;
+      if (lower.includes(run)) {
+        matched++;
+        continue;
+      }
+      if (syllables.length >= 3) {
+        for (let i = 0; i + 1 < syllables.length; i++) {
+          if (lower.includes(syllables[i]! + syllables[i + 1]!)) {
+            matched++;
+            break;
+          }
+        }
+      }
+    }
+    for (const run of token.match(COVERAGE_LATIN_RUN_PATTERN) ?? []) {
+      if (run.length <= 2) continue;
+      total++;
+      if (lower.includes(run)) matched++;
+    }
+  }
+  return total === 0 ? 1 : matched / total;
+}
+
+/**
+ * Per-document RRF multipliers, aligned with `rankedLists`: a relaxed list
+ * scales each document by `0.5 + 0.5 × coverage`, every other list is untouched
+ * (`undefined` entry = multiplier 1.0). The 0.5 floor keeps a zero-coverage
+ * candidate in the pool instead of erasing it.
+ */
+export function rrfDocMultipliers(
+  rankedLists: RankedResult[][],
+  rankedListMeta: RankedListMeta[],
+): Array<Map<string, number> | undefined> {
+  return rankedLists.map((list, i) => {
+    const meta = rankedListMeta[i];
+    if (!meta?.relaxed) return undefined;
+    const multipliers = new Map<string, number>();
+    for (const r of list) {
+      multipliers.set(r.file, 0.5 + 0.5 * relaxedDocCoverage(meta.query, r.body));
+    }
+    return multipliers;
+  });
+}
+
 export function reciprocalRankFusion(
   resultLists: RankedResult[][],
   weights: number[] = [],
-  k: number = 60
+  k: number = 60,
+  docMultipliers: Array<Map<string, number> | undefined> = [],
 ): RankedResult[] {
   const scores = new Map<string, { result: RankedResult; rrfScore: number; topRank: number }>();
 
@@ -4965,11 +5036,13 @@ export function reciprocalRankFusion(
     const list = resultLists[listIdx];
     if (!list) continue;
     const weight = weights[listIdx] ?? 1.0;
+    const multipliers = docMultipliers[listIdx];
 
     for (let rank = 0; rank < list.length; rank++) {
       const result = list[rank];
       if (!result) continue;
-      const rrfContribution = weight / (k + rank + 1);
+      const multiplier = multipliers?.get(result.file) ?? 1.0;
+      const rrfContribution = (weight * multiplier) / (k + rank + 1);
       const existing = scores.get(result.file);
 
       if (existing) {
@@ -5006,7 +5079,8 @@ export function buildRrfTrace(
   resultLists: RankedResult[][],
   weights: number[] = [],
   listMeta: RankedListMeta[] = [],
-  k: number = 60
+  k: number = 60,
+  docMultipliers: Array<Map<string, number> | undefined> = [],
 ): Map<string, RRFScoreTrace> {
   const traces = new Map<string, RRFScoreTrace>();
 
@@ -5014,6 +5088,7 @@ export function buildRrfTrace(
     const list = resultLists[listIdx];
     if (!list) continue;
     const weight = weights[listIdx] ?? 1.0;
+    const multipliers = docMultipliers[listIdx];
     const meta = listMeta[listIdx] ?? {
       source: "fts",
       queryType: "original",
@@ -5024,7 +5099,8 @@ export function buildRrfTrace(
       const result = list[rank0];
       if (!result) continue;
       const rank = rank0 + 1; // 1-indexed rank for explain output
-      const contribution = weight / (k + rank);
+      const multiplier = multipliers?.get(result.file) ?? 1.0;
+      const contribution = (weight * multiplier) / (k + rank);
       const existing = traces.get(result.file);
 
       const detail: RRFContributionTrace = {
@@ -5034,6 +5110,7 @@ export function buildRrfTrace(
         query: meta.query,
         rank,
         weight,
+        multiplier,
         backendScore: result.score,
         rrfContribution: contribution,
       };
@@ -5957,10 +6034,26 @@ export type DeadlineStage = "expand" | "rerank";
 const abandoned = new WeakMap<Store, Record<DeadlineStage, { running: number; warned: boolean }>>();
 
 /**
+ * Bound on the model-load wait inside runWithDeadline: a load that never
+ * reports ready must not hang the query. QMD_LLM_LOAD_TIMEOUT_MS sets it
+ * (positive ms, 0 = wait forever, anything else = the default).
+ */
+export const DEFAULT_LOAD_TIMEOUT_MS = 120_000;
+
+/** Load-timeout resolver for runWithDeadline; exported for tests. */
+export function resolveLoadTimeoutMs(): number {
+  const raw = process.env.QMD_LLM_LOAD_TIMEOUT_MS?.trim();
+  if (raw === undefined || raw === "") return DEFAULT_LOAD_TIMEOUT_MS;
+  return /^\d+$/.test(raw) ? Number(raw) : DEFAULT_LOAD_TIMEOUT_MS;
+}
+
+/**
  * Run one LLM stage under a deadline. The clock starts once the stage's model is loaded
  * (`onModelReady`): the deadline bounds computation, not a cold load, which is reported through
- * `onModelLoad`. TIMED_OUT when the deadline passes, or at once while an earlier abandoned call of
- * the stage is still running. Unset or 0 deadline = plain await.
+ * `onModelLoad`. The load wait itself is bounded separately by resolveLoadTimeoutMs, so a load
+ * that never reports ready times out instead of hanging. TIMED_OUT when either bound passes,
+ * or at once while an earlier abandoned call of the stage is still running.
+ * Unset or 0 deadline = plain await (still under the load bound).
  */
 async function runWithDeadline<T>(
   store: Store,
@@ -5972,16 +6065,19 @@ async function runWithDeadline<T>(
   const started = Date.now();
   let loadedAt: number | undefined;
   const reportLoad = () => { if (loadedAt !== undefined) hooks?.onModelLoad?.(stage, loadedAt - started); };
-  if (!deadlineMs || deadlineMs <= 0) {
-    const value = await start(() => { loadedAt = Date.now(); });
-    reportLoad();
-    return value;
-  }
 
   const byStage = abandoned.get(store) ?? { expand: { running: 0, warned: false }, rerank: { running: 0, warned: false } };
   abandoned.set(store, byStage);
   const state = byStage[stage];
-  if (state.running > 0) {
+  const abandon = () => {
+    state.running++;
+    const settle = () => {
+      state.running--;
+      if (state.running === 0) state.warned = false;
+    };
+    pending.then(settle, settle);
+  };
+  if (deadlineMs && deadlineMs > 0 && state.running > 0) {
     if (!state.warned) {
       state.warned = true;
       process.stderr.write(`qmd: a ${stage} abandoned at its deadline is still running — answering without ${stage} until it finishes\n`);
@@ -5993,26 +6089,72 @@ async function runWithDeadline<T>(
   let markReady = () => {};
   const ready = new Promise<void>((resolve) => { markReady = () => { loadedAt = Date.now(); resolve(); }; });
   const pending = start(markReady);
-  // Wait out the model load with no deadline; a cache hit or a fast call may finish before it fires.
-  const finishedFirst = await Promise.race([ready.then(() => false), pending.then(() => true, () => true)]);
+  // Bound the load wait itself: neither a stuck load nor a call that finishes
+  // without reporting ready may hold the query past the load timeout. The
+  // timer is cleared on every settle so idle processes keep no handle.
+  const loadTimeoutMs = resolveLoadTimeoutMs();
+  let loadTimer: ReturnType<typeof setTimeout> | undefined;
+  const loadTimedOut = new Promise<"load-timeout">((resolve) => {
+    if (loadTimeoutMs > 0) {
+      loadTimer = setTimeout(() => resolve("load-timeout"), loadTimeoutMs);
+      loadTimer.unref?.();
+    }
+  });
+  const settled = await Promise.race([
+    ready.then(() => "ready" as const),
+    loadTimedOut,
+    pending.then(() => "done" as const, () => "done" as const),
+  ]);
+  clearTimeout(loadTimer);
+  if (settled === "load-timeout") {
+    abandon();
+    hooks?.onModelLoad?.(stage, Date.now() - started);
+    hooks?.onDeadline?.(stage, Date.now() - started);
+    return TIMED_OUT;
+  }
   reportLoad();
-  if (finishedFirst) return pending;
+  if (settled === "done") return pending;
+  if (!deadlineMs || deadlineMs <= 0) return pending;
 
   const result = await withDeadline(pending, deadlineMs);
   if (result === TIMED_OUT) {
-    state.running++;
-    const settle = () => {
-      state.running--;
-      if (state.running === 0) state.warned = false;
-    };
-    pending.then(settle, settle);
+    abandon();
     hooks?.onDeadline?.(stage, Date.now() - (loadedAt ?? started));
   }
   return result;
 }
 
 /** Rerank `chunks`, or null when the reranker misses `deadlineMs` (the caller then answers in RRF order). */
-async function rerankWithDeadline(
+export const RERANK_CASCADE_FIRST_BATCH = 15;
+/** Skip the tail past the first batch when the top-2 rerank margin reaches this. */
+export const RERANK_CASCADE_MARGIN = 0.08;
+
+/**
+ * QMD_RERANK_CASCADE=0 (or false/off/no) restores single-batch rerank;
+ * anything else (including unset) cascades. Kill switch for measurement and
+ * operations; exported for tests.
+ */
+export function isRerankCascadeEnabled(): boolean {
+  const raw = process.env.QMD_RERANK_CASCADE?.trim().toLowerCase();
+  return raw !== "0" && raw !== "false" && raw !== "off" && raw !== "no";
+}
+
+/**
+ * True when the first cascade batch's top-2 margin is too tight to skip the
+ * tail: a contested top means an unscored document could still win the blend.
+ * A batch of fewer than two holds nothing to contest.
+ */
+export function cascadeNeedsSecondBatch(
+  sortedScores: number[],
+  margin: number = RERANK_CASCADE_MARGIN,
+): boolean {
+  if (sortedScores.length < 2) return false;
+  const [top, second] = [sortedScores[0]!, sortedScores[1]!];
+  if (!Number.isFinite(top) || !Number.isFinite(second)) return true;
+  return top - second < margin;
+}
+
+export async function rerankWithDeadline(
   store: Store,
   query: string,
   chunks: { file: string; text: string }[],
@@ -6022,8 +6164,38 @@ async function rerankWithDeadline(
   const hooks = options?.hooks;
   hooks?.onRerankStart?.(chunks.length);
   const start = Date.now();
-  const reranked = await runWithDeadline(store, "rerank", options?.rerankDeadlineMs, hooks, (onModelReady) =>
-    store.rerank(query, chunks, undefined, intent, { maxDocTokens: options?.rerankMaxDocTokens, onModelReady }));
+  const scoreBatch = (
+    docs: { file: string; text: string }[],
+    deadlineMs: number | undefined,
+  ) =>
+    runWithDeadline(store, "rerank", deadlineMs, hooks, (onModelReady) =>
+      store.rerank(query, docs, undefined, intent, { maxDocTokens: options?.rerankMaxDocTokens, onModelReady }));
+  // Cascade: score the RRF head first. On a decisive top margin the tail keeps
+  // score 0 (RRF position tiebreak only) instead of paying for 25 more
+  // cross-encoder pairs; a contested top scores everything, as before.
+  if (isRerankCascadeEnabled() && chunks.length > RERANK_CASCADE_FIRST_BATCH) {
+    const first = chunks.slice(0, RERANK_CASCADE_FIRST_BATCH);
+    const rest = chunks.slice(RERANK_CASCADE_FIRST_BATCH);
+    const firstScored = await scoreBatch(first, options?.rerankDeadlineMs);
+    if (firstScored === TIMED_OUT) return null;
+    const headroom = [...firstScored].sort((a, b) => b.score - a.score).map((r) => r.score);
+    if (!cascadeNeedsSecondBatch(headroom)) {
+      hooks?.onRerankDone?.(Date.now() - start);
+      return [...firstScored, ...rest.map((d) => ({ file: d.file, score: 0 }))];
+    }
+    // The second batch shares the caller's deadline: it gets only the remaining
+    // budget, so the worst case stays one deadline, not two. An exhausted budget
+    // is the same as a timeout — the caller falls back to RRF order.
+    // Same "no deadline" rule as runWithDeadline: unset or <= 0 waits unbounded.
+    const deadlineMs = options?.rerankDeadlineMs;
+    const remaining = deadlineMs && deadlineMs > 0 ? deadlineMs - (Date.now() - start) : undefined;
+    if (remaining !== undefined && remaining <= 0) return null;
+    const restScored = await scoreBatch(rest, remaining);
+    if (restScored === TIMED_OUT) return null;
+    hooks?.onRerankDone?.(Date.now() - start);
+    return [...firstScored, ...restScored];
+  }
+  const reranked = await scoreBatch(chunks, options?.rerankDeadlineMs);
   if (reranked === TIMED_OUT) return null;
   hooks?.onRerankDone?.(Date.now() - start);
   return reranked;
@@ -6244,9 +6416,11 @@ export async function hybridQuery(
 
   // Step 4: RRF fusion — original-query FTS and vector lists get 2x weight;
   // expansion-derived lists stay at 1x independent of insertion order.
+  // A relaxed list additionally scales each document by its query coverage.
   const weights = getHybridRrfWeights(rankedListMeta);
-  const fused = reciprocalRankFusion(rankedLists, weights);
-  const rrfTraceByFile = explain ? buildRrfTrace(rankedLists, weights, rankedListMeta) : null;
+  const docMultipliers = rrfDocMultipliers(rankedLists, rankedListMeta);
+  const fused = reciprocalRankFusion(rankedLists, weights, 60, docMultipliers);
+  const rrfTraceByFile = explain ? buildRrfTrace(rankedLists, weights, rankedListMeta, 60, docMultipliers) : null;
   const candidates = fused.slice(0, candidateLimit);
 
   if (candidates.length === 0) return [];
@@ -6628,10 +6802,11 @@ export async function structuredSearch(
   if (rankedLists.length === 0) return [];
 
   // Step 3: RRF fusion — first list gets 2x weight (assume caller ordered by importance),
-  // a relaxed FTS list half of its slot's weight
+  // a relaxed FTS list half of its slot's weight, scaled per document by query coverage
   const weights = getStructuredRrfWeights(rankedListMeta);
-  const fused = reciprocalRankFusion(rankedLists, weights);
-  const rrfTraceByFile = explain ? buildRrfTrace(rankedLists, weights, rankedListMeta) : null;
+  const docMultipliers = rrfDocMultipliers(rankedLists, rankedListMeta);
+  const fused = reciprocalRankFusion(rankedLists, weights, 60, docMultipliers);
+  const rrfTraceByFile = explain ? buildRrfTrace(rankedLists, weights, rankedListMeta, 60, docMultipliers) : null;
   const candidates = fused.slice(0, candidateLimit);
 
   if (candidates.length === 0) return [];

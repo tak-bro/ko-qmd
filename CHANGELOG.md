@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+- `runWithDeadline` now bounds the model-load wait itself (`QMD_LLM_LOAD_TIMEOUT_MS`,
+  default 120 s, `0` = wait forever). The scoring deadlines never covered a load
+  that reports ready never: the pre-ready race hung with no timer, so one stuck
+  load hung the query. Past the load bound the stage is skipped exactly like a
+  scoring deadline (same `timeouts` entry, same RRF-order / original-query
+  fallback, same abandoned-run cache fill), and the bounded wait is reported as
+  the `load` stage. Listed in `qmd doctor`.
+- `QMD_RERANK_CASCADE=0` (or `false`/`off`/`no`) restores single-batch rerank.
+  Kill switch for measuring the cascade and for operations; unset cascades.
+  Listed in `qmd doctor`.
+- Rerank now cascades: the RRF head (15) is scored first, and the tail is
+  skipped with score 0 (RRF position order only) when the head's top-2 margin
+  reaches 0.08 (`RERANK_CASCADE_FIRST_BATCH`/`RERANK_CASCADE_MARGIN` in
+  `src/store.ts`). A contested top scores everything, as before; deadlines and
+  the rerank cache are unchanged (a skipped tail writes no cache entries).
+- `structuredSearch` and `hybridQuery` now weight a relaxed (any-word) lex list per
+  document by query coverage (`relaxedDocCoverage` in `src/store.ts`: 0.5 + 0.5 ×
+  matched units, mirroring the rerank chunk scorer's Hangul bigrams). A global
+  constant could not split the mirrored tie of `hmu-05` vs `sem-08` (2026-10-09
+  probe); both lead one list and take the same top-rank bonus, so only a per-doc
+  signal separates them. List weights are unchanged.
 - `structuredSearch` (MCP `searches`, SDK `search({ queries })`) no longer lets a relaxed
   (any-word) first lex list keep the 2x positional boost: it now counts 0.25 instead of 1.0.
   Even halved, a relaxed rank 1 still tied a vector rank 1 against a lex rank 4 (`hmu-05`

@@ -169,6 +169,8 @@ API 전체: [docs/REFERENCE.md § SDK / Library Usage](docs/REFERENCE.md#sdk--li
 |---|---|
 | `QMD_QUERY_LOG` | `1`/`true`/`yes` 면 HTTP 데몬이 검색마다 질의 로그를 남긴다 |
 | `QMD_LLM_IDLE_TIMEOUT_MS` | 모델을 내리기까지 idle ms (`0` = 내리지 않음) |
+| `QMD_LLM_LOAD_TIMEOUT_MS` | 모델 로드 대기의 상한 ms (기본 120000, `0` = 무한 대기). 넘으면 그 단계 없이 답하고 로드는 백그라운드에서 계속된다 |
+| `QMD_RERANK_CASCADE` | `0`/`false`/`off`/`no` 면 리랭크 cascade를 끄고 후보 전체를 한 번에 채점한다 |
 | `QMD_RERANK_MAX_DOC_TOKENS` | 리랭커에 보내는 문서당 토큰 cap (요청의 `rerankMaxDocTokens` 가 우선) |
 | `QMD_RERANK_CONTEXT_SIZE` · `QMD_EMBED_CONTEXT_SIZE` · `QMD_EXPAND_CONTEXT_SIZE` | 역할별 context 크기 |
 | `QMD_EMBED_PARALLELISM` | 병렬 context 수 (높으면 RAM/VRAM 고갈) |
