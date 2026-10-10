@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- `structuredSearch` and `hybridQuery` now weight a relaxed (any-word) lex list per
+  document by query coverage (`relaxedDocCoverage` in `src/store.ts`: 0.5 + 0.5 ×
+  matched units, mirroring the rerank chunk scorer's Hangul bigrams). A global
+  constant could not split the mirrored tie of `hmu-05` vs `sem-08` (2026-10-09
+  probe); both lead one list and take the same top-rank bonus, so only a per-doc
+  signal separates them. List weights are unchanged.
 - `structuredSearch` (MCP `searches`, SDK `search({ queries })`) no longer lets a relaxed
   (any-word) first lex list keep the 2x positional boost: it now counts 0.25 instead of 1.0.
   Even halved, a relaxed rank 1 still tied a vector rank 1 against a lex rank 4 (`hmu-05`

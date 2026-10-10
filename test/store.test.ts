@@ -64,6 +64,7 @@ import {
   maybeAdoptLegacyEmbeddingFingerprint,
   getHybridRrfWeights,
   getStructuredRrfWeights,
+  relaxedDocCoverage,
   blendRerankScore,
   _resetProductionModeForTesting,
   hybridQuery,
@@ -2956,6 +2957,80 @@ describe("Reciprocal Rank Fusion", () => {
 
     expect(reciprocalRankFusion([relaxedLex, vector], [2.0, 1.0])[0]!.file).toBe("decoy.md");
     expect(reciprocalRankFusion([relaxedLex, vector], getStructuredRrfWeights(meta))[0]!.file)
+      .toBe("answer.md");
+  });
+
+  test("relaxedDocCoverage counts matched query units", () => {
+    // Full coverage: every query word is in the body.
+    expect(relaxedDocCoverage("카드 노트 연결", "카드 노트를 쌓고 그 연결을 보는 관점")).toBe(1);
+    // Partial: 2 of 3 units.
+    expect(relaxedDocCoverage("카드 노트 연결", "카드 노트에 대한 메모")).toBeCloseTo(2 / 3, 10);
+    // A particle-suffixed word still matches its stem via bigram (연결을 → 연결).
+    expect(relaxedDocCoverage("연결", "그 연결을 보는 관점")).toBe(1);
+    // No units (e.g. single short tokens only) never punishes: coverage is 1.
+    expect(relaxedDocCoverage("a b", "anything")).toBe(1);
+    // Nothing matches: 0.
+    expect(relaxedDocCoverage("카드 노트 연결", "완전히 다른 이야기")).toBe(0);
+  });
+
+  test("per-document coverage breaks a mirrored relaxed-first tie", () => {
+    // hmu-05 shape (BASELINE.md 2026-10-09): each side leads one list, so both
+    // take the +0.05 top-rank bonus and the base scores tie within 0.001. The
+    // decoy leads the vector list while covering little of the question; the
+    // answer leads the relaxed lex list while covering all of it.
+    const query = "카드 노트 연결 그물 관점";
+    const decoyBody = "카드 노트에 대한 메모";
+    const answerBody = "카드 노트를 쌓고 그 연결을 그물로 보는 관점";
+    const mk = (file: string, body: string): RankedResult => ({
+      file, displayPath: file, title: file, body, score: 0.5,
+    });
+    const relaxedLex = [mk("answer.md", answerBody), mk("decoy.md", decoyBody)];
+    const vector = [mk("decoy.md", decoyBody), mk("answer.md", answerBody)];
+    const meta: RankedListMeta[] = [
+      { source: "fts", queryType: "lex", query, relaxed: true },
+      { source: "vec", queryType: "vec", query },
+    ];
+    const weights = getStructuredRrfWeights(meta);
+
+    // Baseline: the double leader wins.
+    expect(reciprocalRankFusion([relaxedLex, vector], weights)[0]!.file).toBe("decoy.md");
+
+    // With coverage multipliers the fully-covering answer wins.
+    const multipliers = [
+      new Map([
+        ["decoy.md", 0.5 + 0.5 * relaxedDocCoverage(query, decoyBody)],
+        ["answer.md", 0.5 + 0.5 * relaxedDocCoverage(query, answerBody)],
+      ]),
+      undefined,
+    ];
+    expect(reciprocalRankFusion([relaxedLex, vector], weights, 60, multipliers)[0]!.file)
+      .toBe("answer.md");
+  });
+
+  test("per-document coverage keeps a fully-covering relaxed leader", () => {
+    // sem-08 shape: the relaxed lex rank 1 IS the right note and covers the
+    // question, so the multiplier (~1.0) must not demote it.
+    const query = "카드 노트 연결 그물 관점";
+    const answerBody = "카드 노트를 쌓고 그 연결을 그물로 보는 관점";
+    const decoyBody = "완전히 다른 이야기";
+    const mk = (file: string, body: string): RankedResult => ({
+      file, displayPath: file, title: file, body, score: 0.5,
+    });
+    const relaxedLex = [mk("answer.md", answerBody), mk("decoy.md", decoyBody)];
+    const vector = [mk("answer.md", answerBody), mk("decoy.md", decoyBody)];
+    const meta: RankedListMeta[] = [
+      { source: "fts", queryType: "lex", query, relaxed: true },
+      { source: "vec", queryType: "vec", query },
+    ];
+    const weights = getStructuredRrfWeights(meta);
+    const multipliers = [
+      new Map([
+        ["answer.md", 0.5 + 0.5 * relaxedDocCoverage(query, answerBody)],
+        ["decoy.md", 0.5 + 0.5 * relaxedDocCoverage(query, decoyBody)],
+      ]),
+      undefined,
+    ];
+    expect(reciprocalRankFusion([relaxedLex, vector], weights, 60, multipliers)[0]!.file)
       .toBe("answer.md");
   });
 

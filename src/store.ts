@@ -4954,10 +4954,80 @@ export async function rerank(query: string, documents: { file: string; text: str
 // Reciprocal Rank Fusion
 // =============================================================================
 
+const COVERAGE_HANGUL_RUN_PATTERN = /\p{Script=Hangul}+/gu;
+const COVERAGE_LATIN_RUN_PATTERN = /[a-z0-9]+/gi;
+
+/**
+ * Fraction of the query's units present in the document body, used to weight a
+ * relaxed (any-word) FTS list per document instead of one global constant
+ * (BASELINE.md 2026-10-09 follow-up: a global weight cannot split the mirrored
+ * tie of `hmu-05` vs `sem-08`).
+ *
+ * Units mirror the rerank chunk scorer: one per Hangul run of two or more
+ * syllables (a run of three or more also matches on any shared syllable
+ * bigram, so a particle-suffixed word meets its stem), one per Latin/digit run
+ * longer than two characters. Single syllables and short tokens carry no
+ * signal and are skipped. A query with no units covers everything (1.0) so it
+ * never punishes.
+ */
+export function relaxedDocCoverage(query: string, body: string): number {
+  const lower = body.toLowerCase();
+  let total = 0;
+  let matched = 0;
+  for (const token of query.toLowerCase().split(/\s+/)) {
+    if (!token) continue;
+    for (const run of token.match(COVERAGE_HANGUL_RUN_PATTERN) ?? []) {
+      const syllables = Array.from(run);
+      if (syllables.length < 2) continue;
+      total++;
+      if (lower.includes(run)) {
+        matched++;
+        continue;
+      }
+      if (syllables.length >= 3) {
+        for (let i = 0; i + 1 < syllables.length; i++) {
+          if (lower.includes(syllables[i]! + syllables[i + 1]!)) {
+            matched++;
+            break;
+          }
+        }
+      }
+    }
+    for (const run of token.match(COVERAGE_LATIN_RUN_PATTERN) ?? []) {
+      if (run.length <= 2) continue;
+      total++;
+      if (lower.includes(run)) matched++;
+    }
+  }
+  return total === 0 ? 1 : matched / total;
+}
+
+/**
+ * Per-document RRF multipliers, aligned with `rankedLists`: a relaxed list
+ * scales each document by `0.5 + 0.5 × coverage`, every other list is untouched
+ * (`undefined` entry = multiplier 1.0). The 0.5 floor keeps a zero-coverage
+ * candidate in the pool instead of erasing it.
+ */
+export function rrfDocMultipliers(
+  rankedLists: RankedResult[][],
+  rankedListMeta: RankedListMeta[],
+): Array<Map<string, number> | undefined> {
+  return rankedLists.map((list, i) => {
+    const meta = rankedListMeta[i];
+    if (!meta?.relaxed) return undefined;
+    const multipliers = new Map<string, number>();
+    for (const r of list) {
+      multipliers.set(r.file, 0.5 + 0.5 * relaxedDocCoverage(meta.query, r.body));
+    }
+    return multipliers;
+  });
+}
+
 export function reciprocalRankFusion(
   resultLists: RankedResult[][],
   weights: number[] = [],
-  k: number = 60
+  k: number = 60,
+  docMultipliers: Array<Map<string, number> | undefined> = [],
 ): RankedResult[] {
   const scores = new Map<string, { result: RankedResult; rrfScore: number; topRank: number }>();
 
@@ -4965,11 +5035,13 @@ export function reciprocalRankFusion(
     const list = resultLists[listIdx];
     if (!list) continue;
     const weight = weights[listIdx] ?? 1.0;
+    const multipliers = docMultipliers[listIdx];
 
     for (let rank = 0; rank < list.length; rank++) {
       const result = list[rank];
       if (!result) continue;
-      const rrfContribution = weight / (k + rank + 1);
+      const multiplier = multipliers?.get(result.file) ?? 1.0;
+      const rrfContribution = (weight * multiplier) / (k + rank + 1);
       const existing = scores.get(result.file);
 
       if (existing) {
@@ -5006,7 +5078,8 @@ export function buildRrfTrace(
   resultLists: RankedResult[][],
   weights: number[] = [],
   listMeta: RankedListMeta[] = [],
-  k: number = 60
+  k: number = 60,
+  docMultipliers: Array<Map<string, number> | undefined> = [],
 ): Map<string, RRFScoreTrace> {
   const traces = new Map<string, RRFScoreTrace>();
 
@@ -5014,6 +5087,7 @@ export function buildRrfTrace(
     const list = resultLists[listIdx];
     if (!list) continue;
     const weight = weights[listIdx] ?? 1.0;
+    const multipliers = docMultipliers[listIdx];
     const meta = listMeta[listIdx] ?? {
       source: "fts",
       queryType: "original",
@@ -5024,7 +5098,8 @@ export function buildRrfTrace(
       const result = list[rank0];
       if (!result) continue;
       const rank = rank0 + 1; // 1-indexed rank for explain output
-      const contribution = weight / (k + rank);
+      const multiplier = multipliers?.get(result.file) ?? 1.0;
+      const contribution = (weight * multiplier) / (k + rank);
       const existing = traces.get(result.file);
 
       const detail: RRFContributionTrace = {
@@ -6244,9 +6319,11 @@ export async function hybridQuery(
 
   // Step 4: RRF fusion — original-query FTS and vector lists get 2x weight;
   // expansion-derived lists stay at 1x independent of insertion order.
+  // A relaxed list additionally scales each document by its query coverage.
   const weights = getHybridRrfWeights(rankedListMeta);
-  const fused = reciprocalRankFusion(rankedLists, weights);
-  const rrfTraceByFile = explain ? buildRrfTrace(rankedLists, weights, rankedListMeta) : null;
+  const docMultipliers = rrfDocMultipliers(rankedLists, rankedListMeta);
+  const fused = reciprocalRankFusion(rankedLists, weights, 60, docMultipliers);
+  const rrfTraceByFile = explain ? buildRrfTrace(rankedLists, weights, rankedListMeta, 60, docMultipliers) : null;
   const candidates = fused.slice(0, candidateLimit);
 
   if (candidates.length === 0) return [];
@@ -6628,10 +6705,11 @@ export async function structuredSearch(
   if (rankedLists.length === 0) return [];
 
   // Step 3: RRF fusion — first list gets 2x weight (assume caller ordered by importance),
-  // a relaxed FTS list half of its slot's weight
+  // a relaxed FTS list half of its slot's weight, scaled per document by query coverage
   const weights = getStructuredRrfWeights(rankedListMeta);
-  const fused = reciprocalRankFusion(rankedLists, weights);
-  const rrfTraceByFile = explain ? buildRrfTrace(rankedLists, weights, rankedListMeta) : null;
+  const docMultipliers = rrfDocMultipliers(rankedLists, rankedListMeta);
+  const fused = reciprocalRankFusion(rankedLists, weights, 60, docMultipliers);
+  const rrfTraceByFile = explain ? buildRrfTrace(rankedLists, weights, rankedListMeta, 60, docMultipliers) : null;
   const candidates = fused.slice(0, candidateLimit);
 
   if (candidates.length === 0) return [];
