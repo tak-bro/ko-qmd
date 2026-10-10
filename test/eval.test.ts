@@ -51,6 +51,8 @@ const evalQueries: {
   { query: "overfitting machine learning", expectedDoc: "machine-learning", difficulty: "easy" },
   { query: "remote work VPN", expectedDoc: "remote-work", difficulty: "easy" },
   { query: "Project Phoenix retrospective", expectedDoc: "product-launch", difficulty: "easy" },
+  { query: "Prometheus alerting rules", expectedDoc: "observability", difficulty: "easy" },
+  { query: "database schema migration rollback", expectedDoc: "database-migrations", difficulty: "easy" },
 
   // MEDIUM: Semantic/conceptual queries
   { query: "how to structure REST endpoints", expectedDoc: "api-design", difficulty: "medium" },
@@ -59,6 +61,8 @@ const evalQueries: {
   { query: "how to prevent models from memorizing data", expectedDoc: "machine-learning", difficulty: "medium" },
   { query: "working from home guidelines", expectedDoc: "remote-work", difficulty: "medium" },
   { query: "what went wrong with the launch", expectedDoc: "product-launch", difficulty: "medium" },
+  { query: "how to track service health with dashboards", expectedDoc: "observability", difficulty: "medium" },
+  { query: "how to evolve production database schema safely", expectedDoc: "database-migrations", difficulty: "medium" },
 
   // HARD: Vague, partial memory, indirect
   { query: "nouns not verbs", expectedDoc: "api-design", difficulty: "hard" },
@@ -67,6 +71,8 @@ const evalQueries: {
   { query: "F1 score precision recall", expectedDoc: "machine-learning", difficulty: "hard" },
   { query: "quarterly team gathering travel", expectedDoc: "remote-work", difficulty: "hard" },
   { query: "beta program 47 bugs", expectedDoc: "product-launch", difficulty: "hard" },
+  { query: "OpenTelemetry tail-based trace sampling", expectedDoc: "observability", difficulty: "hard" },
+  { query: "expand contract migration pattern zero downtime", expectedDoc: "database-migrations", difficulty: "hard" },
 
   // FUSION: Multi-signal queries that need both lexical AND semantic matching
   // These should have weak individual scores but strong combined RRF scores
@@ -76,6 +82,8 @@ const evalQueries: {
   { query: "JSON response codes error messages", expectedDoc: "api-design", difficulty: "fusion" },
   { query: "video calls camera async messaging", expectedDoc: "remote-work", difficulty: "fusion" },
   { query: "CI/CD pipeline testing coverage", expectedDoc: "product-launch", difficulty: "fusion" },
+  { query: "error budget burn rate paging policy", expectedDoc: "observability", difficulty: "fusion" },
+  { query: "idempotent backfill script batch deployment", expectedDoc: "database-migrations", difficulty: "fusion" },
 ];
 
 // Helper to check if result matches expected doc

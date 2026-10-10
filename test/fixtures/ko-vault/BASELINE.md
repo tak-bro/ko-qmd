@@ -1091,3 +1091,50 @@ p50 halves while the p90 barely moves — contested heads still score all 40,
 so the 15 / 0.08 constants buy the median, not the tail. A p90-motivated
 tuning would need a tighter gate or a smaller first batch, measured the same
 way. Quality lines are untouched by this probe (same commit, switch only).
+
+## 2026-10-10 — goldset 93 → 123 (easy 15 + hard 15, no new measurement yet)
+
+Fixture-only change: `ko-bench.json` grows from 93 to 123 queries without touching
+`wiki/` or `distractors/` (97 documents indexed, unchanged).
+
+- easy 15: exact 5 (`exa-08`…`exa-12`: wikilink · reranking · ingest · append-only ·
+  topic-map, low-coverage topics), alias 4 (`ali-23`…`ali-26`: lint · meeting notes ·
+  append-only · cross encoder), semantic 3 (`sem-12`…`sem-14`: lint · ingest · wikilink
+  paraphrases), topical 2 (`top-05`·`top-06`: first coverage of
+  `wiki/topics/knowledge-operations.md` and `wiki/topics/information-retrieval.md`),
+  cross-domain 1 (`cro-04`: append-only + provenance).
+- hard 15: sem-hard 5 (`hsh-13`…`hsh-17`: decision-record · frontmatter-metadata ·
+  golden-dataset · cross-encoder-reranking · lint-automation; fixture test enforces zero
+  title-term overlap), multi 5 (`hmu-09`…`hmu-13`: all novel pairs), neg 5
+  (`hneg-11`…`hneg-15`: checksum · unit-test · autocomplete · citation-network ·
+  fine-tuning exclusions, all previously unused distractors).
+- New distribution: exact 24 / alias 28 / semantic 14 / topical 8 / cross-domain 4 /
+  sem-hard 17 / multi 13 / neg 15; hard n=45.
+
+No RESULT lines below on purpose: the dogfood gate reads the newest RESULT-HARD line,
+which stays the n=30 seam reference above until a full `bash scripts/bench-ko.sh` run
+on this fixture records replacement lines. Fast checks done here: `ko-bench-fixture`
+invariants, `bench-ko.sh` KO_CORPUS/KO_BENCH/KO_FORM validation, goldset JSON shape.
+
+## 2026-10-10 — goldset 123 first measurement (hard n=45), new seam reference
+
+First full `bash scripts/bench-ko.sh` run on the 123-query fixture, defaults
+(fixture corpus, fixture goldset, seam form; stderr `corpus=…/ko-vault`,
+`bench=…/ko-bench.json`, `form=seam`). Fresh index, 97 documents, Qwen3-Embedding-0.6B
+embeddings, rerank. Distribution: exact 24 / alias 28 / semantic 14 / topical 8 /
+cross-domain 4 / sem-hard 17 / multi 13 / neg 15.
+
+Against the n=30 seam reference above: `bm25_r5` 0.8459 → 0.8428 (−1 query of 123),
+`vector_r5` 0.9050 → 0.8794. The vector drift is the new hard queries, not a
+regression: every old-query vector miss is a standing one (`ko-11`, `hsh-02`,
+`hneg-02`, `hneg-04`, `hneg-08`, `hmu-07`), while the new misses are new hard ids
+(`hsh-16`, `hmu-09`, `hmu-12`, `hneg-13`, `hneg-15` vector r5=0). Per type, easy
+stays at ceiling (alias/semantic/topical hybrid r5 = 1.0, exact 1.0); hard
+`full_r1` 0.6111 → 0.5963 (−0.0148, under one query of 45) and hard `hybrid_r1`
+0.4778 → 0.4519 (−1.2 queries of 45). The seam form is deterministic, so one run
+decides; tolerance stays 0.
+
+The seam reference moves to this run. The gate reads the last two lines below:
+
+RESULT bm25_r5=0.8428 vector_r5=0.8794 hybrid_r5=0.8957 full_r5=0.9485 full_mrr=0.9165
+RESULT-HARD hybrid_r1=0.4519 hybrid_mrr=0.6429 full_r1=0.5963 full_mrr=0.8007 n=45 tol=0 form=seam

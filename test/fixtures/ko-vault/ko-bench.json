@@ -1,5 +1,5 @@
 {
-  "description": "Synthetic Korean vault search benchmark (A2). Distribution exact 19 / alias 24 / semantic 11 / topical 6 / cross-domain 3 / sem-hard 12 / multi 8 / neg 10. Korean-specific kinds tagged in query description as ko:particle, ko:spacing, ko:alias, ko:loanword, ko:sem-hard, ko:multi, ko:neg.",
+  "description": "Synthetic Korean vault search benchmark (A2). Distribution exact 24 / alias 28 / semantic 14 / topical 8 / cross-domain 4 / sem-hard 17 / multi 13 / neg 15. Korean-specific kinds tagged in query description as ko:particle, ko:spacing, ko:alias, ko:loanword, ko:sem-hard, ko:multi, ko:neg.",
   "version": 1,
   "collection": "ko-vault",
   "queries": [
@@ -954,6 +954,317 @@
       "excluded": "distractors/elo-rating.md",
       "expected_files": [
         "wiki/reciprocal-rank-fusion.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "exa-08",
+      "query": "위키링크",
+      "type": "exact",
+      "description": "어간 그대로 — 문서 연결망",
+      "expected_files": [
+        "wiki/wikilink-graph.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "exa-09",
+      "query": "리랭킹",
+      "type": "exact",
+      "description": "어간 그대로 — 재순위화",
+      "expected_files": [
+        "wiki/cross-encoder-reranking.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "exa-10",
+      "query": "수집 파이프라인",
+      "type": "exact",
+      "description": "어간 그대로 — 인제스트 흐름",
+      "expected_files": [
+        "wiki/ingest-pipeline.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "exa-11",
+      "query": "추가 전용",
+      "type": "exact",
+      "description": "어간 그대로 — 원본 보관 규칙",
+      "expected_files": [
+        "wiki/append-only-archive.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "exa-12",
+      "query": "토픽 맵",
+      "type": "exact",
+      "description": "어간 그대로 — 주제 색인",
+      "expected_files": [
+        "wiki/topic-map.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ali-23",
+      "query": "lint",
+      "type": "alias",
+      "description": "ko:alias en→ko — 린트 영문 표기",
+      "expected_files": [
+        "wiki/lint-automation.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ali-24",
+      "query": "meeting notes",
+      "type": "alias",
+      "description": "ko:alias en→ko — 회의록 영문 표기",
+      "expected_files": [
+        "wiki/meeting-notes-workflow.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ali-25",
+      "query": "append-only",
+      "type": "alias",
+      "description": "ko:alias en→ko — 추가 전용 영문 표기",
+      "expected_files": [
+        "wiki/append-only-archive.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "ali-26",
+      "query": "크로스 인코더",
+      "type": "alias",
+      "description": "ko:alias ko 표기 — Cross Encoder",
+      "expected_files": [
+        "wiki/cross-encoder-reranking.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "sem-12",
+      "query": "커밋 전에 문서 규칙을 자동으로 검사하는 체계",
+      "type": "semantic",
+      "description": "ko:particle 패러프레이즈 — 린트",
+      "expected_files": [
+        "wiki/lint-automation.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "sem-13",
+      "query": "새로 들어온 자료를 원본 폴더로 옮기고 정리하는 흐름",
+      "type": "semantic",
+      "description": "ko:particle 패러프레이즈 — 수집",
+      "expected_files": [
+        "wiki/ingest-pipeline.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "sem-14",
+      "query": "이중 대괄호로 문서를 잇는 연결망",
+      "type": "semantic",
+      "description": "패러프레이즈 — 위키링크",
+      "expected_files": [
+        "wiki/wikilink-graph.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "top-05",
+      "query": "팀 지식 저장소 운영 규칙 모음",
+      "type": "topical",
+      "description": "토픽 질의 — 지식 운영 입구",
+      "expected_files": [
+        "wiki/topics/knowledge-operations.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "top-06",
+      "query": "검색 엔진 동작 원리 모음",
+      "type": "topical",
+      "description": "토픽 질의 — 검색 입구",
+      "expected_files": [
+        "wiki/topics/information-retrieval.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "cro-04",
+      "query": "원본을 고치지 않고 수집한 자료의 출처 남기기",
+      "type": "cross-domain",
+      "description": "여러 문서 — 보관 + 출처",
+      "expected_files": [
+        "wiki/append-only-archive.md",
+        "wiki/provenance-tracking.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hsh-13",
+      "query": "버린 선택지의 까닭까지 적어 두어 뒷날 같은 논쟁을 되풀이하지 않게 하는 문서 버릇",
+      "type": "sem-hard",
+      "description": "ko:sem-hard — 결정·기록 용어 미사용",
+      "expected_files": [
+        "wiki/decision-record.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hsh-14",
+      "query": "글 맨 앞 칸에 종류와 때를 적어 기계가 가려내게 하는 약속",
+      "type": "sem-hard",
+      "description": "ko:sem-hard — 프론트매터·메타 용어 미사용",
+      "expected_files": [
+        "wiki/frontmatter-metadata.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hsh-15",
+      "query": "바꾼 뒤 잘됐는지 숫자로 따지기 위해 미리 받아 적은 물음 묶음",
+      "type": "sem-hard",
+      "description": "ko:sem-hard — 골드셋·평가 용어 미사용",
+      "expected_files": [
+        "wiki/golden-dataset.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hsh-16",
+      "query": "뽑힌 후보를 묻는 말과 나란히 놓고 눈으로 다시 줄을 세우는 손질",
+      "type": "sem-hard",
+      "description": "ko:sem-hard — 리랭킹·인코더 용어 미사용",
+      "expected_files": [
+        "wiki/cross-encoder-reranking.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hsh-17",
+      "query": "올리기 앞서 어긴 곳을 스스로 찾아내 되돌려보내는 살핌",
+      "type": "sem-hard",
+      "description": "ko:sem-hard — 린트·검사 용어 미사용",
+      "expected_files": [
+        "wiki/lint-automation.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hmu-09",
+      "query": "뜻이 비슷한 글을 뽑아낸 뒤 묻는 말과 견주어 줄을 다시 세우기",
+      "type": "multi",
+      "description": "ko:multi",
+      "expected_files": [
+        "wiki/vector-embedding.md",
+        "wiki/cross-encoder-reranking.md"
+      ],
+      "expected_in_top_k": 2
+    },
+    {
+      "id": "hmu-10",
+      "query": "낱말 색인과 자소 조각 색인을 함께 쓰는 맞춤",
+      "type": "multi",
+      "description": "ko:multi",
+      "expected_files": [
+        "wiki/inverted-index.md",
+        "wiki/ngram-tokenization.md"
+      ],
+      "expected_in_top_k": 2
+    },
+    {
+      "id": "hmu-11",
+      "query": "들어온 글을 손대지 않는 곳에 쌓아 원본 그대로 두는 흐름",
+      "type": "multi",
+      "description": "ko:multi",
+      "expected_files": [
+        "wiki/ingest-pipeline.md",
+        "wiki/append-only-archive.md"
+      ],
+      "expected_in_top_k": 2
+    },
+    {
+      "id": "hmu-12",
+      "query": "짧은 물음을 넓힌 뒤 낱말 점수와 뜻 점수를 섞어 찾기",
+      "type": "multi",
+      "description": "ko:multi",
+      "expected_files": [
+        "wiki/query-expansion.md",
+        "wiki/hybrid-search.md"
+      ],
+      "expected_in_top_k": 2
+    },
+    {
+      "id": "hmu-13",
+      "query": "왜 그렇게 정했는지 남기고 잘됐는지 잴 물음 묶음을 굳히기",
+      "type": "multi",
+      "description": "ko:multi",
+      "expected_files": [
+        "wiki/decision-record.md",
+        "wiki/golden-dataset.md"
+      ],
+      "expected_in_top_k": 2
+    },
+    {
+      "id": "hneg-11",
+      "query": "체크섬 말고 원본을 고치지 않고 더하는 보관 규칙",
+      "type": "neg",
+      "description": "ko:neg",
+      "excluded": "distractors/checksum.md",
+      "expected_files": [
+        "wiki/append-only-archive.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hneg-12",
+      "query": "단위 테스트 말고 올리기 전 문서 규칙 검사",
+      "type": "neg",
+      "description": "ko:neg",
+      "excluded": "distractors/unit-test.md",
+      "expected_files": [
+        "wiki/lint-automation.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hneg-13",
+      "query": "입력 제안 말고 짧은 물음에 살을 붙이는 기법",
+      "type": "neg",
+      "description": "ko:neg",
+      "excluded": "distractors/autocomplete.md",
+      "expected_files": [
+        "wiki/query-expansion.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hneg-14",
+      "query": "인용 그물 말고 이중 대괄호 연결망",
+      "type": "neg",
+      "description": "ko:neg",
+      "excluded": "distractors/citation-network.md",
+      "expected_files": [
+        "wiki/wikilink-graph.md"
+      ],
+      "expected_in_top_k": 1
+    },
+    {
+      "id": "hneg-15",
+      "query": "미세 조정 말고 찾은 글을 근거로 답하는 구조",
+      "type": "neg",
+      "description": "ko:neg",
+      "excluded": "distractors/fine-tuning.md",
+      "expected_files": [
+        "wiki/retrieval-augmented-generation.md"
       ],
       "expected_in_top_k": 1
     }
