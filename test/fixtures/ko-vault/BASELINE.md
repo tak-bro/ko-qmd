@@ -1037,3 +1037,57 @@ The seam reference moves to the R run above. The gate reads the last two lines b
 
 RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.9211 full_r5=0.9588 full_mrr=0.9309
 RESULT-HARD hybrid_r1=0.4444 hybrid_mrr=0.6773 full_r1=0.6111 full_mrr=0.8292 n=30 tol=0 form=seam
+
+## 2026-10-10 — per-document coverage on relaxed lists + rerank cascade
+
+Two changes in one branch (`feat/coverage-cascade`), benched together on the seam
+form (one run — deterministic):
+
+1. A relaxed lex list scales each document by `0.5 + 0.5 × coverage`
+   (`relaxedDocCoverage` in `src/store.ts`, units mirror the rerank chunk scorer).
+   No new FTS machinery: coverage is a substring check of query units against the
+   candidate body, computed only for relaxed lists.
+2. Rerank cascades: the RRF head (15) is scored first; the tail is skipped
+   (score 0) when the head's top-2 margin reaches 0.08, else everything is
+   scored as before. Deadlines and cache semantics unchanged.
+
+Attribution: the `hybrid` backend skips rerank, so its movement is coverage
+alone; `full` carries both.
+
+```
+RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.9211 full_r5=0.9695 full_mrr=0.9314
+RESULT-HARD hybrid_r1=0.4778 hybrid_mrr=0.6948 full_r1=0.6111 full_mrr=0.8306 n=30 tol=0 form=seam
+```
+
+Verdict: **keep**. `bm25`/`vector` untouched (neither goes through RRF).
+Hard `hybrid_r1` 0.4444 → 0.4778 (+1 query): `hmu-05` hybrid rank 1 is now the
+expected `zettelkasten.md`, and `sem-08` keeps hybrid rank 1 on the expected
+`cross-encoder-reranking.md` — the mirrored tie the 2026-10-09 probe left open
+splits the right way on both sides. Hard `full_r1` holds at 0.6111 and easy
+`full_r5` gains one (0.9588 → 0.9695), so the cascade's skipped tails cost
+nothing on this fixture. Cascade latency itself is not in this number
+(`candidateLimit` 40 interactive path only); measure it against the query-log
+`stages.rerank` p90 before tuning the 15 / 0.08 constants.
+
+The seam reference moves to this run. The gate reads the last two lines below:
+
+RESULT bm25_r5=0.8459 vector_r5=0.9050 hybrid_r5=0.9211 full_r5=0.9695 full_mrr=0.9314
+RESULT-HARD hybrid_r1=0.4778 hybrid_mrr=0.6948 full_r1=0.6111 full_mrr=0.8306 n=30 tol=0 form=seam
+
+## 2026-10-10 — cascade latency probe (no gate change)
+
+`tmp/probe-cascade.ts` (uncommitted): two fresh ko-vault indexes, the 30 hard
+seam queries through `structuredSearch` with `candidateLimit: 40`, first query
+dropped (model load), rerank stage ms per query, cascade on vs
+`QMD_RERANK_CASCADE=0`:
+
+| | p50 | p90 | mean | docs scored (mean) | skipped |
+|---|---|---|---|---|---|
+| cascade on | 1436 ms | 3057 ms | 2053 ms | 22 | 16/29 |
+| cascade off | 2985 ms | 3330 ms | 2938 ms | 31 | — |
+
+Top-1 agreement 29/29: the skipped tails change no answer on this set. The
+p50 halves while the p90 barely moves — contested heads still score all 40,
+so the 15 / 0.08 constants buy the median, not the tail. A p90-motivated
+tuning would need a tighter gate or a smaller first batch, measured the same
+way. Quality lines are untouched by this probe (same commit, switch only).

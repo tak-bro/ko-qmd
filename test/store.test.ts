@@ -45,6 +45,7 @@ import {
   type BreakPoint,
   type CodeFenceRegion,
   reciprocalRankFusion,
+  buildRrfTrace,
   extractSnippet,
   getCacheKey,
   normalizeVirtualPath,
@@ -64,12 +65,20 @@ import {
   maybeAdoptLegacyEmbeddingFingerprint,
   getHybridRrfWeights,
   getStructuredRrfWeights,
+  relaxedDocCoverage,
+  rrfDocMultipliers,
+  cascadeNeedsSecondBatch,
+  rerankWithDeadline,
+  resolveLoadTimeoutMs,
+  isRerankCascadeEnabled,
+  DEFAULT_LOAD_TIMEOUT_MS,
   blendRerankScore,
   _resetProductionModeForTesting,
   hybridQuery,
   structuredSearch,
   vectorSearchQuery,
   type Store,
+  type SearchHooks,
   type DocumentResult,
   type SearchResult,
   type RankedResult,
@@ -2957,6 +2966,223 @@ describe("Reciprocal Rank Fusion", () => {
     expect(reciprocalRankFusion([relaxedLex, vector], [2.0, 1.0])[0]!.file).toBe("decoy.md");
     expect(reciprocalRankFusion([relaxedLex, vector], getStructuredRrfWeights(meta))[0]!.file)
       .toBe("answer.md");
+  });
+
+  test("relaxedDocCoverage counts matched query units", () => {
+    // Full coverage: every query word is in the body.
+    expect(relaxedDocCoverage("카드 노트 연결", "카드 노트를 쌓고 그 연결을 보는 관점")).toBe(1);
+    // Partial: 2 of 3 units.
+    expect(relaxedDocCoverage("카드 노트 연결", "카드 노트에 대한 메모")).toBeCloseTo(2 / 3, 10);
+    // A particle-suffixed word still matches its stem via bigram (연결을 → 연결).
+    expect(relaxedDocCoverage("연결", "그 연결을 보는 관점")).toBe(1);
+    // No units (e.g. single short tokens only) never punishes: coverage is 1.
+    expect(relaxedDocCoverage("a b", "anything")).toBe(1);
+    // Nothing matches: 0.
+    expect(relaxedDocCoverage("카드 노트 연결", "완전히 다른 이야기")).toBe(0);
+  });
+
+  test("per-document coverage breaks a mirrored relaxed-first tie", () => {
+    // hmu-05 shape (BASELINE.md 2026-10-09): each side leads one list, so both
+    // take the +0.05 top-rank bonus and the base scores tie within 0.001. The
+    // decoy leads the vector list while covering little of the question; the
+    // answer leads the relaxed lex list while covering all of it.
+    const query = "카드 노트 연결 그물 관점";
+    const decoyBody = "카드 노트에 대한 메모";
+    const answerBody = "카드 노트를 쌓고 그 연결을 그물로 보는 관점";
+    const mk = (file: string, body: string): RankedResult => ({
+      file, displayPath: file, title: file, body, score: 0.5,
+    });
+    const relaxedLex = [mk("answer.md", answerBody), mk("decoy.md", decoyBody)];
+    const vector = [mk("decoy.md", decoyBody), mk("answer.md", answerBody)];
+    const meta: RankedListMeta[] = [
+      { source: "fts", queryType: "lex", query, relaxed: true },
+      { source: "vec", queryType: "vec", query },
+    ];
+    const weights = getStructuredRrfWeights(meta);
+
+    // Baseline: the double leader wins.
+    expect(reciprocalRankFusion([relaxedLex, vector], weights)[0]!.file).toBe("decoy.md");
+
+    // With coverage multipliers from the real wiring the fully-covering answer wins.
+    const multipliers = rrfDocMultipliers([relaxedLex, vector], meta);
+    expect(multipliers[1]).toBeUndefined();
+    expect(reciprocalRankFusion([relaxedLex, vector], weights, 60, multipliers)[0]!.file)
+      .toBe("answer.md");
+    // The explain trace agrees with fusion to the last digit.
+    const traces = buildRrfTrace([relaxedLex, vector], weights, meta, 60, multipliers);
+    for (const r of reciprocalRankFusion([relaxedLex, vector], weights, 60, multipliers)) {
+      expect(traces.get(r.file)!.totalScore).toBeCloseTo(r.score, 10);
+    }
+  });
+
+  test("per-document coverage keeps a fully-covering relaxed leader", () => {
+    // sem-08 shape: the relaxed lex rank 1 IS the right note and covers the
+    // question, so the multiplier (~1.0) must not demote it.
+    const query = "카드 노트 연결 그물 관점";
+    const answerBody = "카드 노트를 쌓고 그 연결을 그물로 보는 관점";
+    const decoyBody = "완전히 다른 이야기";
+    const mk = (file: string, body: string): RankedResult => ({
+      file, displayPath: file, title: file, body, score: 0.5,
+    });
+    const relaxedLex = [mk("answer.md", answerBody), mk("decoy.md", decoyBody)];
+    const vector = [mk("answer.md", answerBody), mk("decoy.md", decoyBody)];
+    const meta: RankedListMeta[] = [
+      { source: "fts", queryType: "lex", query, relaxed: true },
+      { source: "vec", queryType: "vec", query },
+    ];
+    const weights = getStructuredRrfWeights(meta);
+    const multipliers = rrfDocMultipliers([relaxedLex, vector], meta);
+    expect(reciprocalRankFusion([relaxedLex, vector], weights, 60, multipliers)[0]!.file)
+      .toBe("answer.md");
+  });
+
+  test("cascade gate skips the tail only on a decisive top margin", () => {
+    expect(cascadeNeedsSecondBatch([0.9, 0.75])).toBe(false);
+    expect(cascadeNeedsSecondBatch([0.9, 0.85])).toBe(true);
+    expect(cascadeNeedsSecondBatch([0.9])).toBe(false);
+    expect(cascadeNeedsSecondBatch([])).toBe(false);
+    expect(cascadeNeedsSecondBatch([0.9, 0.85], 0.1)).toBe(true);
+    expect(cascadeNeedsSecondBatch([0.9, 0.75], 0.2)).toBe(true);
+    // A corrupt head score never reads as decisive.
+    expect(cascadeNeedsSecondBatch([Number.NaN, 0.1])).toBe(true);
+    expect(cascadeNeedsSecondBatch([0.9, Number.NaN])).toBe(true);
+  });
+
+  test("rerank cascade scores the tail only when the top is contested", async () => {
+    const chunks = Array.from({ length: 20 }, (_, i) => ({ file: `doc${i}.md`, text: `text ${i}` }));
+    const scored = new Map<string, number>();
+
+    const fakeStore = (scores: Map<string, number>) => ({
+      rerank: vi.fn(async (_query: string, docs: { file: string; text: string }[]) => {
+        for (const d of docs) scored.set(d.file, scores.get(d.file) ?? 0);
+        return docs.map((d) => ({ file: d.file, score: scores.get(d.file) ?? 0 }));
+      }),
+    }) as Store; // fake-store stub: only rerank() is exercised below
+
+    // Decisive top: doc0 far ahead — one batch of 15, tail keeps score 0.
+    const wide = new Map(chunks.map((c, i) => [c.file, i === 0 ? 0.95 : 0.5 - i * 0.01]));
+    const store1 = fakeStore(wide);
+    const out1 = await rerankWithDeadline(store1, "q", chunks, undefined, undefined);
+    expect(store1.rerank).toHaveBeenCalledTimes(1);
+    expect(store1.rerank).toHaveBeenCalledWith("q", chunks.slice(0, 15), undefined, undefined, expect.anything());
+    expect(out1).toHaveLength(20);
+    expect(out1!.slice(0, 15).map((r) => r.score)).toEqual(chunks.slice(0, 15).map((c) => wide.get(c.file)));
+    expect(out1!.slice(15).map((r) => r.score)).toEqual([0, 0, 0, 0, 0]);
+
+    // Contested top: doc0 and doc1 within the margin — both batches run.
+    scored.clear();
+    const tight = new Map(chunks.map((c, i) => [c.file, 0.9 - i * 0.001]));
+    const store2 = fakeStore(tight);
+    const out2 = await rerankWithDeadline(store2, "q", chunks, undefined, undefined);
+    expect(store2.rerank).toHaveBeenCalledTimes(2);
+    expect(out2!.map((r) => r.file).sort()).toEqual(chunks.map((c) => c.file).sort());
+    for (const r of out2!) expect(r.score).toBeCloseTo(tight.get(r.file)!, 10);
+  });
+
+  test("resolveLoadTimeoutMs bounds the model-load wait by default", () => {
+    const prev = process.env.QMD_LLM_LOAD_TIMEOUT_MS;
+    try {
+      delete process.env.QMD_LLM_LOAD_TIMEOUT_MS;
+      expect(resolveLoadTimeoutMs()).toBe(DEFAULT_LOAD_TIMEOUT_MS);
+      process.env.QMD_LLM_LOAD_TIMEOUT_MS = "5000";
+      expect(resolveLoadTimeoutMs()).toBe(5000);
+      process.env.QMD_LLM_LOAD_TIMEOUT_MS = "0";
+      expect(resolveLoadTimeoutMs()).toBe(0);
+      process.env.QMD_LLM_LOAD_TIMEOUT_MS = "abc";
+      expect(resolveLoadTimeoutMs()).toBe(DEFAULT_LOAD_TIMEOUT_MS);
+    } finally {
+      if (prev === undefined) delete process.env.QMD_LLM_LOAD_TIMEOUT_MS;
+      else process.env.QMD_LLM_LOAD_TIMEOUT_MS = prev;
+    }
+  });
+
+  test("a model load that never reports ready times out instead of hanging", async () => {
+    const prev = process.env.QMD_LLM_LOAD_TIMEOUT_MS;
+    process.env.QMD_LLM_LOAD_TIMEOUT_MS = "50";
+    try {
+      const store = {
+        rerank: vi.fn(async () => new Promise<never>(() => {})),
+      } as Store; // fake-store stub: only rerank() is exercised below
+      const hooks = {
+        onModelLoad: vi.fn(),
+        onDeadline: vi.fn(),
+      };
+      const out = await rerankWithDeadline(store, "q", [{ file: "a.md", text: "t" }], undefined, {
+        hooks,
+      });
+      expect(out).toBeNull();
+      // The bounded wait is reported as the load stage with a deadline entry.
+      expect(hooks.onModelLoad).toHaveBeenCalledTimes(1);
+      expect(hooks.onModelLoad.mock.calls[0]![1]).toBeGreaterThanOrEqual(40);
+      expect(hooks.onDeadline).toHaveBeenCalledTimes(1);
+      expect(hooks.onDeadline.mock.calls[0]).toHaveLength(2);
+      // The abandoned slot is held: a later deadline call skips at once.
+      const again = await rerankWithDeadline(store, "q", [{ file: "a.md", text: "t" }], undefined, {
+        rerankDeadlineMs: 5000,
+      });
+      expect(again).toBeNull();
+      expect(store.rerank).toHaveBeenCalledTimes(1);
+    } finally {
+      if (prev === undefined) delete process.env.QMD_LLM_LOAD_TIMEOUT_MS;
+      else process.env.QMD_LLM_LOAD_TIMEOUT_MS = prev;
+    }
+  });
+
+  test("QMD_RERANK_CASCADE=0 restores single-batch rerank", async () => {
+    const prev = process.env.QMD_RERANK_CASCADE;
+    process.env.QMD_RERANK_CASCADE = "0";
+    try {
+      expect(isRerankCascadeEnabled()).toBe(false);
+      const chunks = Array.from({ length: 20 }, (_, i) => ({ file: `doc${i}.md`, text: `text ${i}` }));
+      const wide = new Map(chunks.map((c, i) => [c.file, i === 0 ? 0.95 : 0.5 - i * 0.01]));
+      const store = {
+        rerank: vi.fn(async (_query: string, docs: { file: string; text: string }[]) =>
+          docs.map((d) => ({ file: d.file, score: wide.get(d.file) ?? 0 })),
+        ),
+      } as Store; // fake-store stub: only rerank() is exercised below
+      const out = await rerankWithDeadline(store, "q", chunks, undefined, undefined);
+      expect(store.rerank).toHaveBeenCalledTimes(1);
+      expect(store.rerank).toHaveBeenCalledWith("q", chunks, undefined, undefined, expect.anything());
+      expect(out).toHaveLength(20);
+    } finally {
+      if (prev === undefined) delete process.env.QMD_RERANK_CASCADE;
+      else process.env.QMD_RERANK_CASCADE = prev;
+    }
+  });
+
+  test("rerank cascade keeps one deadline across both batches", async () => {
+    const chunks = Array.from({ length: 20 }, (_, i) => ({ file: `doc${i}.md`, text: `text ${i}` }));
+    const calls: string[][] = [];
+    // Contested head (margin 0) forces the second batch; the second batch hangs.
+    const store = {
+      rerank: vi.fn(
+        async (
+          _query: string,
+          docs: { file: string; text: string }[],
+          _model?: string,
+          _intent?: string,
+          options?: { onModelReady?: () => void },
+        ) => {
+          calls.push(docs.map((d) => d.file));
+          if (calls.length === 1) return docs.map((d) => ({ file: d.file, score: 0.5 }));
+          options?.onModelReady?.();
+          return new Promise<never>(() => {});
+        },
+      ),
+    } as Store; // fake-store stub: only rerank() is exercised below
+    const hooks: SearchHooks = { onRerankStart: vi.fn(), onRerankDone: vi.fn() };
+    const out = await rerankWithDeadline(store, "q", chunks, undefined, {
+      rerankDeadlineMs: 50,
+      hooks,
+    });
+    // The hung tail resolves as a timeout, not a second full deadline: null, so
+    // the caller falls back to RRF order, and the done hook never fires.
+    expect(out).toBeNull();
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toHaveLength(15);
+    expect(calls[1]).toHaveLength(5);
+    expect(hooks.onRerankStart).toHaveBeenCalledTimes(1);
+    expect(hooks.onRerankDone).not.toHaveBeenCalled();
   });
 
   test("reranker can displace the top retrieval hit", () => {
