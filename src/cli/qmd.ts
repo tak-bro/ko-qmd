@@ -4049,6 +4049,8 @@ function collectEnvironmentOverrides(activeModels: { embed: string; generate: st
   add("QMD_DOCTOR_DEVICE_PROBE", "controls qmd doctor native device probing; 0/off skips GPU probing");
   add("QMD_EMBED_PARALLELISM", "overrides embedding parallel context count; too high can exhaust RAM/VRAM");
   add("QMD_LLM_IDLE_TIMEOUT_MS", "ms of idle before models unload (0 = never); keeping them loaded holds their memory");
+  add("QMD_LLM_LOAD_TIMEOUT_MS", "caps the model-load wait per stage (default 120000, 0 = wait forever); past it the stage is skipped");
+  add("QMD_RERANK_CASCADE", "0/false/off/no disables head-first cascade rerank and scores all candidates at once");
   add("QMD_EXPAND_CONTEXT_SIZE", "overrides query expansion context size; larger values use more memory");
   add("QMD_RERANK_CONTEXT_SIZE", "overrides reranker context size; larger values use more memory");
   add("QMD_RERANK_MAX_DOC_TOKENS", "caps tokens per document sent to the reranker; lower is faster but scores less text");

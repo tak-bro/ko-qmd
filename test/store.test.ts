@@ -69,6 +69,9 @@ import {
   rrfDocMultipliers,
   cascadeNeedsSecondBatch,
   rerankWithDeadline,
+  resolveLoadTimeoutMs,
+  isRerankCascadeEnabled,
+  DEFAULT_LOAD_TIMEOUT_MS,
   blendRerankScore,
   _resetProductionModeForTesting,
   hybridQuery,
@@ -3074,6 +3077,66 @@ describe("Reciprocal Rank Fusion", () => {
     expect(store2.rerank).toHaveBeenCalledTimes(2);
     expect(out2!.map((r) => r.file).sort()).toEqual(chunks.map((c) => c.file).sort());
     for (const r of out2!) expect(r.score).toBeCloseTo(tight.get(r.file)!, 10);
+  });
+
+  test("resolveLoadTimeoutMs bounds the model-load wait by default", () => {
+    const prev = process.env.QMD_LLM_LOAD_TIMEOUT_MS;
+    try {
+      delete process.env.QMD_LLM_LOAD_TIMEOUT_MS;
+      expect(resolveLoadTimeoutMs()).toBe(DEFAULT_LOAD_TIMEOUT_MS);
+      process.env.QMD_LLM_LOAD_TIMEOUT_MS = "5000";
+      expect(resolveLoadTimeoutMs()).toBe(5000);
+      process.env.QMD_LLM_LOAD_TIMEOUT_MS = "0";
+      expect(resolveLoadTimeoutMs()).toBe(0);
+      process.env.QMD_LLM_LOAD_TIMEOUT_MS = "abc";
+      expect(resolveLoadTimeoutMs()).toBe(DEFAULT_LOAD_TIMEOUT_MS);
+    } finally {
+      if (prev === undefined) delete process.env.QMD_LLM_LOAD_TIMEOUT_MS;
+      else process.env.QMD_LLM_LOAD_TIMEOUT_MS = prev;
+    }
+  });
+
+  test("a model load that never reports ready times out instead of hanging", async () => {
+    const prev = process.env.QMD_LLM_LOAD_TIMEOUT_MS;
+    process.env.QMD_LLM_LOAD_TIMEOUT_MS = "50";
+    try {
+      const store = {
+        rerank: vi.fn(async () => new Promise<never>(() => {})),
+      } as Store; // fake-store stub: only rerank() is exercised below
+      const out = await rerankWithDeadline(
+        store,
+        "q",
+        [{ file: "a.md", text: "t" }],
+        undefined,
+        undefined,
+      );
+      expect(out).toBeNull();
+    } finally {
+      if (prev === undefined) delete process.env.QMD_LLM_LOAD_TIMEOUT_MS;
+      else process.env.QMD_LLM_LOAD_TIMEOUT_MS = prev;
+    }
+  });
+
+  test("QMD_RERANK_CASCADE=0 restores single-batch rerank", async () => {
+    const prev = process.env.QMD_RERANK_CASCADE;
+    process.env.QMD_RERANK_CASCADE = "0";
+    try {
+      expect(isRerankCascadeEnabled()).toBe(false);
+      const chunks = Array.from({ length: 20 }, (_, i) => ({ file: `doc${i}.md`, text: `text ${i}` }));
+      const wide = new Map(chunks.map((c, i) => [c.file, i === 0 ? 0.95 : 0.5 - i * 0.01]));
+      const store = {
+        rerank: vi.fn(async (_query: string, docs: { file: string; text: string }[]) =>
+          docs.map((d) => ({ file: d.file, score: wide.get(d.file) ?? 0 })),
+        ),
+      } as Store; // fake-store stub: only rerank() is exercised below
+      const out = await rerankWithDeadline(store, "q", chunks, undefined, undefined);
+      expect(store.rerank).toHaveBeenCalledTimes(1);
+      expect(store.rerank).toHaveBeenCalledWith("q", chunks, undefined, undefined, expect.anything());
+      expect(out).toHaveLength(20);
+    } finally {
+      if (prev === undefined) delete process.env.QMD_RERANK_CASCADE;
+      else process.env.QMD_RERANK_CASCADE = prev;
+    }
   });
 
   test("rerank cascade keeps one deadline across both batches", async () => {

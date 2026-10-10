@@ -177,6 +177,9 @@ function stageTimer(): { stages: QueryLogStages; timeouts: QueryLogTimeout[]; ho
  * ko-qmd: how long the daemon waits for query expansion and for the reranker before answering
  * without them. QMD_EXPAND_DEADLINE_MS / QMD_RERANK_DEADLINE_MS: 0 = wait, a positive integer =
  * that many ms, anything else = the default. One MCP query once took 85 s.
+ * The model-load wait itself is bounded separately by QMD_LLM_LOAD_TIMEOUT_MS
+ * (default 120 s, 0 = wait forever), so a load that never reports ready also
+ * falls back instead of hanging.
  */
 const DEFAULT_EXPAND_DEADLINE_MS = 5_000;
 const DEFAULT_RERANK_DEADLINE_MS = 10_000;

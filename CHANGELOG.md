@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- `runWithDeadline` now bounds the model-load wait itself (`QMD_LLM_LOAD_TIMEOUT_MS`,
+  default 120 s, `0` = wait forever). The scoring deadlines never covered a load
+  that reports ready never: the pre-ready race hung with no timer, so one stuck
+  load hung the query. Past the load bound the stage is skipped exactly like a
+  scoring deadline (same `timeouts` entry, same RRF-order / original-query
+  fallback, same abandoned-run cache fill), and the bounded wait is reported as
+  the `load` stage. Listed in `qmd doctor`.
+- `QMD_RERANK_CASCADE=0` (or `false`/`off`/`no`) restores single-batch rerank.
+  Kill switch for measuring the cascade and for operations; unset cascades.
+  Listed in `qmd doctor`.
 - Rerank now cascades: the RRF head (15) is scored first, and the tail is
   skipped with score 0 (RRF position order only) when the head's top-2 margin
   reaches 0.08 (`RERANK_CASCADE_FIRST_BATCH`/`RERANK_CASCADE_MARGIN` in

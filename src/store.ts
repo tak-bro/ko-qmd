@@ -6034,10 +6034,26 @@ export type DeadlineStage = "expand" | "rerank";
 const abandoned = new WeakMap<Store, Record<DeadlineStage, { running: number; warned: boolean }>>();
 
 /**
+ * Bound on the model-load wait inside runWithDeadline: a load that never
+ * reports ready must not hang the query. QMD_LLM_LOAD_TIMEOUT_MS sets it
+ * (positive ms, 0 = wait forever, anything else = the default).
+ */
+export const DEFAULT_LOAD_TIMEOUT_MS = 120_000;
+
+/** Load-timeout resolver for runWithDeadline; exported for tests. */
+export function resolveLoadTimeoutMs(): number {
+  const raw = process.env.QMD_LLM_LOAD_TIMEOUT_MS;
+  if (raw === undefined) return DEFAULT_LOAD_TIMEOUT_MS;
+  return /^\d+$/.test(raw) ? Number(raw) : DEFAULT_LOAD_TIMEOUT_MS;
+}
+
+/**
  * Run one LLM stage under a deadline. The clock starts once the stage's model is loaded
  * (`onModelReady`): the deadline bounds computation, not a cold load, which is reported through
- * `onModelLoad`. TIMED_OUT when the deadline passes, or at once while an earlier abandoned call of
- * the stage is still running. Unset or 0 deadline = plain await.
+ * `onModelLoad`. The load wait itself is bounded separately by resolveLoadTimeoutMs, so a load
+ * that never reports ready times out instead of hanging. TIMED_OUT when either bound passes,
+ * or at once while an earlier abandoned call of the stage is still running.
+ * Unset or 0 deadline = plain await (still under the load bound).
  */
 async function runWithDeadline<T>(
   store: Store,
@@ -6049,16 +6065,19 @@ async function runWithDeadline<T>(
   const started = Date.now();
   let loadedAt: number | undefined;
   const reportLoad = () => { if (loadedAt !== undefined) hooks?.onModelLoad?.(stage, loadedAt - started); };
-  if (!deadlineMs || deadlineMs <= 0) {
-    const value = await start(() => { loadedAt = Date.now(); });
-    reportLoad();
-    return value;
-  }
 
   const byStage = abandoned.get(store) ?? { expand: { running: 0, warned: false }, rerank: { running: 0, warned: false } };
   abandoned.set(store, byStage);
   const state = byStage[stage];
-  if (state.running > 0) {
+  const abandon = () => {
+    state.running++;
+    const settle = () => {
+      state.running--;
+      if (state.running === 0) state.warned = false;
+    };
+    pending.then(settle, settle);
+  };
+  if (deadlineMs && deadlineMs > 0 && state.running > 0) {
     if (!state.warned) {
       state.warned = true;
       process.stderr.write(`qmd: a ${stage} abandoned at its deadline is still running — answering without ${stage} until it finishes\n`);
@@ -6070,19 +6089,36 @@ async function runWithDeadline<T>(
   let markReady = () => {};
   const ready = new Promise<void>((resolve) => { markReady = () => { loadedAt = Date.now(); resolve(); }; });
   const pending = start(markReady);
-  // Wait out the model load with no deadline; a cache hit or a fast call may finish before it fires.
-  const finishedFirst = await Promise.race([ready.then(() => false), pending.then(() => true, () => true)]);
+  // Bound the load wait itself: neither a stuck load nor a call that finishes
+  // without reporting ready may hold the query past the load timeout. The
+  // timer is cleared on every settle so idle processes keep no handle.
+  const loadTimeoutMs = resolveLoadTimeoutMs();
+  let loadTimer: ReturnType<typeof setTimeout> | undefined;
+  const loadTimedOut = new Promise<"load-timeout">((resolve) => {
+    if (loadTimeoutMs > 0) {
+      loadTimer = setTimeout(() => resolve("load-timeout"), loadTimeoutMs);
+      loadTimer.unref?.();
+    }
+  });
+  const settled = await Promise.race([
+    ready.then(() => "ready" as const),
+    loadTimedOut,
+    pending.then(() => "done" as const, () => "done" as const),
+  ]);
+  clearTimeout(loadTimer);
+  if (settled === "load-timeout") {
+    abandon();
+    hooks?.onModelLoad?.(stage, Date.now() - started);
+    hooks?.onDeadline?.(stage, Date.now() - started);
+    return TIMED_OUT;
+  }
   reportLoad();
-  if (finishedFirst) return pending;
+  if (settled === "done") return pending;
+  if (!deadlineMs || deadlineMs <= 0) return pending;
 
   const result = await withDeadline(pending, deadlineMs);
   if (result === TIMED_OUT) {
-    state.running++;
-    const settle = () => {
-      state.running--;
-      if (state.running === 0) state.warned = false;
-    };
-    pending.then(settle, settle);
+    abandon();
     hooks?.onDeadline?.(stage, Date.now() - (loadedAt ?? started));
   }
   return result;
@@ -6092,6 +6128,16 @@ async function runWithDeadline<T>(
 export const RERANK_CASCADE_FIRST_BATCH = 15;
 /** Skip the tail past the first batch when the top-2 rerank margin reaches this. */
 export const RERANK_CASCADE_MARGIN = 0.08;
+
+/**
+ * QMD_RERANK_CASCADE=0 (or false/off/no) restores single-batch rerank;
+ * anything else (including unset) cascades. Kill switch for measurement and
+ * operations; exported for tests.
+ */
+export function isRerankCascadeEnabled(): boolean {
+  const raw = process.env.QMD_RERANK_CASCADE?.trim().toLowerCase();
+  return raw !== "0" && raw !== "false" && raw !== "off" && raw !== "no";
+}
 
 /**
  * True when the first cascade batch's top-2 margin is too tight to skip the
@@ -6127,7 +6173,7 @@ export async function rerankWithDeadline(
   // Cascade: score the RRF head first. On a decisive top margin the tail keeps
   // score 0 (RRF position tiebreak only) instead of paying for 25 more
   // cross-encoder pairs; a contested top scores everything, as before.
-  if (chunks.length > RERANK_CASCADE_FIRST_BATCH) {
+  if (isRerankCascadeEnabled() && chunks.length > RERANK_CASCADE_FIRST_BATCH) {
     const first = chunks.slice(0, RERANK_CASCADE_FIRST_BATCH);
     const rest = chunks.slice(RERANK_CASCADE_FIRST_BATCH);
     const firstScored = await scoreBatch(first, options?.rerankDeadlineMs);
