@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- Rerank input denoises markdown (`src/rerank-input.ts`): `[text](url)` is
+  sent as text, bare URLs dropped, `>` quotes unwrapped, HTML tags stripped
+  keeping inner text. Fourth autoresearch loop (9 exps, 339-train goldset):
+  train `full_mrr` 0.6936 → 0.6961, held-out 0.7572 → 0.7614; ko-vault seam
+  lines byte-identical. Dropping fenced code hurt (−0.0015), so fences stay.
 - Rerank input now strips a leading YAML frontmatter block over 350 chars
   (`LONG_FRONTMATTER_CHARS` in `src/rerank-input.ts`) and no longer prepends
   `# <title>` to the chunk. Third autoresearch loop (24 exps): train

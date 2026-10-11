@@ -1198,6 +1198,25 @@ Per-query rows from this run's `tmp/bench-ko/bench.json` (seam, uncommitted):
 - `hneg-08`/`hneg-04` still miss everywhere without those sentences — expected,
   the fixture intentionally carries no such surface.
 
+## 2026-10-11 — rerank-input autoresearch, fourth loop: markdown denoise
+
+9 experiments on the grown goldset (339 train / 78 held-out after run-3
+generation + review: 40 new queries, 14 dropped as run-log/lint answers,
+zero `outputs/runs/` answers kept per standing policy). Fresh baseline at
+loop head: train 0.6936. Kept 3, discarded 6 (2 cost-killed: eval >15 min
+under machine contention). Best (`exp/rerank-loop4`, adopted):
+
+| check | before | after |
+|---|---|---|
+| train `full_mrr` (339) | 0.6936 | 0.6961 |
+| held-out `full_mrr` (78) | 0.7572 | 0.7614 |
+| ko-vault seam / hard `full_r1` | 0.9434 / 0.6630 | identical |
+
+Kept: link-as-text + bare-URL drop, blockquote unwrap, HTML-tag strip.
+Discarded: fenced-code drop (−0.0015, fences stay); HR-guard tied (no `---`
+false positives in practice). Open: wikilink unwrap and table-delimiter
+drop were cost-killed with unknown effect — retry on a quiet machine.
+
 ## 2026-10-11 — rerank-input autoresearch, third loop: long-frontmatter strip
 
 24 experiments on the 320-train / 71-held-out goldset (corpus unchanged,
