@@ -80,5 +80,17 @@ const stripLongFrontmatter = (text: string): string => {
   return m && m[0].length > LONG_FRONTMATTER_CHARS ? text.slice(m[0].length) : text;
 };
 
+/** Links read as their anchor text; bare URLs are reranker noise and go. */
+const stripUrls = (text: string): string =>
+  text.replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/https?:\/\/\S+/g, "");
+
+/** Blockquote markers are not content; unwrap `>` lines to their text. */
+const stripQuotes = (text: string): string =>
+  text.split("\n").map((line) => line.replace(/^\s*(>\s*)+/, "")).join("\n");
+
+/** HTML tags are not content; drop the tags but keep their inner text. */
+const stripHtmlTags = (text: string): string => text.replace(/<\/?[a-zA-Z][^<>]*>/g, "");
+
 /** The document text sent for one candidate: the selected chunk alone, without long frontmatter. */
-export const formatRerankDoc = (chunkText: string, _meta: RerankDocMeta): string => stripLongFrontmatter(chunkText);
+export const formatRerankDoc = (chunkText: string, _meta: RerankDocMeta): string =>
+  stripHtmlTags(stripQuotes(stripUrls(stripLongFrontmatter(chunkText))));
