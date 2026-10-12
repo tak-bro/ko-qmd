@@ -6,7 +6,7 @@ import { isQmdMcpPid, mcpDaemonStateFiles } from "./mcp-pid.js";
 import { embedLockPathForDb, tryAcquireEmbedLock, EMBED_LOCK_BUSY_MESSAGE } from "./embed-lock.js";
 import { fileURLToPath } from "url";
 import { basename, dirname, join as pathJoin, relative as relativePath, resolve as pathResolve } from "path";
-import { parseArgs } from "util";
+import { parseArgs, type ParseArgsOptionsConfig } from "util";
 import { buildDocumentFilter, describeFilter, type DocumentFilter } from "../filters.js";
 import { compileGrepPattern, grepDocuments, type GrepFileMatch } from "../grep.js";
 import { readFileSync, readdirSync, realpathSync, statSync, existsSync, unlinkSync, writeFileSync, openSync, closeSync, mkdirSync, lstatSync, rmSync, symlinkSync, readlinkSync, copyFileSync } from "fs";
@@ -3234,11 +3234,9 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
   }, { maxDuration: 10 * 60 * 1000, name: 'querySearch' });
 }
 
-// Parse CLI arguments using util.parseArgs
-function parseCLI() {
-  const { values, positionals } = parseArgs({
-    args: process.argv.slice(2), // Skip node and script path
-    options: {
+// All CLI flags must be declared here so parseCLI() can spot typo'd
+// unknown flags (strict:false would otherwise absorb them silently).
+const CLI_OPTIONS: ParseArgsOptionsConfig = {
       // Global options
       index: {
         type: "string",
@@ -3307,10 +3305,36 @@ function parseCLI() {
       daemon: { type: "boolean" },
       port: { type: "string" },
       host: { type: "string" },
-    },
+};
+
+// Parse CLI arguments using util.parseArgs
+function parseCLI() {
+  const { values, positionals, tokens } = parseArgs({
+    args: process.argv.slice(2), // Skip node and script path
+    options: CLI_OPTIONS,
     allowPositionals: true,
-    strict: false, // Allow unknown options to pass through
+    // Keep strict:false for back-compat, but surface typo'd flags (e.g.
+    // --ful/--fromt) via a stderr warning instead of silently absorbing them.
+    strict: false,
+    tokens: true,
   });
+
+  const knownLong = new Set(Object.keys(CLI_OPTIONS));
+  const knownShort = new Set(
+    Object.values(CLI_OPTIONS).flatMap((o) => (o.short ? [o.short] : [])),
+  );
+  const unknownRaws: string[] = [];
+  for (const t of tokens) {
+    if (t.kind !== "option") continue;
+    if (knownLong.has(t.name) || knownShort.has(t.name)) continue;
+    if (!unknownRaws.includes(t.rawName)) unknownRaws.push(t.rawName);
+    delete (values as Record<string, unknown>)[t.name];
+  }
+  if (unknownRaws.length > 0) {
+    console.error(
+      `Warning: ignoring unknown option(s): ${unknownRaws.join(", ")} (did you misspell a flag?)`,
+    );
+  }
 
   if (values["no-gpu"]) {
     process.env.QMD_FORCE_CPU = "1";

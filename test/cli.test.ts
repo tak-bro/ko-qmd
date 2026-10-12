@@ -247,6 +247,20 @@ describe("CLI Help", () => {
     expect(exitCode).toBe(1);
     expect(stdout).toContain("Usage:");
   });
+
+  test("warns on typo'd flags but still runs", async () => {
+    const { stdout, stderr, exitCode } = await runQmd(["--help", "--ful", "--fromt"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("Usage:");
+    expect(stderr).toContain("--ful");
+    expect(stderr).toContain("--fromt");
+  });
+
+  test("emits no unknown-option warning for valid flags", async () => {
+    const { stderr, exitCode } = await runQmd(["--help", "--full", "-n", "5"]);
+    expect(exitCode).toBe(0);
+    expect(stderr).not.toContain("unknown option");
+  });
 });
 
 
