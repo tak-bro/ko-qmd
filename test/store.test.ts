@@ -4259,8 +4259,10 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
     });
 
     // Create vector table and insert a vector
-    store.ensureVecTable(768);
-    const embedding = Array(768).fill(0).map(() => Math.random());
+    // (1024 = native dim of the default Qwen3-Embedding-0.6B model; embed()
+    // always runs the resolved default model, ignoring the label passed to searchVec)
+    store.ensureVecTable(1024);
+    const embedding = Array(1024).fill(0).map(() => Math.random());
     store.db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, 'test', ?)`).run(hash, new Date().toISOString());
     store.db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash}_0`, new Float32Array(embedding));
 
@@ -4293,10 +4295,10 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
       body: "Content in collection two",
     });
 
-    // Create vectors_vec table with correct dimensions (768 for embeddinggemma)
-    store.ensureVecTable(768);
-    const embedding1 = Array(768).fill(0).map(() => Math.random());
-    const embedding2 = Array(768).fill(0).map(() => Math.random());
+    // Create vectors_vec table with correct dimensions (1024 for Qwen3-Embedding-0.6B)
+    store.ensureVecTable(1024);
+    const embedding1 = Array(1024).fill(0).map(() => Math.random());
+    const embedding2 = Array(1024).fill(0).map(() => Math.random());
     store.db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, 'test', ?)`).run(hash1, new Date().toISOString());
     store.db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, 'test', ?)`).run(hash2, new Date().toISOString());
     store.db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash1}_0`, new Float32Array(embedding1));
@@ -4330,9 +4332,9 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
       displayPath: "regression.md",
     });
 
-    // Create vector table and insert a test vector
-    store.ensureVecTable(768);
-    const embedding = Array(768).fill(0).map(() => Math.random());
+    // Create vector table and insert a test vector (1024 = Qwen3-Embedding-0.6B native dim)
+    store.ensureVecTable(1024);
+    const embedding = Array(1024).fill(0).map(() => Math.random());
     store.db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, 'test', ?)`).run(hash, new Date().toISOString());
     store.db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash}_0`, new Float32Array(embedding));
 
