@@ -2215,6 +2215,64 @@ describe("search output formats", () => {
     const plain = stripAnsi(stdout);
     expect(plain).not.toMatch(new RegExp(`^${collName}/`, "m"));
   });
+
+  test("search --csv --md together resolves to csv (alias else-if order, not flag position)", async () => {
+    for (const flags of [["--csv", "--md"], ["--md", "--csv"]]) {
+      const { stdout, exitCode } = await runQmd(
+        ["search", "test", ...flags, "-n", "1"],
+        { dbPath: localDbPath, configDir: localConfigDir }
+      );
+      expect(exitCode).toBe(0);
+      // CSV wins either way: header present, exactly one data row for -n 1
+      // (rows start with `#docid,`; snippet fields may embed newlines,
+      // so rows are counted by header, not by line count),
+      // and no Markdown docid markers.
+      expect(stdout).toMatch(/^docid,score,file,title,context,line,snippet$/m);
+      expect(stdout.match(/^#[a-f0-9]{6},/gm)).toHaveLength(1);
+      expect(stdout).not.toMatch(/\*\*docid:\*\*/);
+    }
+  });
+
+  test("search --format json --csv resolves to --format (explicit format wins over alias)", async () => {
+    const { stdout, exitCode } = await runQmd(
+      ["search", "test", "--format", "json", "--csv", "-n", "1"],
+      { dbPath: localDbPath, configDir: localConfigDir }
+    );
+    expect(exitCode).toBe(0);
+    // --format wins: valid JSON with exactly one result, not a CSV header.
+    const results = JSON.parse(stdout);
+    expect(results).toHaveLength(1);
+    expect(stdout).not.toMatch(/^docid,score,file,title,context,line,snippet$/m);
+  });
+
+  test("search --all returns every match beyond the default limit (count pinned)", async () => {
+    const env = await createIsolatedTestEnv("format-precedence-all");
+    const fixtureDir = join(testDir, `all-count-${testCounter}`);
+    await mkdir(fixtureDir, { recursive: true });
+    const docCount = 7;
+    for (let i = 0; i < docCount; i++) {
+      await writeFile(join(fixtureDir, `doc-${i}.md`), `# Doc ${i}\n\nallcountprobe shared token ${i}\n`);
+    }
+    const add = await runQmd(
+      ["collection", "add", fixtureDir, "--name", "allcount"],
+      { dbPath: env.dbPath, configDir: env.configDir }
+    );
+    expect(add.exitCode).toBe(0);
+
+    const limited = await runQmd(
+      ["search", "allcountprobe", "--format", "json", "-n", "2"],
+      { dbPath: env.dbPath, configDir: env.configDir }
+    );
+    expect(limited.exitCode).toBe(0);
+    expect(JSON.parse(limited.stdout)).toHaveLength(2);
+
+    const all = await runQmd(
+      ["search", "allcountprobe", "--format", "json", "--all"],
+      { dbPath: env.dbPath, configDir: env.configDir }
+    );
+    expect(all.exitCode).toBe(0);
+    expect(JSON.parse(all.stdout)).toHaveLength(docCount);
+  });
 });
 
 describe("editor URI templates", () => {
