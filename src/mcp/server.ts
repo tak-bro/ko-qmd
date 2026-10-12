@@ -1339,12 +1339,45 @@ export async function startMcpHttpServer(
           nodeRes.end(JSON.stringify({ error: "Missing required field: searches (array)" }));
           return;
         }
+        if (params.searches.length === 0) {
+          nodeRes.writeHead(400, { "Content-Type": "application/json" });
+          nodeRes.end(JSON.stringify({ error: "Invalid field: searches (must be a non-empty array)" }));
+          return;
+        }
+        // Mirror the MCP tool schema's max(10) cap — the REST mapping bypasses zod.
+        if (params.searches.length > 10) {
+          nodeRes.writeHead(400, { "Content-Type": "application/json" });
+          nodeRes.end(JSON.stringify({ error: "Invalid field: searches (maximum 10 items)" }));
+          return;
+        }
+
+        // Validate each entry (the MCP path gets this from zod; REST maps manually).
+        const validTypes = new Set(["lex", "vec", "hyde"]);
+        for (let i = 0; i < params.searches.length; i++) {
+          const entry: unknown = (params.searches as unknown[])[i];
+          if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+            nodeRes.writeHead(400, { "Content-Type": "application/json" });
+            nodeRes.end(JSON.stringify({ error: `Invalid field: searches[${i}] (must be an object)` }));
+            return;
+          }
+          const s = entry as RestSearchInput;
+          if (typeof s.type !== "string" || !validTypes.has(s.type)) {
+            nodeRes.writeHead(400, { "Content-Type": "application/json" });
+            nodeRes.end(JSON.stringify({ error: `Invalid field: searches[${i}].type (must be one of: lex, vec, hyde)` }));
+            return;
+          }
+          if (typeof s.query !== "string" || s.query.trim() === "") {
+            nodeRes.writeHead(400, { "Content-Type": "application/json" });
+            nodeRes.end(JSON.stringify({ error: `Invalid field: searches[${i}].query (must be a non-empty string)` }));
+            return;
+          }
+        }
 
         // Map to internal format
         const searches = params.searches as RestSearchInput[];
         const queries: ExpandedQuery[] = searches.map((s) => ({
           type: s.type as 'lex' | 'vec' | 'hyde',
-          query: String(s.query || ""),
+          query: s.query as string,
         }));
 
         // Optional metadata filter — must be an object and a valid filter AST
