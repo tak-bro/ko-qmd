@@ -348,10 +348,55 @@ describe("CLI Embed", () => {
     expect(stderr).toContain("maxDocsPerBatch");
   });
 
+  test("rejects non-integer and non-numeric --max-docs-per-batch", async () => {
+    for (const value of ["-1", "1.5", "abc"]) {
+      const { stderr, exitCode } = await runQmd(["embed", "--max-docs-per-batch", value]);
+      expect(exitCode).toBe(1);
+      expect(stderr).toContain("maxDocsPerBatch must be a positive integer");
+    }
+  });
+
   test("rejects invalid --max-batch-mb", async () => {
     const { stderr, exitCode } = await runQmd(["embed", "--max-batch-mb", "0"]);
     expect(exitCode).toBe(1);
     expect(stderr).toContain("maxBatchBytes");
+  });
+
+  test("rejects non-integer and non-numeric --max-batch-mb", async () => {
+    for (const value of ["-2", "2.5", "abc"]) {
+      const { stderr, exitCode } = await runQmd(["embed", "--max-batch-mb", value]);
+      expect(exitCode).toBe(1);
+      expect(stderr).toContain("maxBatchBytes must be a positive integer");
+    }
+  });
+
+  test("rejects unknown --chunk-strategy", async () => {
+    const { stderr, exitCode } = await runQmd(["embed", "--chunk-strategy", "bogus"]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain('--chunk-strategy must be "auto" or "regex" (got "bogus")');
+  });
+
+  test("rejects negative or non-numeric --timeout", async () => {
+    for (const value of ["-1", "abc"]) {
+      const { stderr, exitCode } = await runQmd(["embed", "--timeout", value]);
+      expect(exitCode).toBe(1);
+      expect(stderr).toContain("--timeout must be a non-negative number of minutes (0 = no limit)");
+    }
+  });
+
+  test("accepts omitted embed options and --timeout 0 without touching models", async () => {
+    // Empty index: validation passes, then vectorIndex exits early with
+    // "already have embeddings" before any model download/load.
+    for (const extra of [[], ["--timeout", "0"]] as string[][]) {
+      const env = await createIsolatedTestEnv("embed-valid-opts");
+      const { stdout, stderr, exitCode } = await runQmd(["embed", ...extra], {
+        dbPath: env.dbPath,
+        configDir: env.configDir,
+      });
+      expect(exitCode).toBe(0);
+      expect(stderr).not.toContain("must be");
+      expect(stdout).toContain("already have embeddings");
+    }
   });
 });
 
@@ -685,6 +730,27 @@ describe("CLI Add Command", () => {
     } finally {
       try { await chmod(badPath, 0o644); } catch { /* restore so cleanup can unlink */ }
     }
+  });
+
+  test("prefers --mask over --glob when both are given", async () => {
+    const env = await createIsolatedTestEnv("mask-beats-glob");
+    const { stdout, exitCode } = await runQmd(
+      ["collection", "add", fixturesDir, "--name", "mask-prio", "--mask", "notes/*.md", "--glob", "*.txt"],
+      { dbPath: env.dbPath, configDir: env.configDir },
+    );
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("notes/*.md");
+    expect(stdout).not.toContain("*.txt");
+  });
+
+  test("falls back to the default glob when neither --mask nor --glob is given", async () => {
+    const env = await createIsolatedTestEnv("default-glob");
+    const { stdout, exitCode } = await runQmd(
+      ["collection", "add", fixturesDir, "--name", "default-glob"],
+      { dbPath: env.dbPath, configDir: env.configDir },
+    );
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("**/*.md");
   });
 
   test("can recreate collection with remove and add", async () => {
