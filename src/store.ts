@@ -6213,8 +6213,10 @@ export function rerankCascadeFirstBatch(): number {
 
 /** Tail-skip margin, overridable for tuning via `QMD_RERANK_MARGIN`. */
 export function rerankCascadeMargin(): number {
-  const raw = Number(process.env.QMD_RERANK_MARGIN);
-  return Number.isFinite(raw) && raw >= 0 ? raw : RERANK_CASCADE_MARGIN;
+  const raw = process.env.QMD_RERANK_MARGIN?.trim();
+  if (raw === undefined || raw === "") return RERANK_CASCADE_MARGIN;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : RERANK_CASCADE_MARGIN;
 }
 
 /**

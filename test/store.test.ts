@@ -68,6 +68,8 @@ import {
   relaxedDocCoverage,
   rrfDocMultipliers,
   cascadeNeedsSecondBatch,
+  rerankCascadeMargin,
+  RERANK_CASCADE_MARGIN,
   rerankWithDeadline,
   resolveLoadTimeoutMs,
   isRerankCascadeEnabled,
@@ -3046,6 +3048,29 @@ describe("Reciprocal Rank Fusion", () => {
     // A corrupt head score never reads as decisive.
     expect(cascadeNeedsSecondBatch([Number.NaN, 0.1])).toBe(true);
     expect(cascadeNeedsSecondBatch([0.9, Number.NaN])).toBe(true);
+  });
+
+  test("rerankCascadeMargin treats empty as unset and keeps valid values", () => {
+    const prev = process.env.QMD_RERANK_MARGIN;
+    try {
+      delete process.env.QMD_RERANK_MARGIN;
+      expect(rerankCascadeMargin()).toBe(RERANK_CASCADE_MARGIN);
+      process.env.QMD_RERANK_MARGIN = "";
+      expect(rerankCascadeMargin()).toBe(RERANK_CASCADE_MARGIN);
+      process.env.QMD_RERANK_MARGIN = "   ";
+      expect(rerankCascadeMargin()).toBe(RERANK_CASCADE_MARGIN);
+      process.env.QMD_RERANK_MARGIN = "0";
+      expect(rerankCascadeMargin()).toBe(0);
+      process.env.QMD_RERANK_MARGIN = "0.2";
+      expect(rerankCascadeMargin()).toBe(0.2);
+      process.env.QMD_RERANK_MARGIN = "abc";
+      expect(rerankCascadeMargin()).toBe(RERANK_CASCADE_MARGIN);
+      process.env.QMD_RERANK_MARGIN = "-1";
+      expect(rerankCascadeMargin()).toBe(RERANK_CASCADE_MARGIN);
+    } finally {
+      if (prev === undefined) delete process.env.QMD_RERANK_MARGIN;
+      else process.env.QMD_RERANK_MARGIN = prev;
+    }
   });
 
   test("rerank cascade scores the tail only when the top is contested", async () => {
