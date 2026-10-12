@@ -79,4 +79,22 @@ describe("formatRerankDoc", () => {
     expect(formatRerankDoc("# 제목\n본문", meta)).toBe("# 제목\n본문");
     expect(formatRerankDoc("본문 청크", { ...meta, title: "" })).toBe("본문 청크");
   });
+
+  test("strips a long CRLF frontmatter block, leaving the body", () => {
+    const bare = { ...meta, title: "" };
+    expect(formatRerankDoc(`---\r\n${"x".repeat(390)}\r\n---\r\nBODY`, bare)).toBe("BODY");
+  });
+
+  test("strips a frontmatter block larger than 4000 chars, leaving the body", () => {
+    const bare = { ...meta, title: "" };
+    expect(formatRerankDoc(`---\n${"y".repeat(4990)}\n---\nBODY`, bare)).toBe("BODY");
+  });
+
+  test("keeps a frontmatter block of exactly 350 chars, strips one of 351", () => {
+    const bare = { ...meta, title: "" };
+    const block350 = `---\n${"s".repeat(341)}\n---\n`;
+    expect(block350.length).toBe(350);
+    expect(formatRerankDoc(`${block350}BODY`, bare)).toBe(`${block350}BODY`);
+    expect(formatRerankDoc(`---\n${"z".repeat(342)}\n---\nBODY`, bare)).toBe("BODY");
+  });
 });

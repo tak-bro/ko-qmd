@@ -75,8 +75,9 @@ export const LONG_FRONTMATTER_CHARS = 350;
 
 /** The leading YAML frontmatter block when longer than LONG_FRONTMATTER_CHARS, else the text as-is. */
 const stripLongFrontmatter = (text: string): string => {
-  if (!text.startsWith("---\n")) return text;
-  const m = text.match(/^---\n[\s\S]{1,4000}?---\n/);
+  if (!/^---\r?\n/.test(text)) return text;
+  // Tolerate CRLF fences; scan up to 100_000 chars so a missing closing fence returns fast.
+  const m = text.match(/^---\r?\n[\s\S]{1,100000}?---\r?\n/);
   return m && m[0].length > LONG_FRONTMATTER_CHARS ? text.slice(m[0].length) : text;
 };
 
