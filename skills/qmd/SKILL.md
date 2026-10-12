@@ -2,7 +2,7 @@
 name: qmd
 description: Search local markdown knowledge bases, notes, docs, and wikis with QMD. Use when users ask to find notes, retrieve documents, inspect a wiki, answer from indexed markdown, or set up QMD access.
 license: MIT
-compatibility: Requires qmd CLI or MCP server. Install via `npm install -g @tobilu/qmd`.
+compatibility: Requires qmd CLI or MCP server. Install via `npm install -g ko-qmd`.
 metadata:
   author: tobi
   version: "2.2.0"
@@ -258,8 +258,11 @@ qmd search "six-week cadence WhatsApp merchant relationships Shawn Ryan" -c sour
 
 BM25 ANDs every `lex:` term. One inflected Korean word the document does not
 contain (`만드는`, `정리해`, `들었는지`) zeroes the whole lex sub-query. QMD strips
-one trailing particle or `기` from a plain Hangul word (`검색을` → `검색`) and
-indexes syllable bigrams, but it does not undo verb endings.
+one trailing particle or `기` from a plain Hangul word (`검색을` → `검색`),
+unwinds particle chains (`청킹에서의` → `청킹`), and strips verb/nominalizing
+endings (`토큰화하는` → `토큰화`, `검색하기` → `검색`), and indexes syllable
+bigrams — but stripping runs at most two rounds, so keep `lex:` terms to
+nouns and stems anyway.
 
 - **`lex:` gets stems, aliases and English terms.** Write nouns and stems
   (`회의록 정리`, not `회의록을 정리해`). Add the page's aliases or English/romanized
@@ -284,7 +287,7 @@ Only mutate indexes when the user asked for setup or maintenance. Searching and
 retrieving are safe; collection/index mutation is not a casual first step.
 
 ```bash
-npm install -g @tobilu/qmd
+npm install -g ko-qmd
 qmd collection add ~/notes --name notes
 qmd update
 qmd embed
