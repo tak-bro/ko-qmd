@@ -2156,6 +2156,19 @@ function parseEmbedTimeoutOption(value: unknown): number | undefined {
   return minutes * 60 * 1000;
 }
 
+// -n for search/query/vsearch: result cap. A provided value must be a positive
+// integer; unlike `parseInt(...) || default`, this rejects negatives (truthy,
+// so they used to slip into opts.limit where slice(0, -5) and SQL LIMIT -5
+// disagree) instead of silently falling back to the default.
+function parseLimitOption(value: unknown, defaultLimit: number): number {
+  if (value === undefined || value === "") return defaultLimit;
+  const parsed = parseInt(String(value), 10);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`-n must be a positive integer (got "${String(value)}")`);
+  }
+  return parsed;
+}
+
 function ensureModelsConfiguredForCli(): { embed: string; generate: string; rerank: string } {
   try {
     const config = loadConfig();
@@ -3362,7 +3375,7 @@ function parseCLI() {
   const opts: OutputOptions = {
     format,
     full: !!values.full,
-    limit: isAll ? 100000 : (values.n ? parseInt(String(values.n), 10) || defaultLimit : defaultLimit),
+    limit: isAll ? 100000 : parseLimitOption(values.n, defaultLimit),
     minScore: values["min-score"] ? parseFloat(String(values["min-score"])) || 0 : 0,
     all: isAll,
     collection: values.collection as string[] | undefined,

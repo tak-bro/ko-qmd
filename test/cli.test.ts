@@ -2195,6 +2195,31 @@ describe("search output formats", () => {
     expect(stderr).toContain("Unknown --format value");
   });
 
+  test("search -n with a negative limit fails instead of returning wrong results", async () => {
+    const { exitCode, stderr } = await runQmd(["search", "test", "--json", "-n", "-5"], { dbPath: localDbPath, configDir: localConfigDir });
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("-n must be a positive integer");
+  });
+
+  test("search -n with zero fails instead of silently using the default", async () => {
+    const { exitCode, stderr } = await runQmd(["search", "test", "--json", "-n", "0"], { dbPath: localDbPath, configDir: localConfigDir });
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("-n must be a positive integer");
+  });
+
+  test("search -n with a non-numeric limit fails instead of silently using the default", async () => {
+    const { exitCode, stderr } = await runQmd(["search", "test", "--json", "-n", "abc"], { dbPath: localDbPath, configDir: localConfigDir });
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("-n must be a positive integer");
+  });
+
+  test("search --all is unaffected by the -n validation", async () => {
+    const { stdout, exitCode } = await runQmd(["search", "test", "--json", "--all"], { dbPath: localDbPath, configDir: localConfigDir });
+    expect(exitCode).toBe(0);
+    const results = JSON.parse(stdout);
+    expect(results.length).toBeGreaterThan(0);
+  });
+
   test("search default CLI format includes plain qmd:// path, docid, and context in non-TTY mode", async () => {
     const { stdout, exitCode } = await runQmd(["search", "test", "-n", "1"], { dbPath: localDbPath, configDir: localConfigDir });
     expect(exitCode).toBe(0);
