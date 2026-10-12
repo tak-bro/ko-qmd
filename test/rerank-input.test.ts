@@ -71,8 +71,8 @@ describe("selectRerankChunk", () => {
 describe("formatRerankDoc", () => {
   const meta = { file: "wiki/a.md", title: "제목", displayPath: "wiki/a.md" };
 
-  test("leads a chunk that lacks the title with it", () => {
-    expect(formatRerankDoc("본문 청크", meta)).toBe("# 제목\n\n본문 청크");
+  test("sends a chunk that lacks the title alone, without prepending it", () => {
+    expect(formatRerankDoc("본문 청크", meta)).toBe("본문 청크");
   });
 
   test("sends a chunk that already holds the title, or a titleless note, unchanged", () => {
