@@ -2745,15 +2745,15 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
     }
   } else if (opts.format === "xml") {
     for (const row of filtered) {
-      const titleAttr = row.title ? ` title="${row.title.replace(/"/g, '&quot;')}"` : "";
-      const contextAttr = row.context ? ` context="${row.context.replace(/"/g, '&quot;')}"` : "";
+      const titleAttr = row.title ? ` title="${escapeXml(row.title)}"` : "";
+      const contextAttr = row.context ? ` context="${escapeXml(row.context)}"` : "";
       const docid = row.docid || (row.hash ? row.hash.slice(0, 6) : "");
       let content = opts.full ? row.body : extractSnippet(row.body, query, 500, row.chunkPos, row.chunkLen, opts.intent).snippet;
       if (opts.lineNumbers) {
         content = addLineNumbers(content);
       }
       const docidAttr = showDocid(row) ? ` docid="#${docid}"` : "";
-      console.log(`<file${docidAttr} name="${displayPathFor(row)}"${titleAttr}${contextAttr}>\n${content}\n</file>\n`);
+      console.log(`<file${docidAttr} name="${escapeXml(displayPathFor(row))}"${titleAttr}${contextAttr}>\n${escapeXml(content)}\n</file>\n`);
     }
   } else {
     // CSV format. The docid column is always present — under --full-path it is

@@ -2108,6 +2108,29 @@ describe("search output formats", () => {
     expect(stdout).not.toMatch(/\/home\//);
   });
 
+  test("search --xml escapes &, <, >, quotes in attrs and content", async () => {
+    const env = await createIsolatedTestEnv("xml-escape");
+    const hostileDir = join(testDir, `xml-escape-docs-${testCounter}`);
+    await mkdir(hostileDir, { recursive: true });
+    await writeFile(
+      join(hostileDir, "hostile.md"),
+      `# Fish & Chips <b>"q"\n\nBody with Fish & Chips <b>"q" 's' for xml escape check.\n`
+    );
+    const add = await runQmd(
+      ["collection", "add", hostileDir, "--name", "hostile"],
+      { dbPath: env.dbPath, configDir: env.configDir }
+    );
+    expect(add.exitCode).toBe(0);
+
+    const { stdout, exitCode } = await runQmd(
+      ["search", "Chips", "--xml", "--full", "-n", "1"],
+      { dbPath: env.dbPath, configDir: env.configDir }
+    );
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("Fish &amp; Chips &lt;b&gt;&quot;q");
+    expect(stdout).not.toContain("Fish & Chips");
+  });
+
   test("search --full-path --json swaps qmd:// for absolute realpath when cwd is unrelated", async () => {
     // Use "/" as cwd so the fixtures path (under tmpdir) is NOT a subpath of $PWD.
     const { stdout, exitCode } = await runQmd(
