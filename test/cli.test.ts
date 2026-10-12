@@ -1858,6 +1858,23 @@ describe("CLI Collection Commands", () => {
     expect(stderr).toContain("Collection name already exists");
   });
 
+  test("rejects re-adding the same path and pattern", async () => {
+    // Create a collection in a temp directory
+    const tempDir = await mkdtemp(join(tmpdir(), "qmd-dup-add-"));
+    await writeFile(join(tempDir, "test.md"), "# Test");
+    const first = await runQmd(["collection", "add", tempDir, "--name", "dup-first"], { dbPath: localDbPath });
+    if (first.exitCode !== 0) {
+      console.error("Failed to add first collection:", first.stderr);
+    }
+    expect(first.exitCode).toBe(0);
+
+    // Re-adding the same path and pattern under a different name must fail
+    const { stderr, exitCode } = await runQmd(["collection", "add", tempDir, "--name", "dup-second"], { dbPath: localDbPath });
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("already exists for this path and pattern");
+    expect(stderr).toContain("dup-first");
+  });
+
   test("handles missing rename arguments", async () => {
     const { stderr: stderr1, exitCode: exitCode1 } = await runQmd(["collection", "rename"], { dbPath: localDbPath });
     expect(exitCode1).toBe(1);
