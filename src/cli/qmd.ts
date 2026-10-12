@@ -3861,7 +3861,7 @@ function showHelp(): void {
   console.log("");
   console.log("  Constraints:");
   console.log("    - Standalone expand queries cannot mix with typed lines.");
-  console.log("    - Query documents allow only lex:, vec:, or hyde: prefixes.");
+  console.log("    - Query documents allow only lex:, vec:, hyde:, or intent: prefixes.");
   console.log("    - Each typed line must be single-line text with balanced quotes.");
   console.log("");
   console.log("AI agents & integrations:");
