@@ -1238,12 +1238,13 @@ function contextRemove(pathArg: string): void {
  * "./"-prefixed relative path so it is unambiguously a filesystem path (not a
  * bare collection-relative string that could be confused for a `qmd://`
  * fragment). Otherwise return the absolute realpath so symlinks resolve
- * consistently. Returns `null` if the path could not be normalized — callers
- * fall back to whatever they had before.
+ * consistently. Returns `null` if the path could not be normalized (deleted
+ * between the caller's existsSync check and now) — callers fall back to
+ * whatever they had before plus the stale-index stderr warning.
  */
-function renderFullPath(absolutePath: string, cwd: string = process.cwd()): string {
+export function renderFullPath(absolutePath: string, cwd: string = process.cwd()): string | null {
   let real: string;
-  try { real = realpathSync(absolutePath); } catch { real = absolutePath; }
+  try { real = realpathSync(absolutePath); } catch { return null; }
   const cwdReal = (() => { try { return realpathSync(cwd); } catch { return cwd; } })();
   if (real === cwdReal) return "./";
   if (real.startsWith(cwdReal + "/")) {
@@ -1336,8 +1337,9 @@ function getDocument(filename: string, fromLine?: number, maxLines?: number, lin
   let header: string;
   if (fullPath) {
     const fsPath = resolveVirtualPath(db, canonicalPath);
-    if (fsPath && existsSync(fsPath)) {
-      header = renderFullPath(fsPath);
+    const rendered = fsPath && existsSync(fsPath) ? renderFullPath(fsPath) : null;
+    if (rendered) {
+      header = rendered;
     } else {
       header = docid ? `${canonicalPath}  #${docid}` : canonicalPath;
       warnUnresolvedFullPaths(1, 1);
@@ -1455,7 +1457,7 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
     let fsPath: string | undefined;
     if (fullPath) {
       const resolved = resolveVirtualPath(db, file.filepath);
-      if (resolved && existsSync(resolved)) fsPath = renderFullPath(resolved);
+      if (resolved && existsSync(resolved)) fsPath = renderFullPath(resolved) ?? undefined;
     }
 
     // Check size limit
@@ -2593,7 +2595,8 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
     if (opts.fullPath && linkDbForPaths) {
       const absolute = resolveVirtualPath(linkDbForPaths, qmdUri);
       if (absolute && existsSync(absolute)) {
-        resolution = { ident: renderFullPath(absolute), resolved: true };
+        const rendered = renderFullPath(absolute);
+        if (rendered) resolution = { ident: rendered, resolved: true };
       }
     }
     resolutions.set(row, resolution);
