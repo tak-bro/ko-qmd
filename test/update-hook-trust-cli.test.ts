@@ -135,3 +135,29 @@ describe("qmd update with a checked-in .qmd config", () => {
     expect(list.stdout).toContain(join(projectDir, ".qmd", "index.yml"));
   }, 120_000);
 });
+
+describe("qmd update hook failure exit paths", () => {
+  test("a hook exiting 3 makes update exit 3", async () => {
+    writeLocalConfig("exit 3");
+    const trust = await runQmd(["trust"]);
+    expect(trust.stdout).toContain("Trusted");
+
+    const result = await runQmd(["update"]);
+    expect(result.stdout).toContain("Running update command");
+    expect(result.stdout).toContain("Update command failed with exit code 3");
+    expect(result.exitCode).toBe(3);
+    expect(existsSync(markerPath)).toBe(false);
+  }, 120_000);
+
+  test("a missing-command hook propagates its non-zero exit", async () => {
+    writeLocalConfig("qmd-nonexistent-hook-xyz");
+    const trust = await runQmd(["trust"]);
+    expect(trust.stdout).toContain("Trusted");
+
+    const result = await runQmd(["update"]);
+    expect(result.stdout).toContain("Running update command");
+    expect(result.stdout).toContain("Update command failed with exit code");
+    expect(result.exitCode).not.toBe(0);
+    expect(existsSync(markerPath)).toBe(false);
+  }, 120_000);
+});
