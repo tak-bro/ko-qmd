@@ -1271,6 +1271,40 @@ describe("CLI Multi-Get Command", () => {
       expect(entry.docid).toBeUndefined();
     }
   });
+
+  test("--max-bytes abc errors instead of silently disabling the size gate", async () => {
+    const { stdout, stderr, exitCode } = await runQmd(
+      ["multi-get", "notes/*.md", "--max-bytes", "abc"],
+      { dbPath: localDbPath }
+    );
+    expect(exitCode).toBe(1);
+    expect(stdout).toBe("");
+    expect(stderr).toContain("--max-bytes must be a positive integer");
+  });
+
+  test("--max-bytes rejects non-positive values", async () => {
+    for (const value of ["0", "-5", "10.5"]) {
+      const { exitCode, stderr } = await runQmd(
+        ["multi-get", "notes/*.md", "--max-bytes", value],
+        { dbPath: localDbPath }
+      );
+      expect(exitCode).toBe(1);
+      expect(stderr).toContain("--max-bytes must be a positive integer");
+    }
+  });
+
+  test("--max-bytes 1 skips files larger than one byte", async () => {
+    const { stdout, exitCode } = await runQmd(
+      ["multi-get", "notes/*.md", "--json", "--max-bytes", "1"],
+      { dbPath: localDbPath }
+    );
+    expect(exitCode).toBe(0);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.length).toBeGreaterThan(0);
+    for (const entry of parsed) {
+      expect(entry.skipped).toBe(true);
+    }
+  });
 });
 
 describe("CLI Update Command", () => {
