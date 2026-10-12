@@ -88,8 +88,14 @@ const stripUrls = (text: string): string =>
 const stripQuotes = (text: string): string =>
   text.split("\n").map((line) => line.replace(/^\s*(>\s*)+/, "")).join("\n");
 
-/** HTML tags are not content; drop the tags but keep their inner text. */
-const stripHtmlTags = (text: string): string => text.replace(/<\/?[a-zA-Z][^<>]*>/g, "");
+/** HTML tags are not content; drop the tags but keep their inner text. Comments and
+ * script/style bodies are not content either, so drop those blocks entirely first. */
+const stripHtmlTags = (text: string): string =>
+  text
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<script\b[^<>]*>[\s\S]*?<\/script\s*>/gi, "")
+    .replace(/<style\b[^<>]*>[\s\S]*?<\/style\s*>/gi, "")
+    .replace(/<\/?[a-zA-Z][^<>]*>/g, "");
 
 /** The document text sent for one candidate: the selected chunk alone, without long frontmatter. */
 export const formatRerankDoc = (chunkText: string, _meta: RerankDocMeta): string =>

@@ -79,4 +79,15 @@ describe("formatRerankDoc", () => {
     expect(formatRerankDoc("# 제목\n본문", meta)).toBe("# 제목\n본문");
     expect(formatRerankDoc("본문 청크", { ...meta, title: "" })).toBe("본문 청크");
   });
+
+  test("drops HTML comments but keeps surrounding text", () => {
+    const noTitle = { ...meta, title: "" };
+    expect(formatRerankDoc("a <!-- hidden note --> b", noTitle)).toBe("a  b");
+  });
+
+  test("drops script and style blocks entirely, not just their tags", () => {
+    const noTitle = { ...meta, title: "" };
+    expect(formatRerankDoc("a <script>alert(1)</script> b", noTitle)).toBe("a  b");
+    expect(formatRerankDoc("a <STYLE>x{y:z}</STYLE> b", noTitle)).toBe("a  b");
+  });
 });
