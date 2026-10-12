@@ -3079,6 +3079,31 @@ describe("Reciprocal Rank Fusion", () => {
     for (const r of out2!) expect(r.score).toBeCloseTo(tight.get(r.file)!, 10);
   });
 
+  test("cascade tail placeholders are marked unscored; measured rows are not", async () => {
+    const chunks = Array.from({ length: 20 }, (_, i) => ({ file: `doc${i}.md`, text: `text ${i}` }));
+    const wide = new Map(chunks.map((c, i) => [c.file, i === 0 ? 0.95 : 0.5 - i * 0.01]));
+    const store = {
+      rerank: vi.fn(async (_query: string, docs: { file: string; text: string }[]) =>
+        docs.map((d) => ({ file: d.file, score: wide.get(d.file) ?? 0 }))),
+    } as Store; // fake-store stub: only rerank() is exercised below
+    const out = await rerankWithDeadline(store, "q", chunks, undefined, undefined);
+    expect(out).toHaveLength(20);
+    expect(out!.slice(0, 8).every((r) => r.unscored === undefined)).toBe(true);
+    for (const r of out!.slice(8)) {
+      expect(r.score).toBe(0);
+      expect(r.unscored).toBe(true);
+    }
+
+    // Contested top scores everything: no placeholders, no flags.
+    const tight = new Map(chunks.map((c, i) => [c.file, 0.9 - i * 0.001]));
+    const store2 = {
+      rerank: vi.fn(async (_query: string, docs: { file: string; text: string }[]) =>
+        docs.map((d) => ({ file: d.file, score: tight.get(d.file) ?? 0 }))),
+    } as Store; // fake-store stub: only rerank() is exercised below
+    const out2 = await rerankWithDeadline(store2, "q", chunks, undefined, undefined);
+    expect(out2!.every((r) => r.unscored === undefined)).toBe(true);
+  });
+
   test("resolveLoadTimeoutMs bounds the model-load wait by default", () => {
     const prev = process.env.QMD_LLM_LOAD_TIMEOUT_MS;
     try {
@@ -5236,6 +5261,64 @@ describe("Embedding batching", () => {
       expect(rerank).toHaveBeenCalledTimes(2);
     } finally {
       await cleanupTestDb(store);
+    }
+  });
+
+  test("cascade tail survives minScore; measured zeros are still dropped", async () => {
+    const seed = async (store: Store, collectionName: string) => {
+      for (let i = 0; i < 12; i++) {
+        await insertTestDocument(store.db, collectionName, {
+          name: `doc${i}`, title: `Doc ${i}`,
+          body: `zebraqx content number ${i}`,
+          displayPath: `test/doc${i}.md`,
+        });
+      }
+    };
+    // Decisive head: the tail keeps unscored placeholders. A 0.1 threshold
+    // would cut every placeholder blend (rank 9 best is 0.08), so without the
+    // exemption only the 8 scored head rows come back.
+    {
+      const store = await createTestStore();
+      const collectionName = await createTestCollection();
+      await seed(store, collectionName);
+      store.rerank = vi.fn(async (_q: string, docs: { file: string; text: string }[]) =>
+        docs.map((d, i) => ({ file: d.file, score: i === 0 ? 0.95 : 0.5 })));
+      try {
+        const results = await structuredSearch(store, [{ type: "lex", query: "zebraqx" }], {
+          limit: 20, minScore: 0.1,
+        });
+        expect(store.rerank).toHaveBeenCalledTimes(1); // tail skipped: decisive
+        expect(results).toHaveLength(12);
+        expect(results.every((r) => !("unscored" in r))).toBe(true);
+        // Default path is unchanged: minScore 0 keeps the same rows.
+        const unfiltered = await structuredSearch(store, [{ type: "lex", query: "zebraqx" }], {
+          limit: 20, minScore: 0,
+        });
+        expect(unfiltered).toHaveLength(12);
+      } finally {
+        await cleanupTestDb(store);
+      }
+    }
+    // Contested head: everything is measured, so genuine 0 scores stay filtered.
+    {
+      const store = await createTestStore();
+      const collectionName = await createTestCollection();
+      await seed(store, collectionName);
+      let calls = 0;
+      store.rerank = vi.fn(async (_q: string, docs: { file: string; text: string }[]) => {
+        calls++;
+        if (calls === 1) return docs.map((d, i) => ({ file: d.file, score: i === 0 ? 0.9 : 0.895 }));
+        return docs.map((d) => ({ file: d.file, score: 0 }));
+      });
+      try {
+        const results = await structuredSearch(store, [{ type: "lex", query: "zebraqx" }], {
+          limit: 20, minScore: 0.1,
+        });
+        expect(store.rerank).toHaveBeenCalledTimes(2); // tail measured: contested
+        expect(results).toHaveLength(8);
+      } finally {
+        await cleanupTestDb(store);
+      }
     }
   });
 

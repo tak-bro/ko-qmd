@@ -6248,7 +6248,7 @@ export async function rerankWithDeadline(
   chunks: { file: string; text: string }[],
   intent: string | undefined,
   options: { rerankMaxDocTokens?: number; rerankDeadlineMs?: number; hooks?: SearchHooks } | undefined,
-): Promise<{ file: string; score: number }[] | null> {
+): Promise<{ file: string; score: number; unscored?: boolean }[] | null> {
   const hooks = options?.hooks;
   hooks?.onRerankStart?.(chunks.length);
   const start = Date.now();
@@ -6261,6 +6261,8 @@ export async function rerankWithDeadline(
   // Cascade: score the RRF head first. On a decisive top margin the tail keeps
   // score 0 (RRF position tiebreak only) instead of paying for 25 more
   // cross-encoder pairs; a contested top scores everything, as before.
+  // Tail placeholders are marked unscored: the minScore filter exempts them,
+  // since a 0 placeholder was never measured and must not read as "scored 0".
   if (isRerankCascadeEnabled() && chunks.length > rerankCascadeFirstBatch()) {
     const first = chunks.slice(0, rerankCascadeFirstBatch());
     const rest = chunks.slice(rerankCascadeFirstBatch());
@@ -6269,7 +6271,7 @@ export async function rerankWithDeadline(
     const headroom = [...firstScored].sort((a, b) => b.score - a.score).map((r) => r.score);
     if (!cascadeNeedsSecondBatch(headroom)) {
       hooks?.onRerankDone?.(Date.now() - start);
-      return [...firstScored, ...rest.map((d) => ({ file: d.file, score: 0 }))];
+      return [...firstScored, ...rest.map((d) => ({ file: d.file, score: 0, unscored: true as const }))];
     }
     // The second batch shares the caller's deadline: it gets only the remaining
     // budget, so the worst case stays one deadline, not two. An exhausted budget
@@ -6584,6 +6586,9 @@ export async function hybridQuery(
     displayPath: c.displayPath, title: c.title, body: c.body,
   }]));
   const rrfRankMap = new Map(candidates.map((c, i) => [c.file, i + 1]));
+  // Cascade-tail placeholders were never scored: exempt them from the minScore
+  // filter below, or a decisive head would silently drop the whole tail.
+  const unscoredFiles = new Set(reranked.filter(r => r.unscored).map(r => r.file));
 
   const blended = reranked.map(r => {
     const rrfRank = rrfRankMap.get(r.file) || candidateLimit;
@@ -6634,7 +6639,7 @@ export async function hybridQuery(
       seenFiles.add(r.file);
       return true;
     })
-    .filter(r => r.score >= minScore)
+    .filter(r => unscoredFiles.has(r.file) || r.score >= minScore)
     .slice(0, limit);
   return attachResultMetadata(store.db, finalResults);
 }
@@ -6974,6 +6979,9 @@ export async function structuredSearch(
     displayPath: c.displayPath, title: c.title, body: c.body,
   }]));
   const rrfRankMap = new Map(candidates.map((c, i) => [c.file, i + 1]));
+  // Cascade-tail placeholders were never scored: exempt them from the minScore
+  // filter below, or a decisive head would silently drop the whole tail.
+  const unscoredFiles = new Set(reranked.filter(r => r.unscored).map(r => r.file));
 
   const blended = reranked.map(r => {
     const rrfRank = rrfRankMap.get(r.file) || candidateLimit;
@@ -7024,7 +7032,7 @@ export async function structuredSearch(
       seenFiles.add(r.file);
       return true;
     })
-    .filter(r => r.score >= minScore)
+    .filter(r => unscoredFiles.has(r.file) || r.score >= minScore)
     .slice(0, limit);
   return attachResultMetadata(store.db, finalResults);
 }
