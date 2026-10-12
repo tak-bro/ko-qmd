@@ -133,6 +133,13 @@ without the word `언어` anywhere. That is a vocabulary gap, which is vector's 
 `full_mrr` moved 0.9359 → 0.9173 — rank order inside the top 5, within this fixture's run-to-run
 spread.
 
+> Correction (2026-10-10, Task B probe): "misses on lex" no longer holds. The relaxed retry
+> (OR fallback, 2026-09-16) retrieves `ko-14` at lex rank 1 — verified on a scratch index of
+> the current 97-doc corpus (`searchFTS(stripHangulNegation(q), 20)` → rank 1, relaxed mode).
+> The vocabulary gap is real but currently bridged by the fallback, not by stemming or vector.
+> An authoring-side alias sentence moves it to a strict match (robustness, less decoy exposure),
+> not a rank fix. This section is left as written; read the claim as pre-retry.
+
 ## Real vaults — script-mixed query terms (2026-09-16)
 
 The synthetic fixture had run out of headroom (hybrid and full both 1.0000), so this round measured
@@ -1091,3 +1098,168 @@ p50 halves while the p90 barely moves — contested heads still score all 40,
 so the 15 / 0.08 constants buy the median, not the tail. A p90-motivated
 tuning would need a tighter gate or a smaller first batch, measured the same
 way. Quality lines are untouched by this probe (same commit, switch only).
+
+## 2026-10-10 — goldset 93 → 123 (easy 15 + hard 15, no new measurement yet)
+
+Fixture-only change: `ko-bench.json` grows from 93 to 123 queries without touching
+`wiki/` or `distractors/` (97 documents indexed, unchanged).
+
+- easy 15: exact 5 (`exa-08`…`exa-12`: wikilink · reranking · ingest · append-only ·
+  topic-map, low-coverage topics), alias 4 (`ali-23`…`ali-26`: lint · meeting notes ·
+  append-only · cross encoder), semantic 3 (`sem-12`…`sem-14`: lint · ingest · wikilink
+  paraphrases), topical 2 (`top-05`·`top-06`: first coverage of
+  `wiki/topics/knowledge-operations.md` and `wiki/topics/information-retrieval.md`),
+  cross-domain 1 (`cro-04`: append-only + provenance).
+- hard 15: sem-hard 5 (`hsh-13`…`hsh-17`: decision-record · frontmatter-metadata ·
+  golden-dataset · cross-encoder-reranking · lint-automation; fixture test enforces zero
+  title-term overlap), multi 5 (`hmu-09`…`hmu-13`: all novel pairs), neg 5
+  (`hneg-11`…`hneg-15`: checksum · unit-test · autocomplete · citation-network ·
+  fine-tuning exclusions, all previously unused distractors).
+- New distribution: exact 24 / alias 28 / semantic 14 / topical 8 / cross-domain 4 /
+  sem-hard 17 / multi 13 / neg 15; hard n=45.
+
+No RESULT lines below on purpose: the dogfood gate reads the newest RESULT-HARD line,
+which stays the n=30 seam reference above until a full `bash scripts/bench-ko.sh` run
+on this fixture records replacement lines. Fast checks done here: `ko-bench-fixture`
+invariants, `bench-ko.sh` KO_CORPUS/KO_BENCH/KO_FORM validation, goldset JSON shape.
+
+## 2026-10-10 — goldset 123 first measurement (hard n=45), new seam reference
+
+First full `bash scripts/bench-ko.sh` run on the 123-query fixture, defaults
+(fixture corpus, fixture goldset, seam form; stderr `corpus=…/ko-vault`,
+`bench=…/ko-bench.json`, `form=seam`). Fresh index, 97 documents, Qwen3-Embedding-0.6B
+embeddings, rerank. Distribution: exact 24 / alias 28 / semantic 14 / topical 8 /
+cross-domain 4 / sem-hard 17 / multi 13 / neg 15.
+
+Against the n=30 seam reference above: `bm25_r5` 0.8459 → 0.8428 (−1 query of 123),
+`vector_r5` 0.9050 → 0.8794. The vector drift is the new hard queries, not a
+regression: every old-query vector miss is a standing one (`ko-11`, `hsh-02`,
+`hneg-02`, `hneg-04`, `hneg-08`, `hmu-07`), while the new misses are new hard ids
+(`hsh-16`, `hmu-09`, `hmu-12`, `hneg-13`, `hneg-15` vector r5=0). Per type, easy
+stays at ceiling (alias/semantic/topical hybrid r5 = 1.0, exact 1.0); hard
+`full_r1` 0.6111 → 0.5963 (−0.0148, under one query of 45) and hard `hybrid_r1`
+0.4778 → 0.4519 (−1.2 queries of 45). The seam form is deterministic, so one run
+decides; tolerance stays 0.
+
+The seam reference moves to this run. The gate reads the last two lines below:
+
+RESULT bm25_r5=0.8428 vector_r5=0.8794 hybrid_r5=0.8957 full_r5=0.9485 full_mrr=0.9165
+RESULT-HARD hybrid_r1=0.4519 hybrid_mrr=0.6429 full_r1=0.5963 full_mrr=0.8007 n=45 tol=0 form=seam
+
+## 2026-10-10 — hard rewords applied (4 of 5 vector-miss queries), reference re-measured
+
+Task B's scratch-index diagnosis (same code path, Qwen3-Embedding-0.6B) classified the
+five new-query vector r5=0s: hsh-16 query artifact ("눈으로" drags to the
+result-highlighting distractor), hmu-09/hmu-12 two-concept dilution (each half fails
+alone, so the query measured nothing), hneg-13 unretrievable Y-half. hneg-15 kept:
+its Y-half already retrieves at #1, so it stands as a clean negation-isolation probe
+(vector provably cannot subtract "미세 조정", later stages must). Rewords verified
+rank ≤5 on the scratch index before adoption; exact strings matter (hmu-12's balanced
+wording — 키워드/벡터-heavy variants push query-expansion to #18–19).
+
+Reworded (`ko-bench.json`, count locks unchanged):
+- hsh-16 → `1차 검색이 고른 후보들을 질의와 함께 다시 살펴 순서를 바로잡는 단계`
+- hmu-09 → `임베딩으로 의미가 비슷한 글을 찾은 뒤 리랭커로 후보 순서를 다시 매기기`
+- hmu-12 → `짧은 질의를 동의어로 넓히고 키워드와 벡터 점수를 합쳐 찾는 방식`
+- hneg-13 → `자동 완성 말고 짧은 질의에 동의어를 덧붙여 놓치는 문서를 줄이는 기법`
+
+`bash scripts/bench-ko.sh` (defaults, seam) after the rewords:
+
+```
+RESULT bm25_r5=0.8713 vector_r5=0.9119 hybrid_r5=0.9282 full_r5=0.9648 full_mrr=0.9352
+RESULT-HARD hybrid_r1=0.5185 hybrid_mrr=0.7256 full_r1=0.6407 full_mrr=0.8519 n=45 form=seam
+```
+
+Movement vs the pre-reword n=45 reference: bm25 +0.0285, vector +0.0325, hard
+hybrid_r1 +0.0666 (~3 queries), hard full_r1 +0.0444 (~2 queries) — every line up,
+as the probe predicted. The seam form is deterministic; tolerance stays 0.
+
+The seam reference moves to this run. The gate reads the last two lines below:
+
+RESULT bm25_r5=0.8713 vector_r5=0.9119 hybrid_r5=0.9282 full_r5=0.9648 full_mrr=0.9352
+RESULT-HARD hybrid_r1=0.5185 hybrid_mrr=0.7256 full_r1=0.6407 full_mrr=0.8519 n=45 tol=0 form=seam
+
+## 2026-10-10 — neg tail: hneg-15 handled downstream, hneg-07 alias verified (upstream)
+
+Per-query rows from this run's `tmp/bench-ko/bench.json` (seam, uncommitted):
+- `hneg-15`: vector r1=0 (excluded fine-tuning #1) but hybrid r1=1 and full r1=1.
+  The negation vector alone cannot do is absorbed by fusion — the probe's purpose
+  (measure later stages) is fulfilled, keep as is.
+- `hneg-09`: full r1=1 (rerank fixes the decoy ranking). No action.
+- `hneg-07`: full mrr=0.5 (rank 2, interleaving-practice decoy on top). Same
+  zero-overlap shape as `hneg-08` (none of 벌여/놓고/섞어/푸는/연습 in the doc).
+  Scratch-index probe (repo code path, 97 docs, `stripHangulNegation` + `searchFTS`
+  top-20): miss → strict rank 1 with one appended sentence, five spaced-repetition
+  controls byte-identical. (2026-10-11: 2nd-brain is not upstream — `wiki/` is owned
+  here, so both sentences were applied directly; see the section below.)
+  - `wiki/spaced-repetition.md` += `여러 유형을 벌여 놓고 섞어 푸는 연습과 함께 돌리는 복습 리듬이다.`
+  - `wiki/provenance-tracking.md` += `누가 썼는지 남기는 기록 관리를 위한 규칙이다.`
+    (verified miss → strict rank 1 on the same probe shape, Task B).
+- `hneg-08`/`hneg-04` still miss everywhere without those sentences — expected,
+  the fixture intentionally carries no such surface.
+
+## 2026-10-11 — rerank-input autoresearch, fourth loop: markdown denoise
+
+9 experiments on the grown goldset (339 train / 78 held-out after run-3
+generation + review: 40 new queries, 14 dropped as run-log/lint answers,
+zero `outputs/runs/` answers kept per standing policy). Fresh baseline at
+loop head: train 0.6936. Kept 3, discarded 6 (2 cost-killed: eval >15 min
+under machine contention). Best (`exp/rerank-loop4`, adopted):
+
+| check | before | after |
+|---|---|---|
+| train `full_mrr` (339) | 0.6936 | 0.6961 |
+| held-out `full_mrr` (78) | 0.7572 | 0.7614 |
+| ko-vault seam / hard `full_r1` | 0.9434 / 0.6630 | identical |
+
+Kept: link-as-text + bare-URL drop, blockquote unwrap, HTML-tag strip.
+Discarded: fenced-code drop (−0.0015, fences stay); HR-guard tied (no `---`
+false positives in practice). Open: wikilink unwrap and table-delimiter
+drop were cost-killed with unknown effect — retry on a quiet machine.
+
+## 2026-10-11 — rerank-input autoresearch, third loop: long-frontmatter strip
+
+24 experiments on the 320-train / 71-held-out goldset (corpus unchanged,
+fresh baseline at loop head: train 0.6769). Kept 4, discarded 19, 0 crashes.
+Best (`exp/rerank-loop3`, adopted as `c141fe8`, only `src/rerank-input.ts`):
+
+| check | before | after |
+|---|---|---|
+| train `full_mrr` (320) | 0.6769 | 0.6880 |
+| held-out `full_mrr` (71) | 0.7459 | 0.7572 |
+| ko-vault seam / hard `full_r1` | 0.9434 / 0.6630 | identical |
+
+Rules: send the chunk alone (title prepend deleted, tied), strip a leading
+`---` YAML block over 350 chars (500 → 0.6839, 400 → 0.6854, 350 → 0.6880;
+325/360/375 within one query of the peak, 400/500 are sturdier fallbacks).
+Dead ends: chunk-selection and bigram reweightings all tie (head start 16
+means the first chunk always wins); keeping FM metadata while dropping only
+`sources:` scores worse (0.6797). Follow-up, out of loop scope: `---`
+horizontal-rule false positives in non-first chunks (`formatRerankDoc` cannot
+see the chunk index today).
+
+## 2026-10-11 — alias sentences applied to owned wiki/, reference re-measured
+
+2nd-brain is not upstream: `wiki/` is owned here (fixture README policy updated,
+re-copy note removed). Both verified sentences applied to Details paragraphs:
+`spaced-repetition.md` += `여러 유형을 벌여 놓고 섞어 푸는 연습과 함께 돌리는 복습 리듬이다.`,
+`provenance-tracking.md` += `누가 썼는지 남기는 기록 관리를 위한 규칙이다.`
+
+`bash scripts/bench-ko.sh` (defaults, seam) after the doc change:
+
+```
+RESULT bm25_r5=0.8875 vector_r5=0.9119 hybrid_r5=0.9444 full_r5=0.9729 full_mrr=0.9434
+RESULT-HARD hybrid_r1=0.5630 hybrid_mrr=0.7701 full_r1=0.6630 full_mrr=0.8741 n=45 form=seam
+```
+
+Per-query rows (`tmp/bench-ko/bench.json`): `hneg-08` bm25 rank 2 → hybrid/full r1=1
+(fixed end to end); `hneg-07` bm25/hybrid r1=1 but full rank 2 — the reranker still
+prefers the literal-match `interleaving-practice` decoy on top. So the alias fixed
+lex/hybrid while exposing a rerank preference for literal overlap; hard full_r1 still
+rose 0.6407 → 0.6630 (+1 query of 45). Vector backend untouched at 0.9119, as expected
+— one sentence per doc does not move embeddings.
+
+The seam reference moves to this run. The gate reads the last two lines below:
+
+RESULT bm25_r5=0.8875 vector_r5=0.9119 hybrid_r5=0.9444 full_r5=0.9729 full_mrr=0.9434
+RESULT-HARD hybrid_r1=0.5630 hybrid_mrr=0.7701 full_r1=0.6630 full_mrr=0.8741 n=45 tol=0 form=seam

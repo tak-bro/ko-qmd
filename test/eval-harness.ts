@@ -11,7 +11,7 @@ import { execSync } from "child_process";
 const evalQueries: {
   query: string;
   expectedDoc: string;  // Partial match on filename
-  difficulty: "easy" | "medium" | "hard";
+  difficulty: "easy" | "medium" | "hard" | "fusion";
   description: string;
 }[] = [
   // EASY: Exact keyword matches
@@ -48,6 +48,18 @@ const evalQueries: {
   {
     query: "Project Phoenix retrospective",
     expectedDoc: "product-launch",
+    difficulty: "easy",
+    description: "Direct keyword match"
+  },
+  {
+    query: "Prometheus alerting rules",
+    expectedDoc: "observability",
+    difficulty: "easy",
+    description: "Direct keyword match"
+  },
+  {
+    query: "database schema migration rollback",
+    expectedDoc: "database-migrations",
     difficulty: "easy",
     description: "Direct keyword match"
   },
@@ -89,6 +101,18 @@ const evalQueries: {
     difficulty: "medium",
     description: "Conceptual query"
   },
+  {
+    query: "how to track service health with dashboards",
+    expectedDoc: "observability",
+    difficulty: "medium",
+    description: "Conceptual - paraphrase"
+  },
+  {
+    query: "how to evolve production database schema safely",
+    expectedDoc: "database-migrations",
+    difficulty: "medium",
+    description: "Conceptual - paraphrase"
+  },
 
   // HARD: Vague, partial memory, indirect
   {
@@ -126,6 +150,68 @@ const evalQueries: {
     expectedDoc: "product-launch",
     difficulty: "hard",
     description: "Specific number recall"
+  },
+  {
+    query: "OpenTelemetry tail-based trace sampling",
+    expectedDoc: "observability",
+    difficulty: "hard",
+    description: "Specific detail in long doc"
+  },
+  {
+    query: "expand contract migration pattern zero downtime",
+    expectedDoc: "database-migrations",
+    difficulty: "hard",
+    description: "Specific detail in long doc"
+  },
+
+  // FUSION: Multi-signal queries that need both lexical AND semantic matching
+  {
+    query: "how much runway before running out of money",
+    expectedDoc: "fundraising",
+    difficulty: "fusion",
+    description: "Multi-signal - lexical and semantic"
+  },
+  {
+    query: "datacenter replication sync strategy",
+    expectedDoc: "distributed-systems",
+    difficulty: "fusion",
+    description: "Multi-signal - lexical and semantic"
+  },
+  {
+    query: "splitting data for training and testing",
+    expectedDoc: "machine-learning",
+    difficulty: "fusion",
+    description: "Multi-signal - lexical and semantic"
+  },
+  {
+    query: "JSON response codes error messages",
+    expectedDoc: "api-design",
+    difficulty: "fusion",
+    description: "Multi-signal - lexical and semantic"
+  },
+  {
+    query: "video calls camera async messaging",
+    expectedDoc: "remote-work",
+    difficulty: "fusion",
+    description: "Multi-signal - lexical and semantic"
+  },
+  {
+    query: "CI/CD pipeline testing coverage",
+    expectedDoc: "product-launch",
+    difficulty: "fusion",
+    description: "Multi-signal - lexical and semantic"
+  },
+  {
+    query: "error budget burn rate paging policy",
+    expectedDoc: "observability",
+    difficulty: "fusion",
+    description: "Multi-signal - lexical and semantic"
+  },
+  {
+    query: "idempotent backfill script batch deployment",
+    expectedDoc: "database-migrations",
+    difficulty: "fusion",
+    description: "Multi-signal - lexical and semantic"
   },
 ];
 
@@ -165,6 +251,7 @@ function evaluate(mode: "search" | "query") {
     easy: { total: 0, hit1: 0, hit3: 0, hit5: 0 },
     medium: { total: 0, hit1: 0, hit3: 0, hit5: 0 },
     hard: { total: 0, hit1: 0, hit3: 0, hit5: 0 },
+    fusion: { total: 0, hit1: 0, hit3: 0, hit5: 0 },
   };
 
   console.log(`\n=== Evaluating ${mode.toUpperCase()} mode ===\n`);
@@ -203,7 +290,7 @@ function evaluate(mode: "search" | "query") {
 // Main
 console.log("QMD Evaluation Harness");
 console.log("=".repeat(50));
-console.log(`Testing ${evalQueries.length} queries across 6 documents`);
+console.log(`Testing ${evalQueries.length} queries across 8 documents`);
 
 // Check if eval-docs collection exists
 try {

@@ -52,16 +52,16 @@ for (const q of bench.queries) byType.set(q.type, (byType.get(q.type) ?? 0) + 1)
 
 describe("ko-bench fixture", () => {
   test("hard query buckets are present with locked counts", () => {
-    expect(byType.get("exact")).toBe(19);
-    expect(byType.get("alias")).toBe(24);
-    expect(byType.get("semantic")).toBe(11);
-    expect(byType.get("topical")).toBe(6);
-    expect(byType.get("cross-domain")).toBe(3);
-    expect(byType.get("sem-hard")).toBe(12);
-    expect(byType.get("multi")).toBe(8);
-    expect(byType.get("neg")).toBe(10);
+    expect(byType.get("exact")).toBe(24);
+    expect(byType.get("alias")).toBe(28);
+    expect(byType.get("semantic")).toBe(14);
+    expect(byType.get("topical")).toBe(8);
+    expect(byType.get("cross-domain")).toBe(4);
+    expect(byType.get("sem-hard")).toBe(17);
+    expect(byType.get("multi")).toBe(13);
+    expect(byType.get("neg")).toBe(15);
     const hard = (byType.get("sem-hard") ?? 0) + (byType.get("multi") ?? 0) + (byType.get("neg") ?? 0);
-    expect(hard).toBe(30);
+    expect(hard).toBe(45);
   });
 
   test("every expected_files path exists in the fixture", () => {

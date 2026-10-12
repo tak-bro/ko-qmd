@@ -3723,6 +3723,70 @@ export function getContextForFile(db: Database, filepath: string): string | null
 }
 
 /**
+ * Batch version of {@link getContextForFile}: one collections fetch, one
+ * global-context fetch and one document-existence query for the whole batch
+ * instead of three per file. Context assembly per file is identical.
+ */
+export function getContextsForFiles(db: Database, filepaths: string[]): Map<string, string | null> {
+  const out = new Map<string, string | null>();
+  const uniq = [...new Set(filepaths.filter(Boolean))];
+  if (uniq.length === 0) return out;
+  const collections = getStoreCollections(db);
+  const byName = new Map(collections.map((c) => [c.name, c]));
+  const globalCtx = getStoreGlobalContext(db);
+  const parsed: { fp: string; cn: string; rp: string }[] = [];
+  for (const fp of uniq) {
+    const v = fp.startsWith("qmd://") ? parseVirtualPath(fp) : null;
+    if (v) {
+      parsed.push({ fp, cn: v.collectionName, rp: v.path });
+      continue;
+    }
+    for (const coll of collections) {
+      if (!coll || !coll.path) continue;
+      if (fp === coll.path) {
+        parsed.push({ fp, cn: coll.name, rp: "" });
+        break;
+      }
+      if (fp.startsWith(coll.path + "/")) {
+        parsed.push({ fp, cn: coll.name, rp: fp.slice(coll.path.length + 1) });
+        break;
+      }
+    }
+  }
+  const existing = new Set<string>();
+  // Chunked: --all can hand us a six-figure batch and SQLite caps bound parameters.
+  for (let i = 0; i < parsed.length; i += 500) {
+    const chunk = parsed.slice(i, i + 500);
+    const rows = db.prepare(
+      `SELECT collection, path FROM documents WHERE active = 1 AND (collection, path) IN (VALUES ${chunk.map(() => "(?, ?)").join(", ")})`,
+    ).all(...chunk.flatMap((p) => [p.cn, p.rp])) as { collection: string; path: string }[];
+    for (const r of rows) existing.add(`${r.collection}\n${r.path}`);
+  }
+  for (const p of parsed) {
+    const contexts: string[] = [];
+    const coll = byName.get(p.cn);
+    if (coll && existing.has(`${p.cn}\n${p.rp}`)) {
+      if (globalCtx) contexts.push(globalCtx);
+      if (coll.context) {
+        const normalizedPath = p.rp.startsWith("/") ? p.rp : `/${p.rp}`;
+        const matching: { prefix: string; context: string }[] = [];
+        for (const [prefix, context] of Object.entries(coll.context)) {
+          const np = prefix.startsWith("/") ? prefix : `/${prefix}`;
+          if (normalizedPath.startsWith(np)) matching.push({ prefix: np, context });
+        }
+        matching.sort((a, b) => a.prefix.length - b.prefix.length);
+        for (const m of matching) contexts.push(m.context);
+      }
+    }
+    out.set(p.fp, contexts.length > 0 ? contexts.join("\n\n") : null);
+  }
+  for (const fp of uniq) {
+    if (!out.has(fp)) out.set(fp, null);
+  }
+  return out;
+}
+
+/**
  * Get collection by name from DB store_collections table.
  */
 export function getCollectionByName(db: Database, name: string): { name: string; pwd: string; glob_pattern: string } | null {
@@ -4359,6 +4423,9 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
       for (const r of bodyRows) bodyByHash.set(r.hash, r.doc);
     }
 
+    // One batched context lookup for all winners (was one N+1 triple per row).
+    const contexts = getContextsForFiles(db, rows.map((r) => r.filepath));
+
     return rows.map(row => {
       const collectionName = row.filepath.split('//')[1]?.split('/')[0] || "";
       // Convert bm25 (negative, lower is better) into a stable [0..1) score where higher is better.
@@ -4377,7 +4444,7 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
         modifiedAt: row.modified_at ?? "",
         bodyLength: body.length,
         body,
-        context: getContextForFile(db, row.filepath),
+        context: contexts.get(row.filepath) ?? null,
         metadata: parseMetadataJson(row.metadata_json),
         score,
         source: "fts" as const,
@@ -4623,9 +4690,12 @@ export async function searchVec(db: Database, query: string, model: string, limi
     }
   }
 
-  return Array.from(seen.values())
+  const winners = Array.from(seen.values())
     .sort((a, b) => a.bestDist - b.bestDist)
-    .slice(0, limit)
+    .slice(0, limit);
+  // One batched context lookup for all winners (was one N+1 triple per row).
+  const vecContexts = getContextsForFiles(db, winners.map(({ row }) => row.filepath));
+  return winners
     .map(({ row, bestDist }) => {
       const collectionName = row.filepath.split('//')[1]?.split('/')[0] || "";
       return {
@@ -4638,7 +4708,7 @@ export async function searchVec(db: Database, query: string, model: string, limi
         modifiedAt: "",  // Not available in vec query
         bodyLength: row.body.length,
         body: row.body,
-        context: getContextForFile(db, row.filepath),
+        context: vecContexts.get(row.filepath) ?? null,
         metadata: parseMetadataJson(row.metadata_json),
         score: 1 - bestDist,  // Cosine similarity = 1 - cosine distance
         source: "vec" as const,
@@ -5575,10 +5645,16 @@ export function findDocuments(
 
   const results: MultiGetResult[] = [];
 
+  // One batched context lookup for all rows (was one N+1 triple per row).
+  const mgContexts = getContextsForFiles(
+    db,
+    fileRows.map((row) => row.virtual_path || `qmd://${row.collection}/${row.display_path}`),
+  );
+
   for (const row of fileRows) {
     // Get context using virtual path
     const virtualPath = row.virtual_path || `qmd://${row.collection}/${row.display_path}`;
-    const context = getContextForFile(db, virtualPath);
+    const context = mgContexts.get(virtualPath) ?? null;
 
     if (row.body_length > maxBytes) {
       results.push({
@@ -6125,9 +6201,21 @@ async function runWithDeadline<T>(
 }
 
 /** Rerank `chunks`, or null when the reranker misses `deadlineMs` (the caller then answers in RRF order). */
-export const RERANK_CASCADE_FIRST_BATCH = 15;
+export const RERANK_CASCADE_FIRST_BATCH = 8;
 /** Skip the tail past the first batch when the top-2 rerank margin reaches this. */
 export const RERANK_CASCADE_MARGIN = 0.08;
+
+/** First-batch size, overridable for tuning via `QMD_RERANK_FIRST_BATCH`. */
+export function rerankCascadeFirstBatch(): number {
+  const raw = Number(process.env.QMD_RERANK_FIRST_BATCH);
+  return Number.isInteger(raw) && raw > 1 ? raw : RERANK_CASCADE_FIRST_BATCH;
+}
+
+/** Tail-skip margin, overridable for tuning via `QMD_RERANK_MARGIN`. */
+export function rerankCascadeMargin(): number {
+  const raw = Number(process.env.QMD_RERANK_MARGIN);
+  return Number.isFinite(raw) && raw >= 0 ? raw : RERANK_CASCADE_MARGIN;
+}
 
 /**
  * QMD_RERANK_CASCADE=0 (or false/off/no) restores single-batch rerank;
@@ -6146,7 +6234,7 @@ export function isRerankCascadeEnabled(): boolean {
  */
 export function cascadeNeedsSecondBatch(
   sortedScores: number[],
-  margin: number = RERANK_CASCADE_MARGIN,
+  margin: number = rerankCascadeMargin(),
 ): boolean {
   if (sortedScores.length < 2) return false;
   const [top, second] = [sortedScores[0]!, sortedScores[1]!];
@@ -6173,9 +6261,9 @@ export async function rerankWithDeadline(
   // Cascade: score the RRF head first. On a decisive top margin the tail keeps
   // score 0 (RRF position tiebreak only) instead of paying for 25 more
   // cross-encoder pairs; a contested top scores everything, as before.
-  if (isRerankCascadeEnabled() && chunks.length > RERANK_CASCADE_FIRST_BATCH) {
-    const first = chunks.slice(0, RERANK_CASCADE_FIRST_BATCH);
-    const rest = chunks.slice(RERANK_CASCADE_FIRST_BATCH);
+  if (isRerankCascadeEnabled() && chunks.length > rerankCascadeFirstBatch()) {
+    const first = chunks.slice(0, rerankCascadeFirstBatch());
+    const rest = chunks.slice(rerankCascadeFirstBatch());
     const firstScored = await scoreBatch(first, options?.rerankDeadlineMs);
     if (firstScored === TIMED_OUT) return null;
     const headroom = [...firstScored].sort((a, b) => b.score - a.score).map((r) => r.score);

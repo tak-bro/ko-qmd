@@ -134,7 +134,7 @@ agents, including a section on Korean queries: [skills/qmd/SKILL.md](skills/qmd/
 
 ## Benchmark
 
-`bash scripts/bench-ko.sh` runs the `test/fixtures/ko-vault/` fixture (97 documents, 93 queries).
+`bash scripts/bench-ko.sh` runs the `test/fixtures/ko-vault/` fixture (97 documents, 123 queries).
 On its first 52 queries, bm25 recall@5 went from 0.6250 on upstream 2.8.3 to 0.9519 in this
 distribution. Every run's numbers are in [BASELINE.md](test/fixtures/ko-vault/BASELINE.md).
 

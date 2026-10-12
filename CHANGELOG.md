@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+- Rerank cascade head batch 15 → 8 (`RERANK_CASCADE_FIRST_BATCH`; `QMD_RERANK_FIRST_BATCH` /
+  `QMD_RERANK_MARGIN` overrides added for tuning). Cold hard-44 probe at
+  `candidateLimit` 40: rerank p50 2492 → 1267 ms, p90 2570 → 1352 ms, top-1
+  agreement 44/44; ko-vault seam gate holds (hard `full_r1`=0.6630, easy
+  `full_r5` +1 query).
+- Rerank input now strips a leading YAML frontmatter block over 350 chars
+  (`LONG_FRONTMATTER_CHARS` in `src/rerank-input.ts`) and no longer prepends
+  `# <title>` to the chunk. Third autoresearch loop (24 exps): train
+  `full_mrr` 0.6769 → 0.6880, held-out 0.7459 → 0.7572; ko-vault seam lines
+  byte-identical. ~90 notes carry up-to-2800-char `sources:` URL dumps that
+  filled the whole first chunk, so the reranker scored boilerplate.
+
 - Dependencies: `node-llama-cpp` 3.20.0 → **3.22.1**. ko-vault seam bench lines
   are byte-identical before and after; Nix flake `qmd-node-modules` FOD hashes
   refreshed for the new tree.

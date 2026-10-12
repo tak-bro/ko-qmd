@@ -223,12 +223,14 @@ bash scripts/dogfood.sh --check "RESULT bm25_r5=…"   # 게이트 판정만
 
 ### ko-vault 벤치
 
-`bash scripts/bench-ko.sh` — 픽스처 `test/fixtures/ko-vault/`(문서 97: 위키 28·디스트랙터 69·질의 93), 임베딩은 Qwen3-Embedding-0.6B-Q8_0 고정.
+`bash scripts/bench-ko.sh` — 픽스처 `test/fixtures/ko-vault/`(문서 97: 위키 28·디스트랙터 69·질의 123), 임베딩은 Qwen3-Embedding-0.6B-Q8_0 고정.
 기본은 seam form(REST/MCP 호출과 같은 `lex:`+`vec:` 모양, 확장 없음)이고 `KO_FORM=plain` 이면 질의를 그대로 넘겨 확장 경로를 잰다.
 run별 수치는 [BASELINE.md](test/fixtures/ko-vault/BASELINE.md). 업스트림 2.8.3 의 bm25_r5 0.6250 에서 시작해,
 Qwen3-Embedding 기본값·질의 52 에서 bm25_r5 0.9519 · vector_r5 1.0000 · full_r5 1.0000 이다.
 질의 63 은 외래어 표기 질의 11건을 더한 셋이고, 그 11건의 수치는 BASELINE.md 2026-09-23 절에 있다. 질의 93 은 어려운 유형
-(sem-hard 12·multi 8·neg 10) 30건을 더한 셋이고, 첫 수치는 BASELINE.md 2026-09-24 절에 있다.
+(sem-hard 12·multi 8·neg 10) 30건을 더한 셋이고, 첫 수치는 BASELINE.md 2026-09-24 절에 있다. 질의 123 은 easy 15건
+(exact 5·alias 4·semantic 3·topical 2·cross-domain 1, 저커버리지 토픽과 topics/ 입구 보강)과 hard 15건
+(sem-hard 5·multi 5·neg 5)을 더한 셋이다. hard 45 기준의 RESULT 참조선은 BASELINE.md 2026-10-10 절에 있다.
 
 ### Electron 내장
 

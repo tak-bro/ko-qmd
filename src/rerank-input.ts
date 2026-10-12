@@ -70,6 +70,27 @@ export const selectRerankChunk = (chunks: RerankChunk[], query: string, intentTe
   return bestIdx;
 };
 
-/** The document text sent for one candidate: the selected chunk, led by the note title when the chunk lacks it. */
-export const formatRerankDoc = (chunkText: string, meta: RerankDocMeta): string =>
-  meta.title && !chunkText.includes(meta.title) ? `# ${meta.title}\n\n${chunkText}` : chunkText;
+/** Frontmatter longer than this drowns the first chunk in source URLs; short blocks stay put. */
+export const LONG_FRONTMATTER_CHARS = 350;
+
+/** The leading YAML frontmatter block when longer than LONG_FRONTMATTER_CHARS, else the text as-is. */
+const stripLongFrontmatter = (text: string): string => {
+  if (!text.startsWith("---\n")) return text;
+  const m = text.match(/^---\n[\s\S]{1,4000}?---\n/);
+  return m && m[0].length > LONG_FRONTMATTER_CHARS ? text.slice(m[0].length) : text;
+};
+
+/** Links read as their anchor text; bare URLs are reranker noise and go. */
+const stripUrls = (text: string): string =>
+  text.replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/https?:\/\/\S+/g, "");
+
+/** Blockquote markers are not content; unwrap `>` lines to their text. */
+const stripQuotes = (text: string): string =>
+  text.split("\n").map((line) => line.replace(/^\s*(>\s*)+/, "")).join("\n");
+
+/** HTML tags are not content; drop the tags but keep their inner text. */
+const stripHtmlTags = (text: string): string => text.replace(/<\/?[a-zA-Z][^<>]*>/g, "");
+
+/** The document text sent for one candidate: the selected chunk alone, without long frontmatter. */
+export const formatRerankDoc = (chunkText: string, _meta: RerankDocMeta): string =>
+  stripHtmlTags(stripQuotes(stripUrls(stripLongFrontmatter(chunkText))));
