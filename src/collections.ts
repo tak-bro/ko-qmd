@@ -499,9 +499,18 @@ export function findContextForPath(
     // Normalize paths for comparison
     const normalizedPath = filePath.startsWith("/") ? filePath : `/${filePath}`;
     const normalizedPrefix = prefix.startsWith("/") ? prefix : `/${prefix}`;
+    // Strip trailing slashes (except root) so "/202/" behaves as "/202"
+    const cleanPrefix =
+      normalizedPrefix !== "/" ? normalizedPrefix.replace(/\/+$/, "") : normalizedPrefix;
 
-    if (normalizedPath.startsWith(normalizedPrefix)) {
-      matches.push({ prefix: normalizedPrefix, context });
+    // Segment-boundary match: the candidate must equal the path or be
+    // followed by "/" (mirrors getRelativePathFromPrefix in store.ts).
+    // Bare startsWith would let "/202" wrongly apply to "/2024/a.md".
+    if (
+      normalizedPath === cleanPrefix ||
+      normalizedPath.startsWith(cleanPrefix === "/" ? "/" : `${cleanPrefix}/`)
+    ) {
+      matches.push({ prefix: cleanPrefix, context });
     }
   }
 
