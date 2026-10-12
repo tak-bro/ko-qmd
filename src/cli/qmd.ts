@@ -225,6 +225,17 @@ function mcpDaemonPaths(): { cacheDir: string; pidPath: string; logPath: string 
   };
 }
 
+export const DEFAULT_MCP_PORT = 8181;
+
+export function resolveMcpPort(raw: unknown): number {
+  if (raw === undefined) return DEFAULT_MCP_PORT;
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`Invalid --port ${JSON.stringify(String(raw))}: expected an integer between 1 and 65535.`);
+  }
+  return port;
+}
+
 function setIndexName(name: string | null): void {
   let normalizedName = name;
   // Normalize relative paths to prevent malformed database paths. Windows
@@ -5027,7 +5038,13 @@ if (isMain) {
       }
 
       if (cli.values.http) {
-        const port = Number(cli.values.port) || 8181;
+        let port: number;
+        try {
+          port = resolveMcpPort(cli.values.port);
+        } catch (error) {
+          console.error(error instanceof Error ? error.message : String(error));
+          process.exit(1);
+        }
         // --host overrides the default localhost bind; QMD_HOST env is the
         // fallback (resolved in startMcpHttpServer). Use "0.0.0.0" to accept
         // off-host connections, e.g. a container liveness probe.
