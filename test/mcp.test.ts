@@ -1844,6 +1844,7 @@ describe("REST /query, MCP query and the query log", () => {
 
 import { mkdirSync, utimesSync } from "node:fs";
 import { createStore as createSdkStore } from "../src/index.js";
+import * as storeModule from "../src/store.js";
 
 describe("REST /query refreshes the text index first", () => {
   let handle: HttpServerHandle | undefined;
@@ -2042,6 +2043,28 @@ describe("REST /query takes path and time filters", () => {
   test("an empty result under a filter that kept documents says that instead", async () => {
     const result = await callQuery({ searches: [{ type: "lex", query: "kilimanjaro" }], path: ["docs/journals/**"] });
     expect(result.content[0]!.text).toMatch(/No results in the 1 of 251 documents/);
+  });
+
+  test("an explainer failure still returns the empty success, without sqlite text", async () => {
+    // Damaged-DB shape: the search itself already succeeded with [], and only the
+    // empty-filter explainer (countFilteredDocuments) throws, as it does when the
+    // documents table is gone (SqliteError: no such table). The caller must get the
+    // already-computed empty result, never a -32603 with raw sqlite text.
+    const countSpy = vi.spyOn(storeModule, "countFilteredDocuments").mockImplementation(() => {
+      throw new Error("no such table: documents");
+    });
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const result = await callQuery({ path: ["docs/nowhere/**"] });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent!.results).toEqual([]);
+      expect(result.content[0]!.text).not.toMatch(/no such table/);
+      expect(result.content[0]!.text).toMatch(/No results found/);
+      expect(errSpy).toHaveBeenCalledWith(expect.stringMatching(/empty-result description failed/));
+    } finally {
+      countSpy.mockRestore();
+      errSpy.mockRestore();
+    }
   });
 
   test("an unparseable span is a tool error, not an unfiltered search", async () => {

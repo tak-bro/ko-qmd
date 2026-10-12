@@ -630,12 +630,25 @@ Intent-aware lex (C++ performance, not sports):
         }), store);
       }
 
+      // The empty-filter explainer is diagnostic only: it must never turn an
+      // already-successful empty search into a -32603. On a damaged DB the
+      // search above succeeded with [] and only this helper throws (SqliteError).
+      let summary: string;
+      if (filtered.length === 0 && scope) {
+        try {
+          summary = describeEmptyFilteredSearch(store, scope, effectiveCollections);
+        } catch (error) {
+          console.error(`qmd: empty-result description failed: ${error instanceof Error ? error.message : String(error)}`);
+          summary = formatSearchSummary(filtered, primaryQuery) + describeTimeouts(timer.timeouts);
+        }
+      } else {
+        summary = formatSearchSummary(filtered, primaryQuery) + describeTimeouts(timer.timeouts);
+      }
+
       return {
         content: [{
           type: "text",
-          text: filtered.length === 0 && scope
-            ? describeEmptyFilteredSearch(store, scope, effectiveCollections)
-            : formatSearchSummary(filtered, primaryQuery) + describeTimeouts(timer.timeouts),
+          text: summary,
         }],
         structuredContent: { results: filtered, ...timeoutField(timer.timeouts) },
       };
