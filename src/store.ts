@@ -6353,7 +6353,10 @@ export async function hybridQuery(
   const query = stripHangulNegation(rawQuery);
   const limit = options?.limit ?? 10;
   const minScore = options?.minScore ?? 0;
-  const candidateLimit = options?.candidateLimit ?? RERANK_CANDIDATE_LIMIT;
+  // Floor at 1: a zero/negative limit inverts the position score
+  // (1-(rank-1)/candidateLimit grows with rank) and makes slice(0, limit)
+  // drop trailing candidates. NaN passes through unchanged (out of scope).
+  const candidateLimit = Math.max(1, options?.candidateLimit ?? RERANK_CANDIDATE_LIMIT);
   const collection = options?.collection;
   const filter = options?.filter;
   const explain = options?.explain ?? false;
@@ -6773,7 +6776,9 @@ export async function structuredSearch(
 ): Promise<HybridQueryResult[]> {
   const limit = options?.limit ?? 10;
   const minScore = options?.minScore ?? 0;
-  const candidateLimit = options?.candidateLimit ?? RERANK_CANDIDATE_LIMIT;
+  // Floor at 1: see hybridQuery — a zero/negative limit inverts the position
+  // score and makes slice(0, limit) drop trailing candidates.
+  const candidateLimit = Math.max(1, options?.candidateLimit ?? RERANK_CANDIDATE_LIMIT);
   const explain = options?.explain ?? false;
   const intent = options?.intent;
   const skipRerank = options?.skipRerank ?? false;

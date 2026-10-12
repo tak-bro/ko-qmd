@@ -5178,6 +5178,77 @@ describe("Embedding batching", () => {
     }
   });
 
+  test("hybridQuery clamps a negative candidateLimit to 1", async () => {
+    const store = await createTestStore();
+    const collectionName = await createTestCollection();
+    for (let i = 0; i < 3; i++) {
+      await insertTestDocument(store.db, collectionName, {
+        name: `neg-doc-${i}`,
+        title: `NEG ${i}`,
+        body: `zebraqx anchor document number ${i} with plenty of shared content words`,
+        displayPath: `test/neg-${i}.md`,
+      });
+    }
+
+    store.expandQuery = vi.fn(async () => [{ type: "lex", query: "zebraqx" }]) as any;
+    store.searchVec = (async () => []) as any;
+    store.rerank = (async (_query: string, docs: { file: string; text: string }[]) => {
+      return docs.map((d) => ({ file: d.file, score: 0.9 }));
+    }) as any;
+
+    try {
+      const fmt = (rs: { file: string; score: number }[]) =>
+        rs.map((r) => ({ file: r.file, score: r.score }));
+      const neg = await hybridQuery(store, "zebraqx", {
+        limit: 5, minScore: 0, candidateLimit: -5,
+      });
+      const one = await hybridQuery(store, "zebraqx", {
+        limit: 5, minScore: 0, candidateLimit: 1,
+      });
+
+      // Negative must behave exactly like the 1-candidate floor, not like
+      // slice(0, -5) (which drops trailing candidates) with an inverted
+      // position score (1-(rank-1)/negative grows with rank).
+      expect(fmt(neg)).toEqual(fmt(one));
+      expect(neg).toHaveLength(1);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("structuredSearch clamps a negative candidateLimit to 1", async () => {
+    const store = await createTestStore();
+    const collectionName = await createTestCollection();
+    for (let i = 0; i < 3; i++) {
+      await insertTestDocument(store.db, collectionName, {
+        name: `neg-doc-${i}`,
+        title: `NEG ${i}`,
+        body: `zebraqx anchor document number ${i} with plenty of shared content words`,
+        displayPath: `test/neg-${i}.md`,
+      });
+    }
+
+    store.rerank = (async (_query: string, docs: { file: string; text: string }[]) => {
+      return docs.map((d) => ({ file: d.file, score: 0.9 }));
+    }) as any;
+
+    try {
+      const fmt = (rs: { file: string; score: number }[]) =>
+        rs.map((r) => ({ file: r.file, score: r.score }));
+      const neg = await structuredSearch(store, [{ type: "lex", query: "zebraqx" }], {
+        limit: 5, minScore: 0, candidateLimit: -5,
+      });
+      const one = await structuredSearch(store, [{ type: "lex", query: "zebraqx" }], {
+        limit: 5, minScore: 0, candidateLimit: 1,
+      });
+
+      expect(fmt(neg)).toEqual(fmt(one));
+      expect(neg).toHaveLength(1);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
   test("structuredSearch answers in RRF order when the reranker misses its deadline", async () => {
     const store = await createTestStore();
     const collectionName = await createTestCollection();
