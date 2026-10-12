@@ -28,7 +28,7 @@ newline        = "\n" ;
 
 ## Default Behavior
 
-A QMD query is either a single expand query or a multi-line query document. Any single-line query with no prefix is treated as an expand query and passed to the expansion model, which emits lex, vec, and hyde variants automatically.
+A QMD query is either a single expand query or a multi-line query document. Any single-line query with no prefix is treated as an expand query and passed to the expansion model, which emits lex, vec, and hyde variants automatically. Expansion is skipped for a strong-signal lexical match or a query containing Hangul, which is searched as written.
 
 ```
 # These are equivalent and cannot be combined with typed lines:
@@ -82,7 +82,7 @@ hyde: The rate limiter uses a sliding window algorithm with a 60-second window. 
 
 ## Multi-Line Queries
 
-Combine multiple query types for best results. First query gets 2x weight in fusion; a `lex` line that matches only some of its words (the any-word retry) counts half of its slot's weight.
+Combine multiple query types for best results. First query gets 2x weight in fusion; a `lex` line that matches only some of its words (the any-word retry) counts half of its slot's weight, except the first list which counts 0.25 (forfeiting the 2x boost).
 
 ```
 lex: rate limiter algorithm
