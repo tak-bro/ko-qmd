@@ -47,6 +47,12 @@ jobs:
         env:
           CI: true
 
+      # RuleTester-based custom oxlint rule tests run under plain node only
+      # (vitest reports "No test suite found", bun rejects RuleTester).
+      # The quoted glob is expanded by node's own test runner, not the shell.
+      - name: oxlint rule tests
+        run: node --import tsx --test 'tools/oxlint/**/*.test.ts'
+
   test-bun:
     name: Bun (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
