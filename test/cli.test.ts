@@ -2251,6 +2251,69 @@ describe("editor URI templates", () => {
 
     expect(linked).toBe("\x1b]8;;vscode://file//tmp/docs/api.md:12:1\x07docs/api.md:12\x1b]8;;\x07");
   });
+
+  test("buildEditorUri percent-encodes ? and # in paths", () => {
+    const uri = buildEditorUri(
+      "vscode://file/{path}:{line}:{col}",
+      "/tmp/a?b#c.md",
+      5,
+      1,
+    );
+
+    expect(uri).toBe("vscode://file//tmp/a%3Fb%23c.md:5:1");
+  });
+
+  test("buildEditorUri clamps non-positive and non-finite line values to 1", () => {
+    const template = "vscode://file/{path}:{line}:{col}";
+
+    expect(buildEditorUri(template, "/tmp/x.md", 0, 1)).toBe("vscode://file//tmp/x.md:1:1");
+    expect(buildEditorUri(template, "/tmp/x.md", -3, 1)).toBe("vscode://file//tmp/x.md:1:1");
+    expect(buildEditorUri(template, "/tmp/x.md", NaN, 1)).toBe("vscode://file//tmp/x.md:1:1");
+    expect(buildEditorUri(template, "/tmp/x.md", Infinity, 1)).toBe("vscode://file//tmp/x.md:1:1");
+  });
+
+  test("buildEditorUri floors fractional line values", () => {
+    const uri = buildEditorUri(
+      "vscode://file/{path}:{line}:{col}",
+      "/tmp/x.md",
+      2.7,
+      1,
+    );
+
+    expect(uri).toBe("vscode://file//tmp/x.md:2:1");
+  });
+
+  test("buildEditorUri clamps and floors col values", () => {
+    const template = "vscode://file/{path}:{line}:{col}";
+
+    expect(buildEditorUri(template, "/tmp/x.md", 3, 0)).toBe("vscode://file//tmp/x.md:3:1");
+    expect(buildEditorUri(template, "/tmp/x.md", 3, -3)).toBe("vscode://file//tmp/x.md:3:1");
+    expect(buildEditorUri(template, "/tmp/x.md", 3, NaN)).toBe("vscode://file//tmp/x.md:3:1");
+    expect(buildEditorUri(template, "/tmp/x.md", 3, 2.7)).toBe("vscode://file//tmp/x.md:3:2");
+  });
+
+  test("buildEditorUri drops the path when the template has no {path} placeholder", () => {
+    const uri = buildEditorUri(
+      "vscode://open?line={line}:{col}",
+      "/tmp/x.md",
+      3,
+      4,
+    );
+
+    expect(uri).toBe("vscode://open?line=3:4");
+  });
+
+  test("termLink passes text through unchanged when not a TTY, even for hostile URLs", () => {
+    const linked = termLink("docs/a.md:1", "vscode://file//tmp/a%3Fb%23c.md:1:1", false);
+
+    expect(linked).toBe("docs/a.md:1");
+  });
+
+  test("termLink embeds the URL raw in TTY mode (documents current no-sanitize behavior)", () => {
+    const linked = termLink("t", "vscode://file/x\x07injected", true);
+
+    expect(linked).toBe("\x1b]8;;vscode://file/x\x07injected\x07t\x1b]8;;\x07");
+  });
 });
 
 // =============================================================================
