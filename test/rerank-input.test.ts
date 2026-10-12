@@ -79,4 +79,16 @@ describe("formatRerankDoc", () => {
     expect(formatRerankDoc("# 제목\n본문", meta)).toBe("# 제목\n본문");
     expect(formatRerankDoc("본문 청크", { ...meta, title: "" })).toBe("본문 청크");
   });
+
+  test("keeps only the anchor text when a markdown link target holds parens", () => {
+    expect(formatRerankDoc("see [wiki](https://x/X_(disambig)) end", meta)).toBe("see wiki end");
+  });
+
+  test("keeps the autolink brackets when stripping a bare URL", () => {
+    expect(formatRerankDoc("contact <https://example.com> now", meta)).toBe("contact <> now");
+  });
+
+  test("keeps sentence punctuation when stripping a trailing bare URL", () => {
+    expect(formatRerankDoc("see https://example.com. Next", meta)).toBe("see . Next");
+  });
 });

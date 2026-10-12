@@ -80,9 +80,11 @@ const stripLongFrontmatter = (text: string): string => {
   return m && m[0].length > LONG_FRONTMATTER_CHARS ? text.slice(m[0].length) : text;
 };
 
-/** Links read as their anchor text; bare URLs are reranker noise and go. */
+/** Links read as their anchor text, with one level of parens allowed in the target; bare URLs are reranker noise and go, keeping trailing punctuation. */
 const stripUrls = (text: string): string =>
-  text.replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/https?:\/\/\S+/g, "");
+  text
+    .replace(/!?\[([^\]]*)\]\((?:[^()]|\([^()]*\))*\)/g, "$1")
+    .replace(/https?:\/\/\S+/g, (m) => m.match(/[.,;:!?)\]}>]+$/)?.[0] ?? "");
 
 /** Blockquote markers are not content; unwrap `>` lines to their text. */
 const stripQuotes = (text: string): string =>
