@@ -3941,6 +3941,91 @@ describe("Integration", () => {
     }
   });
 
+  test("reindexCollection deactivates emptied files like removed files", async () => {
+    const store = await createTestStore();
+    const collectionDir = await mkdtemp(join(testDir, "emptied-regression-"));
+    const collectionName = "emptied-regression";
+    const marker = `EMPTIED_BODY_${Date.now()}`;
+    const wsMarker = `WS_BODY_${Date.now()}`;
+
+    try {
+      await writeFile(join(collectionDir, "note.md"), `# Note\n\n${marker}\n`);
+      await writeFile(join(collectionDir, "ws.md"), `# Ws\n\n${wsMarker}\n`);
+      await writeFile(join(collectionDir, "kept.md"), "# Kept\n\nstays here\n");
+
+      await createTestCollection({ pwd: collectionDir, glob: "**/*.md", name: collectionName });
+
+      const initial = await reindexCollection(store, collectionDir, "**/*.md", collectionName);
+      expect(initial.indexed).toBe(3);
+      expect(initial.removed).toBe(0);
+
+      await writeFile(join(collectionDir, "note.md"), "");
+      await writeFile(join(collectionDir, "ws.md"), "  \n\t \n");
+
+      const afterEmpty = await reindexCollection(store, collectionDir, "**/*.md", collectionName);
+      expect(afterEmpty.removed).toBe(2);
+
+      const counts = store.db.prepare(`
+        SELECT
+          SUM(CASE WHEN active = 1 THEN 1 ELSE 0 END) AS active,
+          SUM(CASE WHEN active = 0 THEN 1 ELSE 0 END) AS inactive,
+          COUNT(*) AS total
+        FROM documents
+        WHERE collection = ?
+      `).get(collectionName) as { active: number; inactive: number; total: number };
+      expect(counts).toEqual({ active: 1, inactive: 2, total: 3 });
+
+      const activePaths = store.db.prepare(`
+        SELECT path FROM documents WHERE collection = ? AND active = 1
+      `).all(collectionName) as { path: string }[];
+      expect(activePaths.map(r => r.path)).toEqual(["kept.md"]);
+
+      expect(store.searchFTS(marker, 10, collectionName)).toHaveLength(0);
+      expect(store.searchFTS(wsMarker, 10, collectionName)).toHaveLength(0);
+    } finally {
+      await rm(collectionDir, { recursive: true, force: true });
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("reindexCollection reactivates a refilled file after emptying", async () => {
+    const store = await createTestStore();
+    const collectionDir = await mkdtemp(join(testDir, "refill-regression-"));
+    const collectionName = "refill-regression";
+    const oldMarker = `OLD_BODY_${Date.now()}`;
+    const newMarker = `NEW_BODY_${Date.now()}`;
+
+    try {
+      await writeFile(join(collectionDir, "note.md"), `# Note\n\n${oldMarker}\n`);
+
+      await createTestCollection({ pwd: collectionDir, glob: "**/*.md", name: collectionName });
+
+      await reindexCollection(store, collectionDir, "**/*.md", collectionName);
+
+      await writeFile(join(collectionDir, "note.md"), "");
+      const afterEmpty = await reindexCollection(store, collectionDir, "**/*.md", collectionName);
+      expect(afterEmpty.removed).toBe(1);
+      expect(store.searchFTS(oldMarker, 10, collectionName)).toHaveLength(0);
+
+      await writeFile(join(collectionDir, "note.md"), `# Note\n\n${newMarker}\n`);
+      const afterRefill = await reindexCollection(store, collectionDir, "**/*.md", collectionName);
+      expect(afterRefill.removed).toBe(0);
+
+      const rows = store.db.prepare(`
+        SELECT active FROM documents WHERE collection = ? AND path = ?
+      `).all(collectionName, "note.md") as { active: number }[];
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.active).toBe(1);
+
+      const hits = store.searchFTS(newMarker, 10, collectionName);
+      expect(hits.length).toBe(1);
+      expect(store.searchFTS(oldMarker, 10, collectionName)).toHaveLength(0);
+    } finally {
+      await rm(collectionDir, { recursive: true, force: true });
+      await cleanupTestDb(store);
+    }
+  });
+
   test("full document lifecycle: create, search, retrieve", async () => {
     const store = await createTestStore();
     const collectionName = await createTestCollection({ pwd: "/test/notes", glob: "**/*.md" });

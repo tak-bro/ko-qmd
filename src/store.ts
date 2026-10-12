@@ -1712,6 +1712,11 @@ export async function reindexCollection(
     }
 
     if (!content.trim()) {
+      // An emptied file has no indexable content: unmark it seen so the
+      // not-seen pass below deactivates it exactly like a removed file.
+      // (Unreadable files above stay seen — a transient read error must not
+      // wipe the row; empty content is a confirmed state, not an error.)
+      seenPaths.delete(path);
       processed++;
       continue;
     }
