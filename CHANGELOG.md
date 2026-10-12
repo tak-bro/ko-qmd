@@ -2,11 +2,11 @@
 
 ## [Unreleased]
 
-- Rerank input denoises markdown (`src/rerank-input.ts`): `[text](url)` is
-  sent as text, bare URLs dropped, `>` quotes unwrapped, HTML tags stripped
-  keeping inner text. Fourth autoresearch loop (9 exps, 339-train goldset):
-  train `full_mrr` 0.6936 → 0.6961, held-out 0.7572 → 0.7614; ko-vault seam
-  lines byte-identical. Dropping fenced code hurt (−0.0015), so fences stay.
+- Rerank cascade head batch 15 → 8 (`RERANK_CASCADE_FIRST_BATCH`; `QMD_RERANK_FIRST_BATCH` /
+  `QMD_RERANK_MARGIN` overrides added for tuning). Cold hard-44 probe at
+  `candidateLimit` 40: rerank p50 2492 → 1267 ms, p90 2570 → 1352 ms, top-1
+  agreement 44/44; ko-vault seam gate holds (hard `full_r1`=0.6630, easy
+  `full_r5` +1 query).
 - Rerank input now strips a leading YAML frontmatter block over 350 chars
   (`LONG_FRONTMATTER_CHARS` in `src/rerank-input.ts`) and no longer prepends
   `# <title>` to the chunk. Third autoresearch loop (24 exps): train

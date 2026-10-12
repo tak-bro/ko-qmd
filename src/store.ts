@@ -6201,9 +6201,21 @@ async function runWithDeadline<T>(
 }
 
 /** Rerank `chunks`, or null when the reranker misses `deadlineMs` (the caller then answers in RRF order). */
-export const RERANK_CASCADE_FIRST_BATCH = 15;
+export const RERANK_CASCADE_FIRST_BATCH = 8;
 /** Skip the tail past the first batch when the top-2 rerank margin reaches this. */
 export const RERANK_CASCADE_MARGIN = 0.08;
+
+/** First-batch size, overridable for tuning via `QMD_RERANK_FIRST_BATCH`. */
+export function rerankCascadeFirstBatch(): number {
+  const raw = Number(process.env.QMD_RERANK_FIRST_BATCH);
+  return Number.isInteger(raw) && raw > 1 ? raw : RERANK_CASCADE_FIRST_BATCH;
+}
+
+/** Tail-skip margin, overridable for tuning via `QMD_RERANK_MARGIN`. */
+export function rerankCascadeMargin(): number {
+  const raw = Number(process.env.QMD_RERANK_MARGIN);
+  return Number.isFinite(raw) && raw >= 0 ? raw : RERANK_CASCADE_MARGIN;
+}
 
 /**
  * QMD_RERANK_CASCADE=0 (or false/off/no) restores single-batch rerank;
@@ -6222,7 +6234,7 @@ export function isRerankCascadeEnabled(): boolean {
  */
 export function cascadeNeedsSecondBatch(
   sortedScores: number[],
-  margin: number = RERANK_CASCADE_MARGIN,
+  margin: number = rerankCascadeMargin(),
 ): boolean {
   if (sortedScores.length < 2) return false;
   const [top, second] = [sortedScores[0]!, sortedScores[1]!];
@@ -6249,9 +6261,9 @@ export async function rerankWithDeadline(
   // Cascade: score the RRF head first. On a decisive top margin the tail keeps
   // score 0 (RRF position tiebreak only) instead of paying for 25 more
   // cross-encoder pairs; a contested top scores everything, as before.
-  if (isRerankCascadeEnabled() && chunks.length > RERANK_CASCADE_FIRST_BATCH) {
-    const first = chunks.slice(0, RERANK_CASCADE_FIRST_BATCH);
-    const rest = chunks.slice(RERANK_CASCADE_FIRST_BATCH);
+  if (isRerankCascadeEnabled() && chunks.length > rerankCascadeFirstBatch()) {
+    const first = chunks.slice(0, rerankCascadeFirstBatch());
+    const rest = chunks.slice(rerankCascadeFirstBatch());
     const firstScored = await scoreBatch(first, options?.rerankDeadlineMs);
     if (firstScored === TIMED_OUT) return null;
     const headroom = [...firstScored].sort((a, b) => b.score - a.score).map((r) => r.score);

@@ -3059,15 +3059,15 @@ describe("Reciprocal Rank Fusion", () => {
       }),
     }) as Store; // fake-store stub: only rerank() is exercised below
 
-    // Decisive top: doc0 far ahead — one batch of 15, tail keeps score 0.
+    // Decisive top: doc0 far ahead — one batch of 8, tail keeps score 0.
     const wide = new Map(chunks.map((c, i) => [c.file, i === 0 ? 0.95 : 0.5 - i * 0.01]));
     const store1 = fakeStore(wide);
     const out1 = await rerankWithDeadline(store1, "q", chunks, undefined, undefined);
     expect(store1.rerank).toHaveBeenCalledTimes(1);
-    expect(store1.rerank).toHaveBeenCalledWith("q", chunks.slice(0, 15), undefined, undefined, expect.anything());
+    expect(store1.rerank).toHaveBeenCalledWith("q", chunks.slice(0, 8), undefined, undefined, expect.anything());
     expect(out1).toHaveLength(20);
-    expect(out1!.slice(0, 15).map((r) => r.score)).toEqual(chunks.slice(0, 15).map((c) => wide.get(c.file)));
-    expect(out1!.slice(15).map((r) => r.score)).toEqual([0, 0, 0, 0, 0]);
+    expect(out1!.slice(0, 8).map((r) => r.score)).toEqual(chunks.slice(0, 8).map((c) => wide.get(c.file)));
+    expect(out1!.slice(8).map((r) => r.score)).toEqual(new Array(12).fill(0));
 
     // Contested top: doc0 and doc1 within the margin — both batches run.
     scored.clear();
@@ -3179,8 +3179,8 @@ describe("Reciprocal Rank Fusion", () => {
     // the caller falls back to RRF order, and the done hook never fires.
     expect(out).toBeNull();
     expect(calls).toHaveLength(2);
-    expect(calls[0]).toHaveLength(15);
-    expect(calls[1]).toHaveLength(5);
+    expect(calls[0]).toHaveLength(8);
+    expect(calls[1]).toHaveLength(12);
     expect(hooks.onRerankStart).toHaveBeenCalledTimes(1);
     expect(hooks.onRerankDone).not.toHaveBeenCalled();
   });
