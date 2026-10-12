@@ -2138,6 +2138,15 @@ function parseEmbedBatchOption(name: string, value: unknown): number | undefined
   return parsed;
 }
 
+function parseCandidateLimit(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`--candidate-limit must be a positive integer (got "${String(value)}")`);
+  }
+  return parsed;
+}
+
 function parseChunkStrategy(value: unknown): ChunkStrategy | undefined {
   if (value === undefined) return undefined;
   const s = String(value);
@@ -3367,7 +3376,7 @@ function parseCLI() {
     all: isAll,
     collection: values.collection as string[] | undefined,
     lineNumbers: !!values["line-numbers"],
-    candidateLimit: values["candidate-limit"] ? parseInt(String(values["candidate-limit"]), 10) : undefined,
+    candidateLimit: values["candidate-limit"] ? parseCandidateLimit(values["candidate-limit"]) : undefined,
     skipRerank: !!values["no-rerank"],
     explain: !!values.explain,
     intent: values.intent as string | undefined,

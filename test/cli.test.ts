@@ -1058,6 +1058,27 @@ describe("CLI Search Command", () => {
     expect(stderr).toContain("Usage:");
   });
 
+  test("rejects non-numeric --candidate-limit instead of returning empty results", async () => {
+    // Regression: `--candidate-limit abc` parsed to NaN, which `?? default`
+    // cannot catch, so fusion sliced to [] and looked like "no matches".
+    const { stderr, exitCode } = await runQmd(["search", "meeting", "--candidate-limit", "abc"]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("--candidate-limit must be a positive integer");
+  });
+
+  test("rejects non-positive --candidate-limit", async () => {
+    for (const value of ["0", "-5", "2.5"]) {
+      const { stderr, exitCode } = await runQmd(["search", "meeting", "--candidate-limit", value]);
+      expect(exitCode).toBe(1);
+      expect(stderr).toContain("--candidate-limit must be a positive integer");
+    }
+  });
+
+  test("accepts a valid --candidate-limit", async () => {
+    const { exitCode } = await runQmd(["search", "meeting", "--candidate-limit", "10"]);
+    expect(exitCode).toBe(0);
+  });
+
   test("--json --full includes line field for round-tripping to qmd get", async () => {
     const { stdout, exitCode } = await runQmd(["search", "meeting", "--json", "--full", "-n", "1"]);
     expect(exitCode).toBe(0);
