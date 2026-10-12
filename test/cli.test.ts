@@ -2341,6 +2341,47 @@ describe("get command path normalization", () => {
     expect(stdout).not.toContain("Line 6 is here.");
   });
 
+  test("get with path:from:0 suffix yields an empty body but still exits 0", async () => {
+    // Lines: 1 "# Test Document 1", 5 "It has multiple lines..."
+    // count 0 is passed through unclamped: end == start, so the slice is empty.
+    const { stdout, exitCode } = await runQmd(["get", `${collName}/test1.md:5:0`], { dbPath: localDbPath, configDir: localConfigDir });
+    expect(exitCode).toBe(0);
+    // Header is still printed...
+    expect(stdout).toMatch(new RegExp(`^qmd://${collName}/test1\\.md\\s+#[a-f0-9]{6}`, "m"));
+    expect(stdout).toContain("---");
+    // ...but the body carries no document content (only the line-number stub).
+    const body = (stdout.split("---\n")[1] ?? "").replace(/^\d+: /gm, "").trim();
+    expect(body).toBe("");
+  });
+
+  test("get with path:0 suffix clamps to the first line", async () => {
+    // from 0 is clamped to 1 (Math.max(1, fromLine)), so this reads the whole file.
+    const { stdout, exitCode } = await runQmd(["get", `${collName}/test1.md:0`], { dbPath: localDbPath, configDir: localConfigDir });
+    expect(exitCode).toBe(0);
+    expect(stdout).toMatch(/^1: # Test Document 1$/m);
+    expect(stdout).toContain("Line 7 is here.");
+  });
+
+  test("get with path:9999 suffix yields an empty body but still exits 0", async () => {
+    // Start past EOF: the slice is empty and the command stays silent-but-zero.
+    const { stdout, exitCode } = await runQmd(["get", `${collName}/test1.md:9999`], { dbPath: localDbPath, configDir: localConfigDir });
+    expect(exitCode).toBe(0);
+    expect(stdout).toMatch(new RegExp(`^qmd://${collName}/test1\\.md\\s+#[a-f0-9]{6}`, "m"));
+    expect(stdout).toContain("---");
+    const body = (stdout.split("---\n")[1] ?? "").replace(/^\d+: /gm, "").trim();
+    expect(body).toBe("");
+  });
+
+  test("get with path:from:huge-count suffix reads through EOF", async () => {
+    // The slice end is unclamped, so an oversized count just runs to the last line.
+    const { stdout, exitCode } = await runQmd(["get", `${collName}/test1.md:5:99999`], { dbPath: localDbPath, configDir: localConfigDir });
+    expect(exitCode).toBe(0);
+    expect(stdout).toMatch(/^5: It has multiple lines/m);
+    expect(stdout).toContain("Line 6 is here.");
+    expect(stdout).toContain("Line 7 is here.");
+    expect(stdout).not.toMatch(/^# Test Document 1$/m);
+  });
+
   test("get header includes canonical qmd:// path and a #docid", async () => {
     const { stdout, exitCode } = await runQmd(["get", `${collName}/test1.md`], { dbPath: localDbPath, configDir: localConfigDir });
     expect(exitCode).toBe(0);
