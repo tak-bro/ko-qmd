@@ -2156,6 +2156,20 @@ function parseEmbedTimeoutOption(value: unknown): number | undefined {
   return minutes * 60 * 1000;
 }
 
+// --from/-l for get/multi-get: 1-based line bounds. A provided value must be a
+// positive integer; parseInt failures used to pass NaN straight into
+// getDocument (Math.max(1, NaN) is NaN, so `--from abc` read the whole doc)
+// while negatives/0 silently truncated via slice (`-l -3` drops the last 3
+// lines, `-l 0` empties the body). Reject instead, mirroring the -n guard.
+function parseGetLineOption(name: "--from" | "-l", value: unknown): number | undefined {
+  if (value === undefined || value === "") return undefined;
+  const parsed = parseInt(String(value), 10);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`${name} must be a positive integer (got "${String(value)}")`);
+  }
+  return parsed;
+}
+
 function ensureModelsConfiguredForCli(): { embed: string; generate: string; rerank: string } {
   try {
     const config = loadConfig();
@@ -4662,10 +4676,16 @@ if (isMain) {
         console.error("Usage: qmd get <filepath>[:from[:count]] [--from <line>] [-l <lines>] [--no-line-numbers] [--full-path]");
         process.exit(1);
       }
-      const fromLine = cli.values.from ? parseInt(cli.values.from as string, 10) : undefined;
-      const maxLines = cli.values.l ? parseInt(cli.values.l as string, 10) : undefined;
       // Line numbers default ON for get; opt out with --no-line-numbers.
       const getLineNumbers = !cli.values["no-line-numbers"];
+      let fromLine: number | undefined;
+      let maxLines: number | undefined;
+      try {
+        fromLine = parseGetLineOption("--from", cli.values.from);
+        maxLines = parseGetLineOption("-l", cli.values.l);
+      } catch (error) {
+        exitWithError(error);
+      }
       getDocument(cli.args[0], fromLine, maxLines, getLineNumbers, !!cli.values["full-path"]);
       break;
     }
@@ -4676,10 +4696,15 @@ if (isMain) {
         console.error("  pattern: glob (e.g., 'journals/2025-05*.md') or comma-separated list");
         process.exit(1);
       }
-      const maxLinesMulti = cli.values.l ? parseInt(cli.values.l as string, 10) : undefined;
       const maxBytes = cli.values["max-bytes"] ? parseInt(cli.values["max-bytes"] as string, 10) : DEFAULT_MULTI_GET_MAX_BYTES;
       // Line numbers default ON for multi-get; opt out with --no-line-numbers.
       const mgLineNumbers = !cli.values["no-line-numbers"];
+      let maxLinesMulti: number | undefined;
+      try {
+        maxLinesMulti = parseGetLineOption("-l", cli.values.l);
+      } catch (error) {
+        exitWithError(error);
+      }
       multiGet(cli.args[0], maxLinesMulti, maxBytes, cli.opts.format, mgLineNumbers, !!cli.values["full-path"]);
       break;
     }

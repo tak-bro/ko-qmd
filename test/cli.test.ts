@@ -1093,11 +1093,25 @@ describe("CLI Get Command", () => {
     expect(exitCode).toBe(1);
   });
 
-  test("clamps negative --from to top of file (no silent tail content)", async () => {
-    const baseline = await runQmd(["get", "README.md"]);
-    const negative = await runQmd(["get", "README.md", "--from", "-19"]);
-    expect(negative.exitCode).toBe(0);
-    expect(negative.stdout).toBe(baseline.stdout);
+  test("rejects non-positive or non-numeric --from/-l instead of mis-slicing", async () => {
+    for (const args of [
+      ["get", "README.md", "--from", "abc"],
+      ["get", "README.md", "--from", "-19"],
+      ["get", "README.md", "--from", "0"],
+      ["get", "README.md", "-l", "abc"],
+      ["get", "README.md", "-l", "-3"],
+      ["get", "README.md", "-l", "0"],
+    ]) {
+      const r = await runQmd(args);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toMatch(/must be a positive integer/);
+    }
+  });
+
+  test("accepts valid --from/-l bounds", async () => {
+    const { stdout, exitCode } = await runQmd(["get", "README.md", "--from", "1", "-l", "1"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("Test Project");
   });
 });
 
@@ -1234,6 +1248,14 @@ describe("CLI Multi-Get Command", () => {
     const raw = await runQmd(["multi-get", "README.md", "--no-line-numbers"], { dbPath: localDbPath });
     expect(raw.exitCode).toBe(0);
     expect(raw.stdout).not.toMatch(/^1: /m);
+  });
+
+  test("rejects non-positive or non-numeric -l instead of mis-slicing", async () => {
+    for (const value of ["abc", "-3", "0"]) {
+      const r = await runQmd(["multi-get", "README.md", "-l", value], { dbPath: localDbPath });
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toMatch(/must be a positive integer/);
+    }
   });
 
   test("--full-path --md shows ./-prefixed on-disk paths and drops the docid", async () => {
