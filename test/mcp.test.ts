@@ -2172,4 +2172,12 @@ describe("search deadlines", () => {
     expect(resolveDeadlineMs("0", 10_000)).toBe(0);
     expect(resolveDeadlineMs("2500", 10_000)).toBe(2_500);
   });
+
+  test("giant values fall back instead of waiting forever (mirrors daemon-health MAX_TIMER_MS)", () => {
+    const MAX_TIMER_MS = 2 ** 31 - 1;
+    expect(resolveDeadlineMs(String(MAX_TIMER_MS), 10_000)).toBe(MAX_TIMER_MS);
+    expect(resolveDeadlineMs(String(MAX_TIMER_MS + 1), 10_000)).toBe(10_000);
+    expect(resolveDeadlineMs("99999999999", 10_000)).toBe(10_000);
+    expect(resolveDeadlineMs("99999999999", 5_000)).toBe(5_000);
+  });
 });
