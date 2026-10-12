@@ -16,6 +16,7 @@ import {
   queryLogStatus,
   latestQueryLogFile,
   entryFromRest,
+  entryFromMcp,
   _resetQueryLogForTesting,
   type QueryLogEntry,
 } from "../src/query-log.js";
@@ -293,6 +294,95 @@ describe("latestQueryLogFile (CLI status, other process)", () => {
     if (latest.kind !== "file") return;
     expect(latest.path).toBe(queryLogPath(new Date(2026, 8, 1)));
     expect(latest.modified).toBeInstanceOf(Date);
+  });
+});
+
+describe("entryFromMcp", () => {
+  test("maps empty collections to null with mcp via and query tool", () => {
+    const headers = new Headers();
+    const entry = entryFromMcp({
+      headers,
+      searches: [{ type: "auto", query: "q" }],
+      collections: [],
+      limit: 5,
+      rerank: false,
+      results: [],
+      ms: 1,
+    });
+    expect(entry).toMatchObject({
+      via: "mcp",
+      tool: "query",
+      searches: [{ type: "auto", query: "q" }],
+      collections: null,
+      limit: 5,
+      rerank: false,
+    });
+    expect(entry.headers).toBe(headers);
+  });
+
+  test("passes non-empty collections through", () => {
+    const entry = entryFromMcp({
+      headers: new Headers(),
+      searches: [{ type: "lex", query: "q" }],
+      collections: ["docs"],
+      limit: 5,
+      rerank: true,
+      results: [],
+      ms: 2,
+    });
+    expect(entry.collections).toEqual(["docs"]);
+    expect(entry).toMatchObject({ via: "mcp", tool: "query", limit: 5, rerank: true, ms: 2 });
+  });
+
+  test("row shape matches entryFromRest for the same logical request", () => {
+    const searches = [{ type: "lex", query: "q" }];
+    const results = [{ file: "docs/a.md", score: 0.5 }];
+    const mcpEmpty = entryFromMcp({
+      headers: new Headers(),
+      searches,
+      collections: [],
+      limit: 10,
+      rerank: false,
+      results,
+      ms: 7,
+    });
+    const restEmpty = entryFromRest({
+      path: "/query",
+      headers: {},
+      searches,
+      params: { limit: 10, rerank: false },
+      collections: [],
+      results,
+      ms: 7,
+    });
+    expect(mcpEmpty.collections).toBeNull();
+    expect(restEmpty.collections).toBeNull();
+    expect(mcpEmpty.searches).toEqual(restEmpty.searches);
+    expect(mcpEmpty.results).toEqual(restEmpty.results);
+    expect(mcpEmpty.limit).toBe(restEmpty.limit);
+    expect(mcpEmpty.rerank).toBe(restEmpty.rerank);
+    expect(mcpEmpty.ms).toBe(restEmpty.ms);
+
+    const mcpFull = entryFromMcp({
+      headers: new Headers(),
+      searches,
+      collections: ["docs"],
+      limit: 10,
+      rerank: false,
+      results,
+      ms: 7,
+    });
+    const restFull = entryFromRest({
+      path: "/query",
+      headers: {},
+      searches,
+      params: { limit: 10, rerank: false },
+      collections: ["docs"],
+      results,
+      ms: 7,
+    });
+    expect(mcpFull.collections).toEqual(["docs"]);
+    expect(restFull.collections).toEqual(["docs"]);
   });
 });
 
