@@ -16,6 +16,7 @@ import {
   cleanupOrphanedContent,
   countOrphanedContent,
   previewCleanup,
+  removeCollection,
   runCleanup,
   type Store,
 } from "../src/store.js";
@@ -105,5 +106,47 @@ describe("qmd cleanup reclaim (#550)", () => {
     expect(stats.orphanedContent).toBe(0);
     expect(s.db.prepare(`SELECT count(*) as c FROM content`).get()).toEqual({ c: 1 });
     expect(s.db.prepare(`SELECT count(*) as c FROM documents`).get()).toEqual({ c: 1 });
+  });
+});
+
+describe("removeCollection tombstone GC", () => {
+  test("removing a collection keeps other collections' tombstone-pinned content", async () => {
+    const s = await openStore();
+    const now = new Date().toISOString();
+    const shared = await hashContent("removetombstone shared body");
+    const unique = await hashContent("removetombstone unique body");
+    insertContent(s.db, shared, "removetombstone shared body", now);
+    insertContent(s.db, unique, "removetombstone unique body", now);
+    insertDocument(s.db, "aa", "a.md", "A", shared, now, now);
+    insertDocument(s.db, "bb", "b.md", "B", shared, now, now);
+    insertDocument(s.db, "bb", "solo.md", "Solo", unique, now, now);
+    // aa's row is an inactive tombstone sharing its content hash with bb.
+    deactivateDocument(s.db, "aa", "a.md");
+
+    const result = removeCollection(s.db, "bb");
+
+    // aa's tombstone row survives (no FK CASCADE reach) and its content stays pinned.
+    expect(s.db.prepare(`SELECT active FROM documents WHERE collection = 'aa' AND path = 'a.md'`).get()).toEqual({ active: 0 });
+    expect(s.db.prepare(`SELECT count(*) as c FROM content WHERE hash = ?`).get(shared)).toEqual({ c: 1 });
+    // bb's truly-orphaned unique hash is still collected, and the counter
+    // reports actual document rows removed (Statement.changes also counts
+    // FTS trigger/shadow writes, so it cannot be used here).
+    expect(result).toEqual({ deletedDocs: 2, cleanedHashes: 1 });
+    expect(s.db.prepare(`SELECT count(*) as c FROM content WHERE hash = ?`).get(unique)).toEqual({ c: 0 });
+    expect(s.db.prepare(`SELECT count(*) as c FROM documents WHERE collection = 'bb'`).get()).toEqual({ c: 0 });
+  });
+
+  test("removing a collection with no shared hashes reports exact counts", async () => {
+    const s = await openStore();
+    const now = new Date().toISOString();
+    const hash = await hashContent("removetombstone solo collection body");
+    insertContent(s.db, hash, "removetombstone solo collection body", now);
+    insertDocument(s.db, "solo", "s.md", "S", hash, now, now);
+
+    const result = removeCollection(s.db, "solo");
+
+    expect(result).toEqual({ deletedDocs: 1, cleanedHashes: 1 });
+    expect(s.db.prepare(`SELECT count(*) as c FROM documents`).get()).toEqual({ c: 0 });
+    expect(s.db.prepare(`SELECT count(*) as c FROM content`).get()).toEqual({ c: 0 });
   });
 });

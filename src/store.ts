@@ -3837,21 +3837,28 @@ export function listCollections(db: Database): { name: string; pwd: string; glob
  * Uses collections.ts to remove from YAML config and cleans up database.
  */
 export function removeCollection(db: Database, collectionName: string): { deletedDocs: number; cleanedHashes: number } {
-  // Delete documents from database
-  const docResult = db.prepare(`DELETE FROM documents WHERE collection = ?`).run(collectionName);
+  // Statement.changes counts FTS trigger/shadow writes as well as the row
+  // itself, so it cannot report document rows. Count them instead.
+  const docsBefore = (db.prepare(`SELECT COUNT(*) as c FROM documents WHERE collection = ?`).get(collectionName) as { c: number }).c;
 
-  // Clean up orphaned content hashes
-  const cleanupResult = db.prepare(`
-    DELETE FROM content
-    WHERE hash NOT IN (SELECT DISTINCT hash FROM documents WHERE active = 1)
-  `).run();
+  // Delete documents from database
+  db.prepare(`DELETE FROM documents WHERE collection = ?`).run(collectionName);
+
+  // Clean up orphaned content hashes with the same conservative predicate as
+  // cleanupOrphanedContent(): only hashes with no remaining document rows —
+  // including inactive tombstones — are removed. The old active-only filter
+  // dropped content still pinned by other collections' tombstones, and the
+  // content→documents FK CASCADE then hard-deleted those tombstone rows.
+  const cleanedHashes = cleanupOrphanedContent(db);
 
   // Remove from store_collections
   deleteStoreCollection(db, collectionName);
 
+  const docsAfter = (db.prepare(`SELECT COUNT(*) as c FROM documents WHERE collection = ?`).get(collectionName) as { c: number }).c;
+
   return {
-    deletedDocs: docResult.changes,
-    cleanedHashes: cleanupResult.changes
+    deletedDocs: docsBefore - docsAfter,
+    cleanedHashes
   };
 }
 
