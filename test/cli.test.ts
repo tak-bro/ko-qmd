@@ -1051,6 +1051,25 @@ describe("CLI Search Command", () => {
     expect(files.stdout.trim()).toBe("");
   });
 
+  test("min-score wipeout keeps scope diagnosis in default CLI output", async () => {
+    const { stdout, exitCode } = await runQmd(["search", "test", "--min-score", "2", "--path", "**"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("No results found above minimum score threshold");
+    expect(stdout).toContain("matching");
+  });
+
+  test("min-score wipeout and true no-match are distinguishable via stderr in JSON", async () => {
+    const scored = await runQmd(["search", "test", "--json", "--min-score", "2"]);
+    expect(scored.exitCode).toBe(0);
+    expect(JSON.parse(scored.stdout)).toEqual([]);
+    expect(scored.stderr).toContain("min-score");
+
+    const empty = await runQmd(["search", "xyznonexistent123", "--json"]);
+    expect(empty.exitCode).toBe(0);
+    expect(JSON.parse(empty.stdout)).toEqual([]);
+    expect(empty.stderr).not.toContain("min-score");
+  });
+
   test("requires query argument", async () => {
     const { stdout, stderr, exitCode } = await runQmd(["search"]);
     expect(exitCode).toBe(1);

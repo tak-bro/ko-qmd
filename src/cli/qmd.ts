@@ -2469,26 +2469,71 @@ function reportEmptyFilteredSearch(db: Database, opts: OutputOptions, collection
   console.log(`No results found in the ${kept} of ${total} documents matching ${describeFilter(opts.scope)}.`);
 }
 
+/**
+ * Min-score filtering happens in outputResults, after the pre-filter emptiness check —
+ * so a threshold wipeout would lose the scope diagnosis that reportEmptyFilteredSearch
+ * gives a true no-match. Precompute the same scope clause and carry it into the
+ * post-filter message. Returns undefined when no scope is in play.
+ */
+function describeScopeCounts(db: Database, opts: OutputOptions, collectionNames: string[]): string | undefined {
+  if (!opts.scope) return undefined;
+  const { kept, total } = countFilteredDocuments(db, opts.scope, collectionSearchFilter(collectionNames));
+  if (kept === 0) {
+    return `— ${describeFilter(opts.scope)} matched 0 of ${total} documents`;
+  }
+  return `in the ${kept} of ${total} documents matching ${describeFilter(opts.scope)}`;
+}
+
+/**
+ * Scope clause for a post-minScore wipeout. Only computes document counts when every
+ * candidate actually fell below the threshold, so passing searches pay nothing.
+ */
+function minScoreScopeNote(
+  db: Database,
+  rows: { score: number }[],
+  opts: OutputOptions,
+  collectionNames: string[],
+): string | undefined {
+  if (!opts.scope || rows.some(r => r.score >= opts.minScore)) return undefined;
+  return describeScopeCounts(db, opts, collectionNames);
+}
+
 // Emit format-safe empty output for search commands.
-function printEmptySearchResults(format: OutputFormat, reason: EmptySearchReason = "no_results"): void {
-  if (format === "json") {
-    console.log("[]");
-    return;
-  }
-  if (format === "csv") {
-    console.log("docid,score,file,title,context,line,snippet");
-    return;
-  }
-  if (format === "xml") {
-    console.log("<results></results>");
-    return;
-  }
-  if (format === "md" || format === "files") {
-    return;
+function printEmptySearchResults(format: OutputFormat, reason: EmptySearchReason = "no_results", scopeNote?: string): void {
+  if (format === "json" || format === "csv" || format === "xml"
+      || format === "md" || format === "files") {
+    // Machine shapes stay byte-identical (pinned by tests); the stderr note is what
+    // distinguishes a threshold wipeout from a true no-match.
+    if (reason === "min_score") {
+      process.stderr.write(
+        scopeNote
+          ? `Note: no results above --min-score threshold ${scopeNote}.\n`
+          : `Note: no results above --min-score threshold.\n`,
+      );
+    }
+    if (format === "json") {
+      console.log("[]");
+      return;
+    }
+    if (format === "csv") {
+      console.log("docid,score,file,title,context,line,snippet");
+      return;
+    }
+    if (format === "xml") {
+      console.log("<results></results>");
+      return;
+    }
+    if (format === "md" || format === "files") {
+      return;
+    }
   }
 
   if (reason === "min_score") {
-    console.log("No results found above minimum score threshold.");
+    console.log(
+      scopeNote
+        ? `No results found above minimum score threshold ${scopeNote}.`
+        : "No results found above minimum score threshold.",
+    );
     return;
   }
   console.log("No results found.");
@@ -2555,11 +2600,11 @@ export function termLink(text: string, url: string, isTTY: boolean = !!process.s
   return `\x1b]8;;${url}\x07${text}\x1b]8;;\x07`;
 }
 
-function outputResults(results: OutputRow[], query: string, opts: OutputOptions): void {
+function outputResults(results: OutputRow[], query: string, opts: OutputOptions, scopeNote?: string): void {
   const filtered = results.filter(r => r.score >= opts.minScore).slice(0, opts.limit);
 
   if (filtered.length === 0) {
-    printEmptySearchResults(opts.format, "min_score");
+    printEmptySearchResults(opts.format, "min_score", scopeNote);
     return;
   }
 
@@ -2959,8 +3004,9 @@ function search(query: string, opts: OutputOptions): void {
     closeDb();
     return;
   }
+  const scopeNote = minScoreScopeNote(db, resultsWithContext, opts, collectionNames);
   closeDb();
-  outputResults(resultsWithContext, query, opts);
+  outputResults(resultsWithContext, query, opts, scopeNote);
 }
 
 /**
@@ -3084,6 +3130,7 @@ async function vectorSearch(query: string, opts: OutputOptions, _model: string =
       closeDb();
       return;
     }
+    const scopeNote = minScoreScopeNote(store.db, results, opts, collectionNames);
     closeDb();
 
     outputResults(results.map(r => ({
@@ -3095,7 +3142,7 @@ async function vectorSearch(query: string, opts: OutputOptions, _model: string =
       context: r.context,
       docid: r.docid,
       metadata: r.metadata,
-    })), query, { ...opts, limit: results.length });
+    })), query, { ...opts, limit: results.length }, scopeNote);
   }, { maxDuration: 10 * 60 * 1000, name: 'vectorSearch' });
 }
 
@@ -3210,6 +3257,7 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
       closeDb();
       return;
     }
+    const scopeNote = minScoreScopeNote(store.db, results, opts, collectionNames);
     closeDb();
 
     // Use first lex/vec query for output context, or original query
@@ -3230,7 +3278,7 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
       docid: r.docid,
       metadata: r.metadata,
       explain: r.explain,
-    })), displayQuery, { ...opts, limit: results.length });
+    })), displayQuery, { ...opts, limit: results.length }, scopeNote);
   }, { maxDuration: 10 * 60 * 1000, name: 'querySearch' });
 }
 
