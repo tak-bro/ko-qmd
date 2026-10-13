@@ -3893,6 +3893,31 @@ describe("Vector Table", () => {
 
     await cleanupTestDb(store);
   });
+
+  test("insertEmbedding pair is atomic: failed vec insert rolls back content_vectors", async () => {
+    const store = await createTestStore();
+    store.ensureVecTable(4);
+
+    const now = new Date().toISOString();
+
+    // Wrong-dimension embedding fails the vectors_vec INSERT. The pair must
+    // commit atomically — no orphan content_vectors row without its vector.
+    expect(() => store.insertEmbedding("atomichash", 0, 0, new Float32Array([1, 2, 3]), "test-model", now)).toThrow();
+
+    const vectorCount = store.db.prepare(`SELECT COUNT(*) AS count FROM vectors_vec WHERE hash_seq = ?`).get(`atomichash_0`) as { count: number };
+    const metadataCount = store.db.prepare(`SELECT COUNT(*) AS count FROM content_vectors WHERE hash = ? AND seq = 0`).get("atomichash") as { count: number };
+    expect(vectorCount.count).toBe(0);
+    expect(metadataCount.count).toBe(0);
+
+    // Sanity: a well-formed insert on the same table still lands both rows.
+    store.insertEmbedding("atomichash", 0, 0, new Float32Array([1, 2, 3, 4]), "test-model", now);
+    const vectorCountAfter = store.db.prepare(`SELECT COUNT(*) AS count FROM vectors_vec WHERE hash_seq = ?`).get(`atomichash_0`) as { count: number };
+    const metadataCountAfter = store.db.prepare(`SELECT COUNT(*) AS count FROM content_vectors WHERE hash = ? AND seq = 0`).get("atomichash") as { count: number };
+    expect(vectorCountAfter.count).toBe(1);
+    expect(metadataCountAfter.count).toBe(1);
+
+    await cleanupTestDb(store);
+  });
 });
 
 // =============================================================================

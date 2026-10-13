@@ -4843,15 +4843,21 @@ export function insertEmbedding(
   const hashSeq = `${hash}_${seq}`;
 
   withLazyContentVectorMigration(db, () => {
-    // Insert content_vectors first — crash-safe ordering (see getHashesForEmbedding)
-    const insertContentVectorStmt = db.prepare(`INSERT OR REPLACE INTO content_vectors (hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
-    insertContentVectorStmt.run(hash, seq, pos, model, fingerprint, totalChunks, embeddedAt);
+    // Single transaction for the pair: previously 3 prepares + 3 autocommit
+    // journal flushes per chunk. Crash-atomic too — no orphan content_vectors
+    // row without its vectors_vec row (or vice versa) on kill between writes.
+    const writePair = db.transaction(() => {
+      // Insert content_vectors first — crash-safe ordering (see getHashesForEmbedding)
+      const insertContentVectorStmt = db.prepare(`INSERT OR REPLACE INTO content_vectors (hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+      insertContentVectorStmt.run(hash, seq, pos, model, fingerprint, totalChunks, embeddedAt);
 
-    // vec0 virtual tables don't support OR REPLACE — use DELETE + INSERT
-    const deleteVecStmt = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
-    const insertVecStmt = db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`);
-    deleteVecStmt.run(hashSeq);
-    insertVecStmt.run(hashSeq, embedding);
+      // vec0 virtual tables don't support OR REPLACE — use DELETE + INSERT
+      const deleteVecStmt = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
+      const insertVecStmt = db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`);
+      deleteVecStmt.run(hashSeq);
+      insertVecStmt.run(hashSeq, embedding);
+    });
+    writePair();
   });
 }
 
