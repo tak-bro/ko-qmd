@@ -4983,6 +4983,10 @@ if (isMain) {
       }
       const { runBenchmark } = await import("../bench/bench.js");
       const benchCollection = cli.opts.collection;
+      if (Array.isArray(benchCollection) && benchCollection.length > 1) {
+        console.error(`qmd bench accepts only one -c/--collection; got: ${benchCollection.join(", ")}`);
+        process.exit(1);
+      }
       try {
         await runBenchmark(fixturePath, {
           json: !!cli.values.json,

@@ -9,7 +9,9 @@
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import {
   assertBenchCollectionReady,
@@ -204,6 +206,93 @@ describe("runBenchmark collection guard", () => {
       expect(stderr.join("")).toContain("qmd ls docs");
     } finally {
       process.stderr.write = origWrite;
+    }
+  });
+});
+
+describe("bench multi -c CLI guard", () => {
+  // `qmd bench -c a -c b` used to benchmark only `a` and silently drop `b`,
+  // burying a typo'd second collection. The CLI now rejects that outright.
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const qmdScript = join(repoRoot, "src", "cli", "qmd.ts");
+  const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined";
+  const tsxCli = join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
+
+  function runBenchCli(args: string[], env: Record<string, string>, cwd: string) {
+    const cmdArgs = isBun ? [qmdScript, ...args] : [tsxCli, qmdScript, ...args];
+    return spawnSync(process.execPath, cmdArgs, {
+      cwd,
+      encoding: "utf-8",
+      env: { ...process.env, ...env },
+      timeout: 120_000,
+    });
+  }
+
+  test("rejects multiple -c flags instead of silently using the first", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "qmd-bench-multic-"));
+    try {
+      const fixturePath = join(dir, "fixture.json");
+      writeFileSync(fixturePath, JSON.stringify({
+        description: "multi-c guard",
+        version: 1,
+        queries: [{
+          id: "q1",
+          query: "api versioning",
+          type: "exact",
+          description: "kw",
+          expected_files: ["api.md"],
+          expected_in_top_k: 1,
+        }],
+      }));
+      const res = runBenchCli(
+        ["bench", fixturePath, "-c", "collA", "-c", "collB"],
+        {
+          INDEX_PATH: join(dir, "index.sqlite"),
+          QMD_CONFIG_DIR: dir,
+          QMD_DOCTOR_DEVICE_PROBE: "0",
+        },
+        dir,
+      );
+      expect(res.status).not.toBe(0);
+      expect(res.stderr).toContain("accepts only one -c");
+      expect(res.stderr).toContain("collA, collB");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a single -c still flows through to the bench collection guard", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "qmd-bench-singlec-"));
+    try {
+      const fixturePath = join(dir, "fixture.json");
+      writeFileSync(fixturePath, JSON.stringify({
+        description: "single-c passthrough",
+        version: 1,
+        queries: [{
+          id: "q1",
+          query: "api versioning",
+          type: "exact",
+          description: "kw",
+          expected_files: ["api.md"],
+          expected_in_top_k: 1,
+        }],
+      }));
+      const res = runBenchCli(
+        ["bench", fixturePath, "--json", "-c", "onlyone"],
+        {
+          INDEX_PATH: join(dir, "index.sqlite"),
+          QMD_CONFIG_DIR: dir,
+          QMD_DOCTOR_DEVICE_PROBE: "0",
+        },
+        dir,
+      );
+      // Not the multi-c rejection: the single collection reaches runBenchmark,
+      // whose fail-fast guard reports it (no backends run, no model needed).
+      expect(res.status).not.toBe(0);
+      expect(res.stderr).not.toContain("accepts only one -c");
+      expect(res.stderr).toContain("Collection not found: onlyone");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
   });
 });
