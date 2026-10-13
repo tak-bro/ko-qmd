@@ -2,14 +2,14 @@ import { isBun, openDatabase } from "../db.js";
 import type { Database, SQLiteValue } from "../db.js";
 import fastGlob from "fast-glob";
 import { spawn as nodeSpawn } from "child_process";
-import { isQmdMcpPid, mcpDaemonStateFiles } from "./mcp-pid.js";
+import { isQmdMcpPid, mcpDaemonStateFiles, openDaemonLogFile } from "./mcp-pid.js";
 import { embedLockPathForDb, tryAcquireEmbedLock, EMBED_LOCK_BUSY_MESSAGE } from "./embed-lock.js";
 import { fileURLToPath } from "url";
 import { basename, dirname, join as pathJoin, relative as relativePath, resolve as pathResolve } from "path";
 import { parseArgs } from "util";
 import { buildDocumentFilter, describeFilter, type DocumentFilter } from "../filters.js";
 import { compileGrepPattern, grepDocuments, type GrepFileMatch } from "../grep.js";
-import { readFileSync, readdirSync, realpathSync, statSync, existsSync, unlinkSync, writeFileSync, openSync, closeSync, mkdirSync, lstatSync, rmSync, symlinkSync, readlinkSync, copyFileSync } from "fs";
+import { readFileSync, readdirSync, realpathSync, statSync, existsSync, unlinkSync, writeFileSync, closeSync, mkdirSync, lstatSync, rmSync, symlinkSync, readlinkSync, copyFileSync } from "fs";
 import { createInterface } from "readline/promises";
 import {
   getPwd,
@@ -5046,7 +5046,7 @@ if (isMain) {
           }
 
           mkdirSync(cacheDir, { recursive: true });
-          const logFd = openSync(logPath, "w"); // truncate — fresh log per daemon run
+          const logFd = openDaemonLogFile(logPath); // truncate — fresh log per daemon run (0600: carries query text)
           const selfPath = fileURLToPath(import.meta.url);
           const indexArgs = cli.values.index ? ["--index", String(cli.values.index)] : [];
           const hostArgs = host ? ["--host", host] : [];
