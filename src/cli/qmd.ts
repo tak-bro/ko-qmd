@@ -878,7 +878,13 @@ function manageTrust(subcommand?: string): void {
       return;
     }
     for (const record of records) {
-      console.log(`${record.path} ${c.dim}(trusted ${record.trustedAt})${c.reset}`);
+      // TrustRecord keeps the full approved digest under `hooks`; show a
+      // short prefix so an approval can be audited without dumping 64 hex.
+      // (No per-record gated-item count exists in the store — the record is
+      // digest + timestamp only — so there is nothing to display for that.)
+      const digest = typeof record.hooks === "string" ? record.hooks : "";
+      const short = digest.length > 12 ? `${digest.slice(0, 12)}…` : digest;
+      console.log(`${record.path} ${c.dim}(trusted ${record.trustedAt}, digest ${short})${c.reset}`);
     }
     return;
   }
