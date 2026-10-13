@@ -2836,24 +2836,34 @@ export function countOrphanedVectors(db: Database): number {
 }
 
 /**
+ * Single gate shared by the orphan-vector preview and the run path, so
+ * `previewCleanup` only promises removals `cleanupOrphanedVectors` can
+ * deliver (#768 follow-up: dry-run promised N chunks while the run removed 0
+ * with rows intact).
+ *
+ * Both callers probe the `vectors_vec` virtual table instead of the
+ * module-global vec0 flag. The probe throws "no such module: vec0" when the
+ * schema entry exists but sqlite-vec is unavailable (e.g. Bun's bun:sqlite
+ * lacks loadExtension, #380), and "no such table" when embeddings never ran —
+ * in both states cleanup degrades gracefully to 0. Probing also keeps both
+ * states reachable with a mocked db, so the dry/run agreement is unit-testable
+ * without loading the vec0 module.
+ */
+function isVectorCleanupActionable(db: Database): boolean {
+  try {
+    db.prepare(`SELECT 1 FROM vectors_vec LIMIT 0`).get();
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+/**
  * Remove orphaned vector embeddings that are not referenced by any active document.
  * Returns the number of orphaned embedding chunks deleted.
  */
 export function cleanupOrphanedVectors(db: Database): number {
-  // sqlite-vec may not be loaded (e.g. Bun's bun:sqlite lacks loadExtension).
-  // The vectors_vec virtual table can appear in sqlite_master from a prior
-  // session, but querying it without the vec0 module loaded will crash (#380).
-  if (!isSqliteVecAvailable()) {
-    return 0;
-  }
-
-  // The schema entry can exist even when sqlite-vec itself is unavailable
-  // (for example when reopening a DB without vec0 loaded). In that case,
-  // touching the virtual table throws "no such module: vec0" and cleanup
-  // should degrade gracefully like the rest of the vector features.
-  try {
-    db.prepare(`SELECT 1 FROM vectors_vec LIMIT 0`).get();
-  } catch {
+  if (!isVectorCleanupActionable(db)) {
     return 0;
   }
 
@@ -2936,7 +2946,10 @@ export type CleanupStats = {
 /** Counts what `runCleanup` would remove, including content only held by inactive docs. */
 export function previewCleanup(db: Database): CleanupStats {
   const cacheCount = (db.prepare(`SELECT COUNT(*) as c FROM llm_cache`).get() as { c: number }).c;
-  const orphanedVectors = countOrphanedVectors(db);
+  // Gated on the same probe as cleanupOrphanedVectors: without an actionable
+  // vec table the run removes 0, so the preview promises 0 too (#768).
+  // Diagnostic counts (status, update hints) still use countOrphanedVectors.
+  const orphanedVectors = isVectorCleanupActionable(db) ? countOrphanedVectors(db) : 0;
   const inactiveDocs = (db.prepare(`SELECT COUNT(*) as c FROM documents WHERE active = 0`).get() as { c: number }).c;
   const orphanedContent = countOrphanedContent(db);
   return { cacheCount, orphanedVectors, inactiveDocs, orphanedContent };

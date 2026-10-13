@@ -106,4 +106,29 @@ describe("qmd cleanup reclaim (#550)", () => {
     expect(s.db.prepare(`SELECT count(*) as c FROM content`).get()).toEqual({ c: 1 });
     expect(s.db.prepare(`SELECT count(*) as c FROM documents`).get()).toEqual({ c: 1 });
   });
+
+  test("preview and run agree on orphaned vectors when the vec table is unavailable (#768)", async () => {
+    const s = await openStore();
+    const now = new Date().toISOString();
+    // content_vectors-only orphan: no referencing document and no vectors_vec
+    // table (e.g. embedded without sqlite-vec, or a DB reopened without vec0).
+    // Seeding touches the plain table only, so no vec0 module load is needed.
+    s.db.prepare(`
+      INSERT OR REPLACE INTO content_vectors (hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at)
+      VALUES ('orphanhash', 0, 0, 'test', '', 1, ?)
+    `).run(now);
+
+    // The run path cannot touch vectors_vec here, so the preview must not
+    // promise removals the run cannot deliver.
+    const preview = previewCleanup(s.db);
+    expect(preview.orphanedVectors).toBe(0);
+
+    const stats = runCleanup(s.db);
+    expect(stats.orphanedVectors).toBe(0);
+    expect(preview.orphanedVectors).toBe(stats.orphanedVectors);
+
+    // Graceful degradation keeps the row: it is still reported by status via
+    // countOrphanedVectors and becomes actionable once vec0 is available.
+    expect(s.db.prepare(`SELECT count(*) as c FROM content_vectors`).get()).toEqual({ c: 1 });
+  });
 });

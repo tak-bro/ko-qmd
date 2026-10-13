@@ -1452,7 +1452,10 @@ describe("orphaned embedding vectors (#768)", () => {
     expect(exitCode).toBe(0);
     expect(stdout).toContain("Dry run — no changes made");
     expect(stdout).toContain("Would clear 2 cached API responses");
-    expect(stdout).toContain("Would remove 3 orphaned embedding chunks");
+    // No vectors_vec table here (content_vectors-only orphans, no vec0 action
+    // possible), so the run path removes 0 and the preview must agree (#768
+    // follow-up). Pending chunks remain visible via `qmd status`.
+    expect(stdout).toContain("No orphaned embeddings to remove");
     expect(stdout).toContain("Would remove 1 inactive document records");
     expect(stdout).toContain("Would remove 1 orphaned content hashes");
     expect(stdout).toContain("Would compact FTS and vacuum the database");
