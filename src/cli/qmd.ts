@@ -4969,7 +4969,12 @@ if (isMain) {
       }
       cli.opts.filter = parseCliMetadataFilter(cli.values.filter);
       await resolveLocalConfigTrust();
-      await querySearch(cli.query, cli.opts);
+      try {
+        await querySearch(cli.query, cli.opts);
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : String(error));
+        process.exit(1);
+      }
       break;
 
     case "bench": {
