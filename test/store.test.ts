@@ -2141,6 +2141,49 @@ describe("Document Retrieval", () => {
       await cleanupTestDb(store);
     });
 
+    test("findDocument does not fetch a filename fragment (#759 single-get)", async () => {
+      const store = await createTestStore();
+      const collectionName = await createTestCollection({ name: "qmd", pwd: "/test/qmd" });
+      await insertTestDocument(store.db, collectionName, {
+        name: "syntax",
+        displayPath: "docs/SYNTAX.md",
+        body: "# Syntax\n\nThe real document.",
+      });
+
+      const fragment = store.findDocument("NTAX.md");
+      expect("error" in fragment).toBe(true);
+
+      const boundary = store.findDocument("SYNTAX.md");
+      expect("error" in boundary).toBe(false);
+
+      await cleanupTestDb(store);
+    });
+
+    test("findDocument errors on ambiguous names instead of LIMIT 1 (#759 single-get)", async () => {
+      const store = await createTestStore();
+      const collA = await createTestCollection({ name: "tweet", pwd: "/test/tweet" });
+      const collB = await createTestCollection({ name: "bird", pwd: "/test/bird" });
+      await insertTestDocument(store.db, collA, {
+        name: "readme-a",
+        displayPath: "README.md",
+        body: "# Tweet readme",
+      });
+      await insertTestDocument(store.db, collB, {
+        name: "readme-b",
+        displayPath: "README.md",
+        body: "# Bird readme",
+      });
+
+      const result = store.findDocument("README.md");
+      expect("error" in result).toBe(true);
+      if ("error" in result && result.error === "not_found") {
+        expect(result.similarFiles).toContain("qmd://bird/README.md");
+        expect(result.similarFiles).toContain("qmd://tweet/README.md");
+      }
+
+      await cleanupTestDb(store);
+    });
+
     test("findDocument includes body when requested", async () => {
       const store = await createTestStore();
       const collectionName = await createTestCollection({ pwd: "/path", glob: "**/*.md" });

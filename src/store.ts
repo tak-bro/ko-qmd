@@ -5286,7 +5286,7 @@ function getIgnoredLookupMatch(db: Database, query: string): DocumentExcludedByI
 }
 
 /**
- * Find a document by filename/path, docid (#hash), or with fuzzy matching.
+ * Find a document by filename/path, docid (#hash), or path-boundary suffix.
  * Returns document metadata without body by default.
  *
  * Supports:
@@ -5339,15 +5339,26 @@ export function findDocument(db: Database, filename: string, options: { includeB
     WHERE 'qmd://' || d.collection || '/' || d.path = ? AND d.active = 1
   `).get(filepath) as DbDocRow | null;
 
-  // Try fuzzy match by virtual path
-  if (!doc) {
-    doc = db.prepare(`
+  // Path-boundary suffix match (mirrors resolveCommaListName tier 3, #759):
+  // only `.../name` matches, so a mid-filename fragment like `NTAX.md`
+  // can no longer silently fetch `SYNTAX.md`. Multiple hits return
+  // not_found with the candidates (instead of an arbitrary LIMIT 1).
+  if (!doc && !filepath.startsWith('qmd://')) {
+    const fuzzy = db.prepare(`
       SELECT ${selectCols}
       FROM documents d
       JOIN content ON content.hash = d.hash
       WHERE 'qmd://' || d.collection || '/' || d.path LIKE ? ESCAPE '#' AND d.active = 1
-      LIMIT 1
-    `).get(`%${escapeLikePattern(filepath)}`) as DbDocRow | null;
+      ORDER BY d.collection, d.path
+    `).all(`%/${escapeLikePattern(filepath)}`) as DbDocRow[];
+    if (fuzzy.length > 1) {
+      return {
+        error: "not_found",
+        query: filename,
+        similarFiles: fuzzy.map((r) => r.virtual_path),
+      };
+    }
+    doc = fuzzy[0] ?? null;
   }
 
   // Try to match by absolute path (requires looking up collection paths from DB)
