@@ -2156,6 +2156,19 @@ function parseEmbedTimeoutOption(value: unknown): number | undefined {
   return minutes * 60 * 1000;
 }
 
+// --min-score for search/query/vsearch: similarity floor. A provided value must
+// be numeric; unlike `parseFloat(...) || 0`, this rejects non-numeric input
+// (NaN is falsy, so "abc" used to slip into opts.minScore as 0 and silently
+// turn the filter off, while the truthy raw string also skipped the vsearch
+// 0.3 default) instead of quietly falling back to 0.
+function parseMinScoreOption(value: unknown): number {
+  const parsed = parseFloat(String(value));
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`--min-score must be a number (got "${String(value)}")`);
+  }
+  return parsed;
+}
+
 function ensureModelsConfiguredForCli(): { embed: string; generate: string; rerank: string } {
   try {
     const config = loadConfig();
@@ -3363,7 +3376,7 @@ function parseCLI() {
     format,
     full: !!values.full,
     limit: isAll ? 100000 : (values.n ? parseInt(String(values.n), 10) || defaultLimit : defaultLimit),
-    minScore: values["min-score"] ? parseFloat(String(values["min-score"])) || 0 : 0,
+    minScore: values["min-score"] ? parseMinScoreOption(values["min-score"]) : 0,
     all: isAll,
     collection: values.collection as string[] | undefined,
     lineNumbers: !!values["line-numbers"],

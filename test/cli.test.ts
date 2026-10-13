@@ -2195,6 +2195,23 @@ describe("search output formats", () => {
     expect(stderr).toContain("Unknown --format value");
   });
 
+  test("search --min-score with a non-numeric value fails instead of silently disabling the filter", async () => {
+    const { exitCode, stderr } = await runQmd(["search", "test", "--json", "--min-score", "abc"], { dbPath: localDbPath, configDir: localConfigDir });
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("--min-score must be a number");
+  });
+
+  test("vsearch --min-score with a non-numeric value fails before touching vector infra", async () => {
+    const { exitCode, stderr } = await runQmd(["vsearch", "test", "--min-score", "abc"], { dbPath: localDbPath, configDir: localConfigDir });
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("--min-score must be a number");
+  });
+
+  test("search --min-score with a numeric value still works", async () => {
+    const { exitCode } = await runQmd(["search", "test", "--json", "--min-score", "0"], { dbPath: localDbPath, configDir: localConfigDir });
+    expect(exitCode).toBe(0);
+  });
+
   test("search default CLI format includes plain qmd:// path, docid, and context in non-TTY mode", async () => {
     const { stdout, exitCode } = await runQmd(["search", "test", "-n", "1"], { dbPath: localDbPath, configDir: localConfigDir });
     expect(exitCode).toBe(0);
