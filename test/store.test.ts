@@ -2506,6 +2506,37 @@ describe("Document Retrieval", () => {
       await cleanupTestDb(store);
     });
 
+    test("findDocuments measures body_length in bytes for CJK", async () => {
+      const store = await createTestStore();
+      const collectionName = await createTestCollection();
+
+      await insertTestDocument(store.db, collectionName, {
+        name: "cjk-over",
+        filepath: "/path/cjk-over.md",
+        displayPath: "cjk-over.md",
+        body: "한".repeat(22000), // 22000 chars = 66000 bytes > 64KB
+      });
+      await insertTestDocument(store.db, collectionName, {
+        name: "cjk-under",
+        filepath: "/path/cjk-under.md",
+        displayPath: "cjk-under.md",
+        body: "한".repeat(20000), // 20000 chars = 60000 bytes < 64KB
+      });
+
+      const over = store.findDocuments("cjk-over.md", { includeBody: true });
+      expect(over.docs).toHaveLength(1);
+      expect(over.docs[0]!.skipped).toBe(true);
+
+      const under = store.findDocuments("cjk-under.md", { includeBody: true });
+      expect(under.docs).toHaveLength(1);
+      expect(under.docs[0]!.skipped).toBe(false);
+      if (!under.docs[0]!.skipped) {
+        expect(under.docs[0]!.doc.bodyLength).toBe(60000);
+      }
+
+      await cleanupTestDb(store);
+    });
+
     test("findDocuments includes body when requested", async () => {
       const store = await createTestStore();
       const collectionName = await createTestCollection();
