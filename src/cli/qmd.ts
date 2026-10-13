@@ -2982,10 +2982,13 @@ function grepCommand(pattern: string, opts: OutputOptions, values: Record<string
   const db = getDb();
   const collectionNames = resolveCollectionFilter(opts.collection, true);
   const maxLinesRaw = values["max-lines"];
+  // Grep has its own default file cap (20, matching --help and the MCP tool),
+  // not search's format-dependent default (5 for cli output) inherited via opts.limit.
+  const grepLimit = opts.all ? 100000 : (values.n ? parseInt(String(values.n), 10) || 20 : 20);
   const result = grepDocuments(db, compiled, {
     collections: collectionNames,
     filter: opts.scope,
-    limit: opts.all ? 100000 : (opts.limit || 20),
+    limit: grepLimit,
     maxLinesPerFile: maxLinesRaw ? Math.max(1, parseInt(String(maxLinesRaw), 10) || 20) : undefined,
   });
   closeDb();
