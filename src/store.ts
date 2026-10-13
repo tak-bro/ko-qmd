@@ -1554,7 +1554,7 @@ export type Store = {
   toVirtualPath: (absolutePath: string) => string | null;
 
   // Search
-  searchFTS: (query: string, limit?: number, collectionName?: string | readonly string[], filter?: MetadataFilter, scope?: DocumentFilter) => SearchResult[];
+  searchFTS: (query: string, limit?: number, collectionName?: string | readonly string[], filter?: MetadataFilter, scope?: DocumentFilter, onScanCapped?: () => void) => SearchResult[];
   searchVec: (query: string, model: string, limit?: number, collectionName?: string | readonly string[], session?: ILLMSession, precomputedEmbedding?: number[], filter?: MetadataFilter, scope?: DocumentFilter) => Promise<SearchResult[]>;
 
   // Query expansion & reranking
@@ -2332,7 +2332,7 @@ export function createStore(dbPath?: string): Store {
     toVirtualPath: (absolutePath: string) => toVirtualPath(db, absolutePath),
 
     // Search
-    searchFTS: (query: string, limit?: number, collectionName?: string | readonly string[], filter?: MetadataFilter, scope?: DocumentFilter) => searchFTS(db, query, limit, collectionName, filter, scope),
+    searchFTS: (query: string, limit?: number, collectionName?: string | readonly string[], filter?: MetadataFilter, scope?: DocumentFilter, onScanCapped?: () => void) => searchFTS(db, query, limit, collectionName, filter, scope, onScanCapped),
     searchVec: (query: string, model: string, limit?: number, collectionName?: string | readonly string[], session?: ILLMSession, precomputedEmbedding?: number[], filter?: MetadataFilter, scope?: DocumentFilter) => searchVec(db, query, model, limit, collectionName, session, precomputedEmbedding, getLlm(store), filter, scope),
 
     // Query expansion & reranking
@@ -4280,8 +4280,13 @@ const MIN_RETRIEVAL_BREADTH = 20;
  * Candidate ceiling for a filtered FTS scan. High enough that a real query's whole match set
  * gets through — which is what stops a narrow filter from starving — and low enough that a
  * query matching most of a large index still terminates.
+ *
+ * A caller asking for more than this (today: `--all` at 100k) with a filter/scope in play
+ * gets at most the cap's worth of candidates, and the excess is dropped before narrowing —
+ * silently, unless the caller passes `onScanCapped` to `searchFTS`. Never raise this to
+ * satisfy `--all`; it is a perf guard, not a result-size knob.
  */
-const FILTERED_FTS_SCAN_MAX = 50_000;
+export const FILTERED_FTS_SCAN_MAX = 50_000;
 
 /** Bound list size when fetching document bodies — SQLite caps bound parameters. */
 const CONTENT_HASH_IN_CHUNK = 400;
@@ -4314,12 +4319,12 @@ export function countFilteredDocuments(
   return { kept, total: rows.length };
 }
 
-export function searchFTS(db: Database, query: string, limit: number = 20, collectionName?: string | readonly string[], filter?: MetadataFilter, scope?: DocumentFilter): SearchResult[] {
+export function searchFTS(db: Database, query: string, limit: number = 20, collectionName?: string | readonly string[], filter?: MetadataFilter, scope?: DocumentFilter, onScanCapped?: () => void): SearchResult[] {
   const names = scopedCollectionNames(collectionName);
   // Search each requested collection before merging/truncating so a large
   // unrelated collection cannot occupy global top-k and starve the rest (#775).
   if (names && names.length > 1) {
-    return mergeSearchResultsByScore(names.map(name => searchFTS(db, query, limit, name, filter, scope)), limit);
+    return mergeSearchResultsByScore(names.map(name => searchFTS(db, query, limit, name, filter, scope, onScanCapped)), limit);
   }
   const collectionFilter = names?.[0];
   const filtered = isNarrowing(scope) || filter !== undefined;
@@ -4407,6 +4412,19 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
     const rows = matchingPaths
       ? candidates.filter(row => matchesPaths(row.display_path, scope)).slice(0, limit)
       : candidates;
+    if (onScanCapped && filtered && limit > FILTERED_FTS_SCAN_MAX && rows.length > 0) {
+      // The CTE above keeps only the top FILTERED_FTS_SCAN_MAX matches *before* the
+      // filter/scope narrows them, so anything past the cap is lost where no caller can
+      // see it. A capped probe (OFFSET cap stops the walk after cap+1 rows) tells the
+      // caller their request outran the guard. Gated on limit > cap so the hot path —
+      // every normal filtered search — pays nothing extra; only --all-scale callers
+      // probe. Probed per actually-executed match (strict, else relaxed), so the signal
+      // describes the results being returned.
+      const overflow = db.prepare(
+        `SELECT 1 AS one FROM documents_fts WHERE documents_fts MATCH ? LIMIT 1 OFFSET ${FILTERED_FTS_SCAN_MAX}`,
+      ).get(match);
+      if (overflow) onScanCapped();
+    }
     if (rows.length === 0) return [];
 
     // Bodies come second, for the winners only. The candidate pass above can be the whole

@@ -2939,7 +2939,11 @@ function search(query: string, opts: OutputOptions): void {
 
   // Use large limit for --all, otherwise fetch more than needed and let outputResults filter
   const fetchLimit = opts.all ? 100000 : Math.max(50, opts.limit * 2);
-  const results = searchFTS(db, query, fetchLimit, collectionSearchFilter(collectionNames), opts.filter, opts.scope);
+  // A filter/scope in play caps the FTS candidate scan at FILTERED_FTS_SCAN_MAX before
+  // narrowing, so an --all-scale request can lose documents silently. The callback turns
+  // that silent cut into the stderr warning below; the cap itself stays put (perf guard).
+  let scanCapped = false;
+  const results = searchFTS(db, query, fetchLimit, collectionSearchFilter(collectionNames), opts.filter, opts.scope, () => { scanCapped = true; });
 
   // Add context to results
   const resultsWithContext = results.map(r => ({
@@ -2958,6 +2962,9 @@ function search(query: string, opts: OutputOptions): void {
     reportEmptyFilteredSearch(db, opts, collectionNames);
     closeDb();
     return;
+  }
+  if (scanCapped) {
+    process.stderr.write(`${c.yellow}Warning: filtered search hit the 50,000-candidate scan cap before narrowing, so results may be incomplete. Narrow the query text, or run unfiltered and filter the output instead.${c.reset}\n`);
   }
   closeDb();
   outputResults(resultsWithContext, query, opts);
