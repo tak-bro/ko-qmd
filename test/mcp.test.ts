@@ -1315,6 +1315,46 @@ describe("MCP HTTP Transport — 2026-07-28 protocol", () => {
     expect(serverInfo?.name).toBe("qmd");
   });
 
+  test("multi_get SKIPPED message names a registered tool, not a stale qmd_* name", async () => {
+    // Derive the expected tool name from tools/list instead of hardcoding it
+    // twice: the SKIPPED retry hint must reference a tool that actually exists.
+    const { json: listJson } = await postMcp(
+      { jsonrpc: "2.0", id: 9, method: "tools/list", params: { _meta: mcp2026Meta } },
+      { "MCP-Protocol-Version": MCP_2026, "Mcp-Method": "tools/list" },
+    );
+    const toolNames = (listJson.result.tools as { name: string }[]).map((t) => t.name);
+
+    // large-file.md (~24KB) exceeds maxBytes: 100, forcing a SKIPPED entry.
+    const { status, json } = await postMcp(
+      {
+        jsonrpc: "2.0",
+        id: 10,
+        method: "tools/call",
+        params: {
+          name: "multi_get",
+          arguments: { pattern: "large-file.md", maxBytes: 100 },
+          _meta: mcp2026Meta,
+        },
+      },
+      {
+        "MCP-Protocol-Version": MCP_2026,
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": "multi_get",
+      },
+    );
+    expect(status).toBe(200);
+    expect(json.error).toBeUndefined();
+    const texts = (json.result.content as { type: string; text?: string }[])
+      .filter((c) => c.type === "text")
+      .map((c) => c.text ?? "");
+    const skipped = texts.find((t) => t.includes("SKIPPED"));
+    expect(skipped).toBeDefined();
+    const match = skipped!.match(/Use '(\S+?)' with/);
+    expect(match).not.toBeNull();
+    expect(toolNames).toContain(match![1]);
+    expect(skipped).not.toContain("qmd_get");
+  });
+
   test("the query tool tells callers that a Korean query is not expanded", async () => {
     const { json } = await postMcp(
       { jsonrpc: "2.0", id: 2, method: "tools/list", params: { _meta: mcp2026Meta } },

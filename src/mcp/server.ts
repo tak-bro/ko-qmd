@@ -643,7 +643,7 @@ Intent-aware lex (C++ performance, not sports):
   );
 
   // ---------------------------------------------------------------------------
-  // Tool: qmd_get (Retrieve document)
+  // Tool: get (Retrieve document)
   // ---------------------------------------------------------------------------
 
   server.registerTool(
@@ -720,7 +720,7 @@ Intent-aware lex (C++ performance, not sports):
   );
 
   // ---------------------------------------------------------------------------
-  // Tool: qmd_multi_get (Retrieve multiple documents)
+  // Tool: multi_get (Retrieve multiple documents)
   // ---------------------------------------------------------------------------
 
   server.registerTool(
@@ -756,7 +756,7 @@ Intent-aware lex (C++ performance, not sports):
         if (result.skipped) {
           content.push({
             type: "text",
-            text: `[SKIPPED: ${result.doc.displayPath} - ${result.skipReason}. Use 'qmd_get' with file="${result.doc.displayPath}" to retrieve.]`,
+            text: `[SKIPPED: ${result.doc.displayPath} - ${result.skipReason}. Use 'get' with file="${result.doc.displayPath}" to retrieve.]`,
           });
           continue;
         }
@@ -793,7 +793,7 @@ Intent-aware lex (C++ performance, not sports):
   );
 
   // ---------------------------------------------------------------------------
-  // Tool: qmd_grep (Exact / regex match over indexed bodies) — ko-qmd
+  // Tool: grep (Exact / regex match over indexed bodies) — ko-qmd
   // ---------------------------------------------------------------------------
 
   server.registerTool(
@@ -873,7 +873,7 @@ Smart case: a pattern containing an uppercase letter matches case-sensitively, o
   );
 
   // ---------------------------------------------------------------------------
-  // Tool: qmd_status (Index status)
+  // Tool: status (Index status)
   // ---------------------------------------------------------------------------
 
   server.registerTool(
