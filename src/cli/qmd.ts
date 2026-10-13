@@ -2942,13 +2942,15 @@ function search(query: string, opts: OutputOptions): void {
   const results = searchFTS(db, query, fetchLimit, collectionSearchFilter(collectionNames), opts.filter, opts.scope);
 
   // Add context to results
+  // searchFTS already batches context for every row (one batched lookup);
+  // reuse it and only re-derive per row when the batch left it absent.
   const resultsWithContext = results.map(r => ({
     file: r.filepath,
     displayPath: r.displayPath,
     title: r.title,
     body: r.body || "",
     score: r.score,
-    context: getContextForFile(db, r.filepath),
+    context: r.context ?? getContextForFile(db, r.filepath),
     hash: r.hash,
     docid: r.docid,
     metadata: r.metadata,
