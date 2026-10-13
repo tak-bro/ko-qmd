@@ -5178,6 +5178,33 @@ describe("Embedding batching", () => {
     }
   });
 
+  test("structuredSearch grows per-list breadth with candidateLimit above the default", async () => {
+    const store = await createTestStore();
+    const collectionName = await createTestCollection();
+    for (let i = 0; i < 60; i++) {
+      await insertTestDocument(store.db, collectionName, {
+        name: `breadth-${i}`, title: `Breadth ${i}`,
+        body: `breadthknob uniqueword${i} filler text about search breadth ${"lorem ipsum dolor sit amet ".repeat(3)}`,
+        displayPath: `test/breadth-${String(i).padStart(3, "0")}.md`,
+      });
+    }
+
+    try {
+      const query = [{ type: "lex", query: "breadthknob" }] as any;
+      const atDefault = await structuredSearch(store, query, { limit: 200, minScore: 0, skipRerank: true, candidateLimit: 40 });
+      const wide = await structuredSearch(store, query, { limit: 200, minScore: 0, skipRerank: true, candidateLimit: 100 });
+
+      // The old hardcoded breadth of 20 capped the fusion pool at 20 rows;
+      // -C 100 must now fill the pool instead of changing nothing.
+      expect(atDefault.length).toBe(20);
+      expect(wide.length).toBe(60);
+      // Widening only extends the pool — the default head order is untouched.
+      expect(wide.slice(0, 20).map((r) => r.file)).toEqual(atDefault.map((r) => r.file));
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
   test("structuredSearch answers in RRF order when the reranker misses its deadline", async () => {
     const store = await createTestStore();
     const collectionName = await createTestCollection();

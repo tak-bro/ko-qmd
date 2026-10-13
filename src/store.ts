@@ -6785,6 +6785,13 @@ export async function structuredSearch(
 
   if (rawSearches.length === 0) return [];
 
+  // -C is documented as "Max candidates to rerank": the fusion pool must be
+  // able to fill it. The historic per-list breadth was a hardcoded 20, so the
+  // pool capped at 20×lists no matter what -C asked for. Grow the per-list
+  // breadth only above the default candidateLimit — at or below the default
+  // the fetch is byte-for-byte the old one, so default output is unchanged.
+  const breadth = candidateLimit > RERANK_CANDIDATE_LIMIT ? candidateLimit : 20;
+
   // Validate queries before executing
   for (const search of rawSearches) {
     const location = search.line ? `Line ${search.line}` : 'Structured search';
@@ -6825,7 +6832,7 @@ export async function structuredSearch(
   for (const search of searches) {
     if (search.type === 'lex') {
       for (const coll of collectionList) {
-        const ftsResults = store.searchFTS(search.query, 20, coll, filter, scope);
+        const ftsResults = store.searchFTS(search.query, breadth, coll, filter, scope);
         if (ftsResults.length > 0) {
           for (const r of ftsResults) docidMap.set(r.filepath, r.docid);
           rankedLists.push(ftsResults.map(r => ({
@@ -6866,7 +6873,7 @@ export async function structuredSearch(
 
         for (const coll of collectionList) {
           const vecResults = await store.searchVec(
-            vecSearches[i]!.query, embedModel, 20, coll,
+            vecSearches[i]!.query, embedModel, breadth, coll,
             undefined, embedding, filter, scope
           );
           if (vecResults.length > 0) {
