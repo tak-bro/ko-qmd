@@ -1342,6 +1342,13 @@ export async function startMcpHttpServer(
 
         // Map to internal format
         const searches = params.searches as RestSearchInput[];
+        for (const s of searches) {
+          if (typeof s !== "object" || s === null) {
+            nodeRes.writeHead(400, { "Content-Type": "application/json" });
+            nodeRes.end(JSON.stringify({ error: "Invalid element in searches (must be an object)" }));
+            return;
+          }
+        }
         const queries: ExpandedQuery[] = searches.map((s) => ({
           type: s.type as 'lex' | 'vec' | 'hyde',
           query: String(s.query || ""),
