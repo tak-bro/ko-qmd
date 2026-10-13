@@ -629,7 +629,18 @@ export async function pullModels(
         ? readFileSync(etagPath, "utf-8").trim()
         : null;
       const shouldRefresh =
-        options.refresh || !remoteEtag || remoteEtag !== localEtag || cached.length === 0;
+        options.refresh || (remoteEtag !== null && (remoteEtag !== localEtag || cached.length === 0));
+
+      if (!options.refresh && remoteEtag === null && cached.length > 0) {
+        // Fail-closed: the remote version is unknown (offline or HEAD
+        // request failed), so "unknown" must not count as "newer". Deleting
+        // the cache here would destroy gigabytes that a failing re-download
+        // cannot restore. Keep the cache and warn that it may be stale.
+        console.warn(
+          `Could not check for a newer ${filename} (offline or unreachable remote). ` +
+            `Keeping the cached model; it may be stale.`
+        );
+      }
 
       if (shouldRefresh) {
         for (const candidate of cached) {

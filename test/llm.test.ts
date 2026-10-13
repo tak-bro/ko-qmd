@@ -8,7 +8,7 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll, vi } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -238,6 +238,94 @@ describe("model download progress (#776)", () => {
         { directory: cacheDir, cli: false },
       );
     } finally {
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("pullModels offline cache safety", () => {
+  const originalFetch = globalThis.fetch;
+
+  function writeWarmCache(cacheDir: string): { ggufPath: string; etagPath: string } {
+    const ggufPath = join(cacheDir, "model.gguf");
+    const header = Buffer.alloc(16);
+    header.write("GGUF", 0, "ascii");
+    writeFileSync(ggufPath, header);
+    const etagPath = join(cacheDir, "model.gguf.etag");
+    writeFileSync(etagPath, "old-etag\n");
+    return { ggufPath, etagPath };
+  }
+
+  function mockLlamaDownload(landingPath: string): void {
+    setNodeLlamaCppModuleForTest({
+      LlamaLogLevel: { error: "error" },
+      resolveModelFile: (async () => {
+        const header = Buffer.alloc(16);
+        header.write("GGUF", 0, "ascii");
+        writeFileSync(landingPath, header);
+        return landingPath;
+      }) as any,
+      LlamaChatSession: (() => {}) as any,
+      getLlama: (async () => {}) as any,
+    } as any);
+  }
+
+  test("offline (null remote etag) keeps warm cache and warns", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-pull-offline-"));
+    const { ggufPath, etagPath } = writeWarmCache(cacheDir);
+    globalThis.fetch = (async () => { throw new Error("offline (mock)"); }) as any;
+    mockLlamaDownload(ggufPath);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const results = await pullModels(["hf:org/repo/model.gguf"], { cacheDir });
+      expect(existsSync(ggufPath)).toBe(true);
+      expect(existsSync(etagPath)).toBe(true);
+      expect(results[0]?.refreshed).toBe(false);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("Keeping the cached model"));
+    } finally {
+      warn.mockRestore();
+      globalThis.fetch = originalFetch;
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  test("proven-newer remote etag replaces cache", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-pull-newer-"));
+    const { ggufPath, etagPath } = writeWarmCache(cacheDir);
+    globalThis.fetch = (async () => ({
+      ok: true,
+      headers: { get: () => '"new-etag"' },
+    })) as any;
+    const landingPath = join(cacheDir, "hf_org_model.gguf");
+    mockLlamaDownload(landingPath);
+    try {
+      const results = await pullModels(["hf:org/repo/model.gguf"], { cacheDir });
+      expect(existsSync(ggufPath)).toBe(false);
+      expect(existsSync(landingPath)).toBe(true);
+      expect(results[0]?.refreshed).toBe(true);
+      expect(readFileSync(etagPath, "utf-8").trim()).toBe('"new-etag"');
+    } finally {
+      globalThis.fetch = originalFetch;
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  test("explicit --refresh replaces cache even when remote is unreachable", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-pull-refresh-"));
+    const { ggufPath } = writeWarmCache(cacheDir);
+    globalThis.fetch = (async () => { throw new Error("offline (mock)"); }) as any;
+    const landingPath = join(cacheDir, "hf_org_model.gguf");
+    mockLlamaDownload(landingPath);
+    try {
+      const results = await pullModels(["hf:org/repo/model.gguf"], { cacheDir, refresh: true });
+      expect(existsSync(ggufPath)).toBe(false);
+      expect(existsSync(landingPath)).toBe(true);
+      expect(results[0]?.refreshed).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
       setNodeLlamaCppModuleForTest(null);
       rmSync(cacheDir, { recursive: true, force: true });
     }
