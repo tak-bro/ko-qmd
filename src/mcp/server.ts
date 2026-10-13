@@ -756,7 +756,7 @@ Intent-aware lex (C++ performance, not sports):
         if (result.skipped) {
           content.push({
             type: "text",
-            text: `[SKIPPED: ${result.doc.displayPath} - ${result.skipReason}. Use 'qmd_get' with file="${result.doc.displayPath}" to retrieve.]`,
+            text: `[SKIPPED: ${result.doc.displayPath} - ${result.skipReason}. Re-run with a larger maxBytes to retrieve the full content.]`,
           });
           continue;
         }

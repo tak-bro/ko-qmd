@@ -1469,7 +1469,7 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
         body: "",
         context,
         skipped: true,
-        skipReason: `File too large (${Math.round(file.bodyLength / 1024)}KB > ${Math.round(maxBytes / 1024)}KB). Use 'qmd get ${file.displayPath}' to retrieve.`,
+        skipReason: `File too large (${Math.round(file.bodyLength / 1024)}KB > ${Math.round(maxBytes / 1024)}KB). Re-run with a larger --max-bytes to retrieve the full content.`,
       });
       continue;
     }

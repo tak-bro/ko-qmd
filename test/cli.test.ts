@@ -1271,6 +1271,36 @@ describe("CLI Multi-Get Command", () => {
       expect(entry.docid).toBeUndefined();
     }
   });
+
+  test("oversize skip message points at --max-bytes, never bare qmd get", async () => {
+    const env = await createIsolatedTestEnv("get-size-gate");
+    const dir = join(testDir, `size-gate-${testCounter}`);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "big.md"), "# big\n\n" + "x".repeat(70000) + "\n");
+    const add = await runQmd(["collection", "add", dir, "--name", "big"], {
+      dbPath: env.dbPath,
+      configDir: env.configDir,
+    });
+    expect(add.exitCode).toBe(0);
+
+    const skipped = await runQmd(["multi-get", "big.md"], {
+      dbPath: env.dbPath,
+      configDir: env.configDir,
+      cwd: dir,
+    });
+    expect(skipped.exitCode).toBe(0);
+    expect(skipped.stdout).toContain("[SKIPPED:");
+    expect(skipped.stdout).toContain("--max-bytes");
+    expect(skipped.stdout).not.toMatch(/Use 'qmd get /);
+
+    const wide = await runQmd(["multi-get", "big.md", "--max-bytes", "100000"], {
+      dbPath: env.dbPath,
+      configDir: env.configDir,
+      cwd: dir,
+    });
+    expect(wide.exitCode).toBe(0);
+    expect(wide.stdout).not.toContain("[SKIPPED:");
+  });
 });
 
 describe("CLI Update Command", () => {
