@@ -6513,6 +6513,10 @@ export async function hybridQuery(
 
   if (candidates.length === 0) return [];
 
+  // One batched context lookup for all candidates (was one N+1 triple per row
+  // in both assembly branches below — every assembled file comes from candidates).
+  const contexts = getContextsForFiles(store.db, candidates.map((c) => c.file));
+
   // Step 5: Chunk documents, pick best chunk per doc for reranking.
   // Reranking full bodies is O(tokens) — the critical perf lesson that motivated this refactor.
   const chunkStart = Date.now();
@@ -6560,7 +6564,7 @@ export async function hybridQuery(
           bestChunk,
           bestChunkPos,
           score: rrfScore,
-          context: store.getContextForFile(cand.file),
+          context: contexts.get(cand.file) ?? null,
           docid: docidMap.get(cand.file) || "",
           ...(explainData ? { explain: explainData } : {}),
         };
@@ -6620,7 +6624,7 @@ export async function hybridQuery(
       bestChunk,
       bestChunkPos,
       score: blendedScore,
-      context: store.getContextForFile(r.file),
+      context: contexts.get(r.file) ?? null,
       docid: docidMap.get(r.file) || "",
       ...(explainData ? { explain: explainData } : {}),
     };
@@ -6707,7 +6711,8 @@ export async function vectorSearchQuery(
           title: r.title,
           body: r.body || "",
           score: r.score,
-          context: store.getContextForFile(r.filepath),
+          // Context is filled in one batch below (was one N+1 triple per row here).
+          context: null,
           docid: r.docid,
           metadata: r.metadata,
         });
@@ -6715,10 +6720,13 @@ export async function vectorSearchQuery(
     }
   }
 
-  return Array.from(allResults.values())
+  const final = Array.from(allResults.values())
     .sort((a, b) => b.score - a.score)
     .filter(r => r.score >= minScore)
     .slice(0, limit);
+  // One batched context lookup for the final rows.
+  const contexts = getContextsForFiles(store.db, final.map((r) => r.file));
+  return final.map((r) => ({ ...r, context: contexts.get(r.file) ?? null }));
 }
 
 // =============================================================================
@@ -6899,6 +6907,10 @@ export async function structuredSearch(
 
   if (candidates.length === 0) return [];
 
+  // One batched context lookup for all candidates (was one N+1 triple per row
+  // in both assembly branches below — every assembled file comes from candidates).
+  const contexts = getContextsForFiles(store.db, candidates.map((c) => c.file));
+
   hooks?.onExpand?.("", [], 0); // Signal no expansion (pre-expanded)
 
   // Step 4: Chunk documents, pick best chunk per doc for reranking
@@ -6951,7 +6963,7 @@ export async function structuredSearch(
           bestChunk,
           bestChunkPos,
           score: rrfScore,
-          context: store.getContextForFile(cand.file),
+          context: contexts.get(cand.file) ?? null,
           docid: docidMap.get(cand.file) || "",
           ...(explainData ? { explain: explainData } : {}),
         };
@@ -7010,7 +7022,7 @@ export async function structuredSearch(
       bestChunk,
       bestChunkPos,
       score: blendedScore,
-      context: store.getContextForFile(r.file),
+      context: contexts.get(r.file) ?? null,
       docid: docidMap.get(r.file) || "",
       ...(explainData ? { explain: explainData } : {}),
     };
