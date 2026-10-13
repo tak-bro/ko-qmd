@@ -1429,7 +1429,7 @@ export async function startMcpHttpServer(
         timer.stages.serialize = Date.now() - serializeStart;
         // ko-qmd: opt-in query log (QMD_QUERY_LOG), written after the response.
         logQuery(entryFromRest({ path: pathname, headers: nodeReq.headers, searches: queries, params, collections: effectiveCollections, results: formatted, ms: Date.now() - reqStart, stages: timer.stages, timeouts: timer.timeouts }), store);
-        log(`${ts()} POST /query ${params.searches.length} queries (${Date.now() - reqStart}ms)`);
+        log(`${ts()} POST ${pathname} ${params.searches.length} queries (${Date.now() - reqStart}ms)`);
         return;
       }
 
