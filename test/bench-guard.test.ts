@@ -207,3 +207,76 @@ describe("runBenchmark collection guard", () => {
     }
   });
 });
+
+describe("runBenchmark empty-run guard", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "qmd-bench-empty-"));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  function writeQueries(queries: unknown[]) {
+    const fixturePath = join(dir, "fixture.json");
+    writeFileSync(fixturePath, JSON.stringify({
+      description: "empty-run fixture",
+      version: 1,
+      collection: "docs",
+      queries,
+    }));
+    return fixturePath;
+  }
+
+  function oneQuery() {
+    return [{
+      id: "exact-api",
+      query: "API versioning",
+      type: "exact",
+      description: "keyword",
+      expected_files: ["api.md"],
+      expected_in_top_k: 1,
+    }];
+  }
+
+  test("rejects a fixture with zero queries instead of reporting success", async () => {
+    const fixturePath = writeQueries([]);
+    // No store setup: the empty fixture must fail before any DB is touched.
+    await expect(runBenchmark(fixturePath, {
+      json: true,
+      dbPath: join(dir, "index.sqlite"),
+      backends: ["bm25"],
+    })).rejects.toThrow(/has no queries/);
+  });
+
+  test("rejects an unknown-backend filter and names the bad backend", async () => {
+    const fixturePath = writeQueries(oneQuery());
+    await expect(runBenchmark(fixturePath, {
+      json: true,
+      dbPath: join(dir, "index.sqlite"),
+      backends: ["nope"],
+    })).rejects.toThrow(/Unknown backend\(s\): nope/);
+  });
+
+  test("a partially valid backend filter still runs the known backends", async () => {
+    const docs = join(dir, "docs");
+    await mkdir(docs, { recursive: true });
+    await writeFile(join(docs, "api.md"), "# API versioning\n\nUse /v1 and /v2 endpoints.\n");
+    const dbPath = join(dir, "index.sqlite");
+    const config = { collections: { docs: { path: docs, pattern: "**/*.md" } } };
+    const store = await createStore({ dbPath, config });
+    await store.update();
+    await store.close();
+
+    const fixturePath = writeQueries(oneQuery());
+    const result = await runBenchmark(fixturePath, {
+      json: true,
+      dbPath,
+      backends: ["bm25", "nope"],
+      config,
+    });
+    expect(Object.keys(result.summary)).toEqual(["bm25"]);
+  });
+});
