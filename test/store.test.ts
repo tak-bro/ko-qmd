@@ -2467,6 +2467,84 @@ describe("Document Retrieval", () => {
       await cleanupTestDb(store);
     });
 
+    test("findDocument falls back to path when an isDocid-shaped bare name misses", async () => {
+      const store = await createTestStore();
+      const collectionName = await createTestCollection();
+
+      await insertTestDocument(store.db, collectionName, {
+        name: "shadow",
+        displayPath: "ab12cd",
+        body: "# Shadow\n\nhex-named file content",
+      });
+
+      // Bare name is isDocid-shaped but no content hash matches: the real
+      // file must resolve instead of 404ing.
+      const doc = store.findDocument("ab12cd");
+      expect("error" in doc).toBe(false);
+      if (!("error" in doc)) {
+        expect(doc.displayPath).toBe(`${collectionName}/ab12cd`);
+      }
+
+      // Collection-prefixed form keeps working.
+      const prefixed = store.findDocument(`${collectionName}/ab12cd`);
+      expect("error" in prefixed).toBe(false);
+
+      // A true docid miss (no such file either) still 404s.
+      expect("error" in store.findDocument("#000000")).toBe(true);
+
+      await cleanupTestDb(store);
+    });
+
+    test("findDocuments resolves an isDocid-shaped bare name without self-suggestion", async () => {
+      const store = await createTestStore();
+      const collectionName = await createTestCollection();
+
+      await insertTestDocument(store.db, collectionName, {
+        name: "shadow",
+        displayPath: "ab12cd",
+        body: "# Shadow\n\nhex-named file content",
+      });
+
+      const { docs, errors } = store.findDocuments("ab12cd");
+      expect(errors).toHaveLength(0);
+      expect(docs).toHaveLength(1);
+      expect(docs[0]!.doc.displayPath).toBe(`${collectionName}/ab12cd`);
+
+      await cleanupTestDb(store);
+    });
+
+    test("docid still wins over a same-named file on collision", async () => {
+      const store = await createTestStore();
+      const collectionName = await createTestCollection();
+
+      // Doc B owns the `ab12cd` hash prefix; doc A is the real file named `ab12cd`.
+      await insertTestDocument(store.db, collectionName, {
+        name: "hash-owner",
+        displayPath: "other.md",
+        hash: `ab12cd${"0".repeat(58)}`,
+        body: "# Hash Owner\n\nowns the prefix",
+      });
+      await insertTestDocument(store.db, collectionName, {
+        name: "shadow",
+        displayPath: "ab12cd",
+        body: "# Shadow\n\nhex-named file content",
+      });
+
+      const doc = store.findDocument("ab12cd");
+      expect("error" in doc).toBe(false);
+      if (!("error" in doc)) {
+        expect(doc.displayPath).toBe(`${collectionName}/other.md`);
+        expect(doc.docid).toBe("ab12cd");
+      }
+
+      const { docs, errors } = store.findDocuments("ab12cd");
+      expect(errors).toHaveLength(0);
+      expect(docs).toHaveLength(1);
+      expect(docs[0]!.doc.displayPath).toBe(`${collectionName}/other.md`);
+
+      await cleanupTestDb(store);
+    });
+
     test("findDocuments reports errors for not found files", async () => {
       const store = await createTestStore();
       const collectionName = await createTestCollection();

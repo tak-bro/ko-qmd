@@ -5303,12 +5303,13 @@ export function findDocument(db: Database, filename: string, options: { includeB
   }
 
   // Check if this is a docid lookup (#abc123, abc123, "#abc123", "abc123", etc.)
+  // Docid wins when it hits, but a miss falls through to path resolution:
+  // a real file with an isDocid-shaped bare name (e.g. `ab12cd`) must stay
+  // reachable instead of 404ing here.
   if (isDocid(filepath)) {
     const docidMatch = findDocumentByDocid(db, filepath);
     if (docidMatch) {
       filepath = docidMatch.filepath;
-    } else {
-      return { error: "not_found", query: filename, similarFiles: [] };
     }
   }
 
@@ -5536,15 +5537,19 @@ export function resolveCommaListName(db: Database, name: string): CommaListResol
     return { ok: false, error: `File not found: ${name}` };
   }
 
+  // Docid wins when it hits; a miss falls through to the path tiers below
+  // so a real file with an isDocid-shaped bare name (e.g. `ab12cd`) stays
+  // reachable instead of 404ing (and suggesting itself) here.
   if (isDocid(trimmed)) {
     const docidMatch = findDocumentByDocid(db, trimmed);
-    if (!docidMatch) return finishCommaListResolve(db, trimmed, []);
-    const rows = commaListSelect(
-      db,
-      `'qmd://' || d.collection || '/' || d.path = ?`,
-      [docidMatch.filepath],
-    );
-    return finishCommaListResolve(db, trimmed, rows);
+    if (docidMatch) {
+      const rows = commaListSelect(
+        db,
+        `'qmd://' || d.collection || '/' || d.path = ?`,
+        [docidMatch.filepath],
+      );
+      return finishCommaListResolve(db, trimmed, rows);
+    }
   }
 
   if (isVirtualPath(trimmed)) {
