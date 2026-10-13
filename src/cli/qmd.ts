@@ -2427,9 +2427,12 @@ function highlightTerms(text: string, query: string): string {
   return result;
 }
 
-// Format score with color based on value
-function formatScore(score: number): string {
-  const pct = (score * 100).toFixed(0).padStart(3);
+// Format score with color based on value.
+// Percent keeps 2 decimals so epsilon scores stay distinguishable from zero
+// and from the --min-score threshold: the filter compares raw scores, so a
+// row displayed as "0.00%" must never be one the filter would drop at 0.001.
+export function formatScore(score: number): string {
+  const pct = (score * 100).toFixed(2).padStart(6);
   if (!useColor) return `${pct}%`;
   if (score >= 0.7) return `${c.green}${pct}%${c.reset}`;
   if (score >= 0.4) return `${c.yellow}${pct}%${c.reset}`;
@@ -2625,7 +2628,10 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
       // caller has.
       return {
         ...(docid && showDocid(row) && { docid: `#${docid}` }),
-        score: Math.round(row.score * 100) / 100,
+        // 4-decimal display: the min-score filter compares the raw score, so
+        // rounding to 2 decimals could render a kept row as 0 and a dropped
+        // row as indistinguishable from a kept one (e.g. 0.0004 vs 0.001).
+        score: Math.round(row.score * 10000) / 10000,
         file: displayPathFor(row),
         line: snippetInfo.line,
         title: row.title,
@@ -2644,9 +2650,11 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
       const ctx = row.context ? `,"${row.context.replace(/"/g, '""')}"` : "";
       if (opts.fullPath) {
         // --full-path: drop the docid, the on-disk path is the identifier.
-        console.log(`${row.score.toFixed(2)},${displayPathFor(row)}${ctx}`);
+        // 4-decimal score so epsilon rows stay distinguishable from the
+        // --min-score threshold (filter compares raw scores).
+        console.log(`${row.score.toFixed(4)},${displayPathFor(row)}${ctx}`);
       } else {
-        console.log(`#${docid},${row.score.toFixed(2)},${displayPathFor(row)}${ctx}`);
+        console.log(`#${docid},${row.score.toFixed(4)},${displayPathFor(row)}${ctx}`);
       }
     }
   } else if (opts.format === "cli") {
