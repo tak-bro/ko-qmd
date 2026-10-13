@@ -2929,6 +2929,9 @@ function warnPendingMetadata(db: Database): void {
 }
 
 function search(query: string, opts: OutputOptions): void {
+  if (opts.explain) {
+    process.stderr.write(`${c.yellow}Warning: --explain is only supported for query; ignoring it for search.${c.reset}\n`);
+  }
   const db = getDb();
 
   // Validate collection filter (supports multiple -c flags)
@@ -3054,6 +3057,9 @@ function logExpansionTree(originalQuery: string, expanded: ExpandedQuery[]): voi
 }
 
 async function vectorSearch(query: string, opts: OutputOptions, _model: string = DEFAULT_EMBED_MODEL): Promise<void> {
+  if (opts.explain) {
+    process.stderr.write(`${c.yellow}Warning: --explain is only supported for query; ignoring it for vsearch.${c.reset}\n`);
+  }
   const store = getStore();
 
   // Validate collection filter (supports multiple -c flags)

@@ -1067,6 +1067,26 @@ describe("CLI Search Command", () => {
     expect(results[0].line).toBeGreaterThan(0);
     expect(results[0].body).toBeTypeOf("string");
   });
+
+  test("--explain warns on stderr and leaves stdout byte-identical", async () => {
+    const plain = await runQmd(["search", "--json", "meeting"]);
+    expect(plain.exitCode).toBe(0);
+    const explained = await runQmd(["search", "--json", "--explain", "meeting"]);
+    expect(explained.exitCode).toBe(0);
+    expect(explained.stdout).toBe(plain.stdout);
+    expect(explained.stderr).toContain("--explain is only supported for query");
+  });
+});
+
+describe("CLI Vsearch --explain warning", () => {
+  test("--explain warns on stderr and still exits 0", async () => {
+    // Isolated env without embeddings: vsearch short-circuits before any LLM work.
+    const { dbPath, configDir } = await createIsolatedTestEnv("vsearch-explain");
+    await runQmd(["collection", "add", "."], { dbPath, configDir });
+    const { stderr, exitCode } = await runQmd(["vsearch", "--explain", "meeting"], { dbPath, configDir });
+    expect(exitCode).toBe(0);
+    expect(stderr).toContain("--explain is only supported for query");
+  });
 });
 
 describe("CLI Get Command", () => {
