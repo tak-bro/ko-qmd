@@ -325,6 +325,15 @@ describe("getASTBreakPoints - error handling", () => {
     expect(msg).toContain("bun add tree-sitter-typescript@0.23.2");
     expect(msg).toContain("falling back to regex");
   });
+
+  test("go/python repair hints match the locked grammar versions (0.25.0)", () => {
+    // GRAMMAR_MAP pinned 0.23.4 while package.json locked 0.25.0, so the hint
+    // told users to downgrade. Pin the hint to the locked version.
+    for (const language of ["python", "go"] as const) {
+      const msg = formatGrammarLoadError(language, new Error("missing wasm"));
+      expect(msg).toContain("bun add tree-sitter-" + language + "@0.25.0");
+    }
+  });
 });
 
 // =============================================================================
