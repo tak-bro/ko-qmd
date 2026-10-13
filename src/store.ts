@@ -880,7 +880,7 @@ const FTS_CJK_NORMALIZED_VERSION = "2"; // ko-qmd: "2" adds Hangul bigrams
 
 // Bump when any FTS sync trigger body in applyFtsSyncTriggers changes, so the
 // new definition is reapplied to existing databases on next open.
-const STORE_SCHEMA_VERSION = 1;
+const STORE_SCHEMA_VERSION = 2;
 
 /**
  * FTS5's unicode61 tokenizer does not segment CJK text into searchable words.
@@ -955,8 +955,14 @@ function installFtsSyncTriggers(db: Database): void {
   `);
 
   db.exec(`DROP TRIGGER IF EXISTS documents_au`);
+  // Scoped to the FTS-visible columns EXCEPT title. Title-only writes
+  // (updateDocumentTitle) sync the FTS title explicitly and must not pay for
+  // a full raw row rewrite here; every title mutator (updateDocumentTitle,
+  // updateDocument, insertDocument's upsert) handles FTS itself. Touches to
+  // title-unrelated columns (e.g. modified_at) correctly skip FTS work since
+  // the FTS row holds no such columns.
   db.exec(`
-    CREATE TRIGGER documents_au AFTER UPDATE ON documents
+    CREATE TRIGGER documents_au AFTER UPDATE OF collection, path, hash, active ON documents
     BEGIN
       -- Delete from FTS if no longer active
       DELETE FROM documents_fts WHERE rowid = old.id AND new.active = 0;
@@ -3158,6 +3164,15 @@ export function findOrMigrateLegacyDocument(
 
 /**
  * Update the title and modified_at timestamp for a document.
+ *
+ * Title-only fast path: callers invoke this only when the content hash is
+ * unchanged, so the body needs no re-tokenization. The documents_au sync
+ * trigger is scoped to (collection, path, hash, active) and does not fire
+ * for this write, so a single FTS title UPDATE preserves the existing
+ * normalized filepath/body — skipping both the body re-normalization and
+ * the redundant raw DELETE+INSERT rewrite (~5ms per 105KB document).
+ * When no FTS row exists, fall back to a full rebuild so the title is still
+ * indexed (and any orphan row is cleaned up, as before).
  */
 export function updateDocumentTitle(
   db: Database,
@@ -3167,7 +3182,11 @@ export function updateDocumentTitle(
 ): void {
   db.prepare(`UPDATE documents SET title = ?, modified_at = ? WHERE id = ?`)
     .run(title, modifiedAt, documentId);
-  rebuildDocumentFTS(db, documentId);
+  const updated = db.prepare(`UPDATE documents_fts SET title = ? WHERE rowid = ?`)
+    .run(normalizeCjkForFTS(title), documentId);
+  if (updated.changes === 0) {
+    rebuildDocumentFTS(db, documentId);
+  }
 }
 
 /**
