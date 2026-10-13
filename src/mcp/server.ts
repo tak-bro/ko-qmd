@@ -1148,10 +1148,26 @@ export async function startMcpServer(options: McpStartupOptions = {}): Promise<v
   // disposeLlm here — store.close() disposes this store's own LlamaCpp
   // instance, so passing the global disposeDefaultLlamaCpp would only risk
   // tearing down an unrelated instance in an embedded process.
-  registerStdioEofShutdown({
+  const shutdown = registerStdioEofShutdown({
     closeServer: () => handle.close(),
     waitForIdle: (timeoutMs) => inflight.waitForIdle(timeoutMs),
     closeStore: () => store.close(),
+  });
+
+  // SIGTERM is stdio's only stop mechanism (no pidfile/stop command), so it
+  // runs the same drain/close/store.close sequence as the EOF path — mirroring
+  // the HTTP transport's SIGTERM/SIGINT handlers below. The CLI's top-level
+  // cursor.show + exit(143) handlers are removed by the stdio caller in
+  // qmd.ts so this async cleanup actually runs.
+  process.on("SIGTERM", async () => {
+    console.error("Shutting down (SIGTERM)...");
+    await shutdown();
+    process.exit(0);
+  });
+  process.on("SIGINT", async () => {
+    console.error("Shutting down (SIGINT)...");
+    await shutdown();
+    process.exit(0);
   });
 }
 

@@ -5097,7 +5097,11 @@ if (isMain) {
           throw e;
         }
       } else {
-        // Default: stdio transport
+        // Default: stdio transport. Remove top-level cursor handlers so the
+        // async cleanup handlers in startMcpServer actually run (same as
+        // foreground HTTP mode above — SIGTERM is stdio's only stop).
+        process.removeAllListeners("SIGTERM");
+        process.removeAllListeners("SIGINT");
         const { startMcpServer } = await import("../mcp/server.js");
         await startMcpServer({ dbPath: getDbPath() });
       }
