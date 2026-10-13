@@ -2981,10 +2981,12 @@ function grepCommand(pattern: string, opts: OutputOptions, values: Record<string
 
   const db = getDb();
   const collectionNames = resolveCollectionFilter(opts.collection, true);
+  if (opts.filter) warnPendingMetadata(db);
   const maxLinesRaw = values["max-lines"];
   const result = grepDocuments(db, compiled, {
     collections: collectionNames,
     filter: opts.scope,
+    metadataFilter: opts.filter,
     limit: opts.all ? 100000 : (opts.limit || 20),
     maxLinesPerFile: maxLinesRaw ? Math.max(1, parseInt(String(maxLinesRaw), 10) || 20) : undefined,
   });
@@ -3266,7 +3268,7 @@ function parseCLI() {
       json: { type: "boolean" },
       explain: { type: "boolean" },
       collection: { type: "string", short: "c", multiple: true },  // Filter by collection(s)
-      filter: { type: "string" },  // Metadata filter (JSON AST) for search/vsearch/query
+      filter: { type: "string" },  // Metadata filter (JSON AST) for search/vsearch/query/grep
       // Collection options
       name: { type: "string" },  // collection name
       mask: { type: "string" },  // glob pattern
@@ -3896,7 +3898,7 @@ function showHelp(): void {
   console.log("                                Matched against collection/path, as printed in results");
   console.log("  --since <when>             - Only documents modified at or after (7d, 3h, 2w, 2026-09-01)");
   console.log("  --until <when>             - Only documents modified at or before (same formats)");
-  console.log("  --filter <json>            - Metadata filter (recursive JSON AST; search/vsearch/query)");
+  console.log("  --filter <json>            - Metadata filter (recursive JSON AST; search/vsearch/query/grep)");
   console.log("                                e.g. '{\"key\":\"status\",\"operator\":\"eq\",\"value\":\"published\"}'");
   console.log("");
   console.log("Grep options:");
@@ -4943,6 +4945,7 @@ if (isMain) {
         console.error("Usage: qmd grep [options] <pattern>");
         process.exit(1);
       }
+      cli.opts.filter = parseCliMetadataFilter(cli.values.filter);
       grepCommand(cli.query, cli.opts, cli.values);
       break;
 
