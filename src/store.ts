@@ -2049,6 +2049,10 @@ export async function generateEmbeddings(
     const failures = new Map<string, EmbedFailure>();
     const retryQueue = new Map<string, ChunkItem>();
     let successesSinceRetry = 0;
+    // Set when the 80%-error-rate abort trips: it stops the whole run, not
+    // just the current 32-chunk window, and suppresses the force-retry that
+    // would otherwise re-embed the just-aborted chunks.
+    let errorRateAborted = false;
 
     const failureList = () => [...failures.values()];
     const activeErrorCount = () => failures.size;
@@ -2121,6 +2125,11 @@ export async function generateEmbeddings(
       // Abort early if session has been invalidated
       if (!session.isValid) {
         console.warn(`⚠ Session expired — skipping remaining document batches`);
+        break;
+      }
+      // The 80%-error-rate abort below stops the whole run: the remaining
+      // doc-batches would fail the same way, so don't start them.
+      if (errorRateAborted) {
         break;
       }
 
@@ -2201,6 +2210,7 @@ export async function generateEmbeddings(
           const remainingChunks = batchChunks.slice(batchStart);
           for (const chunk of remainingChunks) recordFailure(chunk, "embedding aborted because error rate was too high");
           console.warn(`⚠ Error rate too high (${activeErrorCount()}/${processed}) — aborting embedding`);
+          errorRateAborted = true;
           break;
         }
 
@@ -2254,7 +2264,12 @@ export async function generateEmbeddings(
         });
       }
 
-      await retryFailedChunks(true);
+      // After an 80%-error-rate abort the failures are systemic, not
+      // transient: retrying them (here or in later batches) just burns
+      // embedding calls, so skip the force-retry pass entirely.
+      if (!errorRateAborted) {
+        await retryFailedChunks(true);
+      }
 
       const removedPartialChunks = removeIncompleteEmbeddings(db, expectedChunksByHash, model);
       if (removedPartialChunks > 0) {

@@ -4946,6 +4946,61 @@ describe("Embedding batching", () => {
     }
   });
 
+  test("generateEmbeddings stops all batches after the 80% error-rate abort (no retry of aborted chunks)", async () => {
+    const store = await createTestStore();
+    const db = store.db;
+    const embedBatchCalls: string[][] = [];
+    let embedCalls = 0;
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fakeLlm = {
+      ...createFakeTokenizer(),
+      async embed(_text: string, _options?: { model?: string }) {
+        embedCalls++;
+        // First call is the dimension probe; everything else fails.
+        return embedCalls === 1
+          ? { embedding: [0.1, 0.2, 0.3], model: "fake-embed" }
+          : null;
+      },
+      async embedBatch(texts: string[], _options?: { model?: string }) {
+        embedBatchCalls.push([...texts]);
+        return texts.map(() => null);
+      },
+    };
+
+    setDefaultLlamaCpp(createFakeTokenizer() as any);
+    store.llm = fakeLlm as any;
+
+    try {
+      // Each doc is ~180KB so it chunks into well over 32 chunks; two docs in
+      // separate doc-batches so the outer loop has somewhere to (wrongly) go.
+      const bigBody = (tag: string) =>
+        `# ${tag}\n\n` + `sentence of ${tag} with filler words to pad out the chunk bytes. `.repeat(3000);
+      await insertTestDocument(db, "docs", { name: "abort-one", body: bigBody("one") });
+      await insertTestDocument(db, "docs", { name: "abort-two", body: bigBody("two") });
+
+      const result = await generateEmbeddings(store, {
+        maxDocsPerBatch: 1,
+        maxBatchBytes: 1024 * 1024,
+      });
+
+      // The 80%-abort fired exactly once...
+      const abortWarns = warnSpy.mock.calls.filter((call) => String(call[0]).includes("Error rate too high"));
+      expect(abortWarns).toHaveLength(1);
+      // ...and stopped the whole run: only the first document batch ran —
+      // no second abort for the next doc-batch, no new embed batches.
+      expect(embedBatchCalls).toHaveLength(1);
+      expect(embedBatchCalls[0]).toHaveLength(32);
+      // No force-retry of the aborted chunks: single-embed ran only the probe.
+      expect(embedCalls).toBe(1);
+      expect(result.chunksEmbedded).toBe(0);
+      expect(result.errors).toBeGreaterThan(0);
+    } finally {
+      warnSpy.mockRestore();
+      setDefaultLlamaCpp(null);
+      await cleanupTestDb(store);
+    }
+  });
+
   test("generateEmbeddings opens a long-lived LLM session for embed runs", async () => {
     const store = await createTestStore();
     const fakeLlm = createFakeEmbedLlm();

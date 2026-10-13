@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- `generateEmbeddings`: the 80%-error-rate abort now stops the whole run
+  instead of just the current 32-chunk window. Previously the outer
+  doc-batch loop kept going (re-warning per batch) and the post-batch
+  `retryFailedChunks(true)` immediately re-embedded the just-aborted
+  chunks, neutralizing the circuit breaker. The abort flag now breaks the
+  outer loop and skips the force-retry pass.
 - Rerank cascade head batch 15 → 8 (`RERANK_CASCADE_FIRST_BATCH`; `QMD_RERANK_FIRST_BATCH` /
   `QMD_RERANK_MARGIN` overrides added for tuning). Cold hard-44 probe at
   `candidateLimit` 40: rerank p50 2492 → 1267 ms, p90 2570 → 1352 ms, top-1
