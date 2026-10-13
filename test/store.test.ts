@@ -3185,6 +3185,40 @@ describe("Reciprocal Rank Fusion", () => {
     expect(hooks.onRerankDone).not.toHaveBeenCalled();
   });
 
+  test("rerank cascade reports a deadline when the budget is exhausted before the second batch", async () => {
+    const chunks = Array.from({ length: 20 }, (_, i) => ({ file: `doc${i}.md`, text: `text ${i}` }));
+    // Contested head (margin 0) wants the second batch, but a slow load spends the
+    // whole deadline first: the compute deadline starts after the load, so the head
+    // still scores, while the wall-clock budget for the tail is already exhausted.
+    const store = {
+      rerank: vi.fn(
+        async (
+          _query: string,
+          docs: { file: string; text: string }[],
+          _model?: string,
+          _intent?: string,
+          options?: { onModelReady?: () => void },
+        ) => {
+          await new Promise((resolve) => setTimeout(resolve, 80));
+          options?.onModelReady?.();
+          return docs.map((d) => ({ file: d.file, score: 0.5 }));
+        },
+      ),
+    } as Store; // fake-store stub: only rerank() is exercised below
+    const hooks: SearchHooks = { onDeadline: vi.fn(), onRerankDone: vi.fn() };
+    const out = await rerankWithDeadline(store, "q", chunks, undefined, {
+      rerankDeadlineMs: 50,
+      hooks,
+    });
+    // Same shape as a timeout: null, so the caller falls back to RRF order, with
+    // the deadline reported (elapsed ms) so the response carries its timeouts mark.
+    expect(out).toBeNull();
+    expect(store.rerank).toHaveBeenCalledTimes(1);
+    expect(hooks.onDeadline).toHaveBeenCalledTimes(1);
+    expect(hooks.onDeadline).toHaveBeenCalledWith("rerank", expect.any(Number));
+    expect(hooks.onRerankDone).not.toHaveBeenCalled();
+  });
+
   test("reranker can displace the top retrieval hit", () => {
     // The regression this formula exists for: under the old 1/rrfRank position score
     // the rank-1 to rank-2 gap (0.375) exceeded the whole reranker term (0.25), so a

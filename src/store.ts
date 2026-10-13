@@ -6277,7 +6277,10 @@ export async function rerankWithDeadline(
     // Same "no deadline" rule as runWithDeadline: unset or <= 0 waits unbounded.
     const deadlineMs = options?.rerankDeadlineMs;
     const remaining = deadlineMs && deadlineMs > 0 ? deadlineMs - (Date.now() - start) : undefined;
-    if (remaining !== undefined && remaining <= 0) return null;
+    if (remaining !== undefined && remaining <= 0) {
+      hooks?.onDeadline?.("rerank", Date.now() - start);
+      return null;
+    }
     const restScored = await scoreBatch(rest, remaining);
     if (restScored === TIMED_OUT) return null;
     hooks?.onRerankDone?.(Date.now() - start);
