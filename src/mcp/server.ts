@@ -739,9 +739,15 @@ Intent-aware lex (C++ performance, not sports):
     track(async ({ pattern, maxLines, maxBytes, lineNumbers }) => {
       const { docs, errors } = await store.multiGet(pattern, { includeBody: true, maxBytes: maxBytes || DEFAULT_MULTI_GET_MAX_BYTES });
 
-      if (docs.length === 0 && errors.length === 0) {
+      if (docs.length === 0) {
+        if (errors.length === 0) {
+          return {
+            content: [{ type: "text", text: `No files matched pattern: ${pattern}` }],
+            isError: true,
+          };
+        }
         return {
-          content: [{ type: "text", text: `No files matched pattern: ${pattern}` }],
+          content: [{ type: "text", text: `Errors:\n${errors.join('\n')}` }],
           isError: true,
         };
       }

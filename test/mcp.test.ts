@@ -2153,8 +2153,109 @@ describe("REST /query takes path and time filters", () => {
   });
 });
 
-describe("REST /query rerankMaxDocTokens validation", () => {
-  test("a positive integer passes through", () => {
+// =============================================================================
+// multi_get total-miss envelope — a total miss is a tool error (mirrors get-miss)
+// =============================================================================
+
+describe("multi_get total-miss is a tool error", () => {
+  let handle: HttpServerHandle | undefined;
+  let baseUrl: string;
+  let root: string;
+  const origIndexPath = process.env.INDEX_PATH;
+  const origConfigDir = process.env.QMD_CONFIG_DIR;
+
+  beforeAll(async () => {
+    root = mkdtempSync(join(tmpdir(), "qmd-mcp-multiget-"));
+    const docsDir = join(root, "docs");
+    mkdirSync(docsDir, { recursive: true });
+    writeFileSyncNode(join(docsDir, "a.md"), "# A\n\nhello world\n");
+    const dbPath = join(root, "index.sqlite");
+    const config: CollectionConfig = { collections: { docs: { path: docsDir, pattern: "**/*.md" } } };
+    const configDir = join(root, "config");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSyncNode(join(configDir, "index.yml"), YAML.stringify(config));
+    process.env.INDEX_PATH = dbPath;
+    process.env.QMD_CONFIG_DIR = configDir;
+    const seed = await createSdkStore({ dbPath, config });
+    await seed.update();
+    await seed.close();
+    handle = await startMcpHttpServer(0, { quiet: true, dbPath });
+    baseUrl = `http://localhost:${handle.port}`;
+  });
+
+  afterAll(async () => {
+    if (handle) await handle.stop();
+    _resetProductionModeForTesting();
+    if (origIndexPath !== undefined) process.env.INDEX_PATH = origIndexPath;
+    else delete process.env.INDEX_PATH;
+    if (origConfigDir !== undefined) process.env.QMD_CONFIG_DIR = origConfigDir;
+    else delete process.env.QMD_CONFIG_DIR;
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const VERSION = "2026-07-28";
+  type MultiGetToolResult = { isError?: boolean; content: { type: string; text?: string }[] };
+  const callMultiGet = async (pattern: string): Promise<MultiGetToolResult> => {
+    const res = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": VERSION,
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": "multi_get",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "multi_get",
+          arguments: { pattern },
+          _meta: {
+            "io.modelcontextprotocol/protocolVersion": VERSION,
+            "io.modelcontextprotocol/clientInfo": { name: "test-client", version: "1.0.0" },
+            "io.modelcontextprotocol/clientCapabilities": {},
+          },
+        },
+      }),
+    });
+    const json = await res.json() as { result?: MultiGetToolResult };
+    return json.result!;
+  };
+
+  test("a total-miss glob is a tool error, keeping the Errors: text", async () => {
+    const result = await callMultiGet("nonexistent-zzz/*.md");
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("Errors:");
+    expect(result.content[0]!.text).toContain("No files matched pattern: nonexistent-zzz/*.md");
+  });
+
+  test("a total-miss single file is a tool error, like get-miss", async () => {
+    const result = await callMultiGet("nope.md");
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("Errors:");
+  });
+
+  test("a hit still answers without isError", async () => {
+    const result = await callMultiGet("a.md");
+    expect(result.isError).toBeUndefined();
+  });
+
+  test("a partial miss still answers without isError", async () => {
+    const result = await callMultiGet("a.md, nope.md");
+    expect(result.isError).toBeUndefined();
+    expect(JSON.stringify(result.content)).toContain("Errors:");
+  });
+
+  test("the degenerate ',' pattern keeps its No-files-matched error", async () => {
+    const result = await callMultiGet(",");
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("No files matched pattern: ,");
+  });
+});
+
+describe("REST /query rerankMaxDocTokens validation", () => {  test("a positive integer passes through", () => {
     expect(normalizeRerankMaxDocTokens(128)).toBe(128);
   });
 
