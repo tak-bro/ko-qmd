@@ -838,6 +838,26 @@ Smart case: a pattern containing an uppercase letter matches case-sensitively, o
       }
 
       const effectiveCollections = collections ?? defaultCollectionNames;
+
+      // An unknown collection name is a caller typo, not an empty corpus: the SQL
+      // filter would silently match 0 rows (files 0, scanned 0). Fail loudly naming
+      // the bad names, mirroring the query tool.
+      // The default path is skipped: defaults are known by construction, and an
+      // explicit [] still means "scan everything" as before.
+      if (collections !== undefined) {
+        const knownNames = (await store.listCollections()).map(c => c.name);
+        const known = new Set(knownNames);
+        const unknown = collections.filter(c => !known.has(c));
+        if (unknown.length > 0) {
+          const plural = unknown.length === 1 ? "collection" : "collections";
+          const knownList = knownNames.length > 0 ? knownNames.join(", ") : "(none)";
+          return {
+            content: [{ type: "text" as const, text: `Error: unknown ${plural}: ${unknown.join(", ")}. Known collections: ${knownList}` }],
+            isError: true,
+          };
+        }
+      }
+
       await refreshBeforeQuery(store, effectiveCollections);
 
       const result = grepDocuments(store.internal.db, compiled, {

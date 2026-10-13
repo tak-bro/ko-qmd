@@ -2151,6 +2151,22 @@ describe("REST /query takes path and time filters", () => {
     const result = await callGrep({ pattern: "zanzibar.once", fixedString: true });
     expect(result.structuredContent!.files).toEqual([]);
   });
+
+  test("a typo'd collection is a tool error naming the bad name, not a silent empty", async () => {
+    // Without validation the SQL filter matches 0 rows and the agent reads
+    // "No lines match" as "the corpus has nothing on the topic".
+    const result = await callGrep({ pattern: "zanzibar", collections: ["docz"] });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toMatch(/unknown collection: docz/);
+    expect(result.content[0]!.text).toMatch(/Known collections: docs/);
+  });
+
+  test("a mixed known/unknown collection list names only the bad name", async () => {
+    const result = await callGrep({ pattern: "zanzibar", collections: ["docs", "docz"] });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toMatch(/docz/);
+    expect(result.content[0]!.text).not.toMatch(/docs, /);
+  });
 });
 
 describe("REST /query rerankMaxDocTokens validation", () => {
