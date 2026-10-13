@@ -4823,8 +4823,21 @@ export function clearAllEmbeddings(db: Database, collection?: string): void {
  * Insert a single embedding into both content_vectors and vectors_vec tables.
  * The hash_seq key is formatted as "hash_seq" for the vectors_vec table.
  *
- * content_vectors is inserted first so that getHashesForEmbedding (which checks
- * only content_vectors) won't re-select the hash on a crash between the two inserts.
+ * The content_vectors INSERT and the vectors_vec DELETE + INSERT run inside
+ * one IMMEDIATE transaction, so a crash or error between them can never leave
+ * a phantom-complete row (content_vectors claiming a chunk whose vector is
+ * missing — pending checks read content_vectors only and would skip the hash
+ * forever). Either both tables show the chunk or neither does; a killed batch
+ * leaves a partial hash that the next embed run re-selects and converges.
+ *
+ * IMMEDIATE (not deferred): the txn writes after reading nothing, but the
+ * reserved lock must be taken up front — upgrading a deferred read snapshot
+ * under a concurrent WAL writer fails with SQLITE_BUSY_SNAPSHOT instead of
+ * honoring busy_timeout. Readers still proceed under WAL; writers queue via
+ * busy_timeout. Never EXCLUSIVE. The migration wrapper stays outside: a
+ * column repair (ALTER TABLE) must not run inside the chunk txn — on a
+ * column-miss the txn body throws, rolls back, the repair runs, and the retry
+ * re-enters a fresh txn.
  *
  * vectors_vec uses DELETE + INSERT instead of INSERT OR REPLACE because sqlite-vec's
  * vec0 virtual tables silently ignore the OR REPLACE conflict clause.
@@ -4843,15 +4856,17 @@ export function insertEmbedding(
   const hashSeq = `${hash}_${seq}`;
 
   withLazyContentVectorMigration(db, () => {
-    // Insert content_vectors first — crash-safe ordering (see getHashesForEmbedding)
-    const insertContentVectorStmt = db.prepare(`INSERT OR REPLACE INTO content_vectors (hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
-    insertContentVectorStmt.run(hash, seq, pos, model, fingerprint, totalChunks, embeddedAt);
+    const writeChunk = db.transaction(() => {
+      const insertContentVectorStmt = db.prepare(`INSERT OR REPLACE INTO content_vectors (hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+      insertContentVectorStmt.run(hash, seq, pos, model, fingerprint, totalChunks, embeddedAt);
 
-    // vec0 virtual tables don't support OR REPLACE — use DELETE + INSERT
-    const deleteVecStmt = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
-    const insertVecStmt = db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`);
-    deleteVecStmt.run(hashSeq);
-    insertVecStmt.run(hashSeq, embedding);
+      // vec0 virtual tables don't support OR REPLACE — use DELETE + INSERT
+      const deleteVecStmt = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
+      const insertVecStmt = db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`);
+      deleteVecStmt.run(hashSeq);
+      insertVecStmt.run(hashSeq, embedding);
+    });
+    writeChunk.immediate();
   });
 }
 
