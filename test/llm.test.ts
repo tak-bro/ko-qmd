@@ -8,7 +8,7 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll, vi } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -110,6 +110,136 @@ describe("inspectGgufFile", () => {
     // Nothing was read, so it must not claim to know the header.
     expect(result.magic).toBeUndefined();
     expect(result.details).toContain("cannot read model file");
+  });
+});
+
+// validateGgufFile is not exported, so its delete+throw branches are pinned
+// through the nearest exported caller (pullModels) with resolveModelFile
+// fakes. Every fixture is a temp-dir copy; validateGgufFile's unlink only ever
+// touches those copies. Current behavior pinned here:
+// - html / invalid content  -> file is deleted, pullModels throws
+// - unreadable (read failed) -> file is left in place, pullModels throws
+// - valid / missing          -> no throw from validation
+describe("validateGgufFile via pullModels", () => {
+  function mockResolveModelFile(resolvedPath: string) {
+    setNodeLlamaCppModuleForTest({
+      LlamaLogLevel: { error: "error" },
+      resolveModelFile: vi.fn(async () => resolvedPath),
+      LlamaChatSession: vi.fn() as any,
+      getLlama: vi.fn(),
+    });
+  }
+
+  test("html content is deleted and throws the proxy/firewall message", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-validate-html-"));
+    const fixture = join(cacheDir, "fixture-html.gguf");
+    writeFileSync(fixture, "<!DOCTYPE html><html><body>502 Bad Gateway</body></html>");
+    mockResolveModelFile(fixture);
+    try {
+      await expect(pullModels(["probe-html-model.gguf"], { cacheDir })).rejects.toThrow(
+        /HTML page, not a GGUF model/,
+      );
+      expect(existsSync(fixture)).toBe(false);
+    } finally {
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  test("invalid magic is deleted and throws the not-valid-GGUF message", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-validate-invalid-"));
+    const fixture = join(cacheDir, "fixture-invalid.gguf");
+    writeFileSync(fixture, Buffer.from([0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]));
+    mockResolveModelFile(fixture);
+    try {
+      await expect(pullModels(["probe-invalid-model.gguf"], { cacheDir })).rejects.toThrow(
+        /not valid GGUF/,
+      );
+      expect(existsSync(fixture)).toBe(false);
+    } finally {
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  test("invalid magic throw reports the removed file so the next run re-downloads", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-validate-removed-"));
+    const fixture = join(cacheDir, "fixture-removed.gguf");
+    writeFileSync(fixture, Buffer.from([0xde, 0xad, 0xbe, 0xef]));
+    mockResolveModelFile(fixture);
+    try {
+      await expect(pullModels(["probe-removed-model.gguf"], { cacheDir })).rejects.toThrow(
+        /has been removed/,
+      );
+      expect(existsSync(fixture)).toBe(false);
+    } finally {
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  test("unreadable file is left in place and throws the could-not-be-read message", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-validate-unreadable-"));
+    const dirAsFile = join(cacheDir, "actually-a-directory.gguf");
+    mkdirSync(dirAsFile);
+    mockResolveModelFile(dirAsFile);
+    try {
+      await expect(pullModels(["probe-unreadable-model.gguf"], { cacheDir })).rejects.toThrow(
+        /could not be read/,
+      );
+      expect(existsSync(dirAsFile)).toBe(true);
+    } finally {
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  test("unreadable throw says the file was left in place", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-validate-left-"));
+    const dirAsFile = join(cacheDir, "actually-a-directory.gguf");
+    mkdirSync(dirAsFile);
+    mockResolveModelFile(dirAsFile);
+    try {
+      await expect(pullModels(["probe-left-model.gguf"], { cacheDir })).rejects.toThrow(
+        /left in place/,
+      );
+      expect(existsSync(dirAsFile)).toBe(true);
+    } finally {
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  test("valid GGUF passes validation and the file is kept", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-validate-valid-"));
+    const fixture = join(cacheDir, "fixture-valid.gguf");
+    const header = Buffer.alloc(16);
+    header.write("GGUF", 0, "ascii");
+    writeFileSync(fixture, header);
+    mockResolveModelFile(fixture);
+    try {
+      const results = await pullModels(["probe-valid-model.gguf"], { cacheDir });
+      expect(results).toHaveLength(1);
+      expect(results[0]?.path).toBe(fixture);
+      expect(existsSync(fixture)).toBe(true);
+    } finally {
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  test("missing file is not a validation failure (downstream handles it)", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-validate-missing-"));
+    const missing = join(cacheDir, "does-not-exist.gguf");
+    mockResolveModelFile(missing);
+    try {
+      const results = await pullModels(["probe-missing-model.gguf"], { cacheDir });
+      expect(results).toHaveLength(1);
+      expect(results[0]?.sizeBytes).toBe(0);
+    } finally {
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
   });
 });
 
