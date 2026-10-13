@@ -1014,7 +1014,9 @@ export class LlamaCpp implements LLM {
         // Check if session manager allows unloading
         // canUnloadLLM is defined later in this file - it checks the session manager
         // We use dynamic import pattern to avoid circular dependency issues
-        if (typeof canUnloadLLM === 'function' && !canUnloadLLM()) {
+        // Scope the check to this instance: a live session here must veto our
+        // unload, while a session on another instance must not pin it.
+        if (typeof canUnloadLLM === 'function' && !canUnloadLLM(this)) {
           // Active sessions/operations - reschedule timer
           this.touchActivity();
           return;
@@ -2182,6 +2184,25 @@ class LLMSession implements ILLMSession {
   }
 }
 
+// Per-instance session managers. withLLMSessionForLlm used to create an
+// unregistered manager per call, leaving its sessions invisible to the idle
+// unload guard (premature dispose of a working context). Managers are cached
+// per LlamaCpp in a WeakMap so sharing a manager neither pins the instance
+// nor outlives it.
+const sessionManagersByLlm = new WeakMap<LlamaCpp, LLMSessionManager>();
+
+/**
+ * Get (creating if needed) the session manager for a LlamaCpp instance.
+ */
+function getManagerForLlm(llm: LlamaCpp): LLMSessionManager {
+  let manager = sessionManagersByLlm.get(llm);
+  if (!manager) {
+    manager = new LLMSessionManager(llm);
+    sessionManagersByLlm.set(llm, manager);
+  }
+  return manager;
+}
+
 // Session manager for the default LlamaCpp instance
 let defaultSessionManager: LLMSessionManager | null = null;
 
@@ -2191,7 +2212,7 @@ let defaultSessionManager: LLMSessionManager | null = null;
 function getSessionManager(): LLMSessionManager {
   const llm = getDefaultLlamaCpp();
   if (!defaultSessionManager || defaultSessionManager.getLlamaCpp() !== llm) {
-    defaultSessionManager = new LLMSessionManager(llm);
+    defaultSessionManager = getManagerForLlm(llm);
   }
   return defaultSessionManager;
 }
@@ -2227,13 +2248,15 @@ export async function withLLMSession<T>(
 /**
  * Execute a function with a scoped LLM session using a specific LlamaCpp instance.
  * Unlike withLLMSession, this does not use the global singleton.
+ * The session is tracked on the instance's shared manager, so the idle
+ * unload guard sees it (no premature dispose mid-operation).
  */
 export async function withLLMSessionForLlm<T>(
   llm: LlamaCpp,
   fn: (session: ILLMSession) => Promise<T>,
   options?: LLMSessionOptions
 ): Promise<T> {
-  const manager = new LLMSessionManager(llm);
+  const manager = getManagerForLlm(llm);
   const session = new LLMSession(manager, options);
 
   try {
@@ -2246,8 +2269,18 @@ export async function withLLMSessionForLlm<T>(
 /**
  * Check if idle unload is safe (no active sessions or operations).
  * Used internally by LlamaCpp idle timer.
+ *
+ * With no argument this keeps the legacy verdict for the default instance.
+ * Pass a LlamaCpp instance (as the idle timer does) to scope the verdict to
+ * that instance's sessions only, so an unrelated instance's session neither
+ * blocks nor is ignored by this instance's unload.
  */
-export function canUnloadLLM(): boolean {
+export function canUnloadLLM(llm?: LlamaCpp): boolean {
+  if (llm) {
+    const manager = sessionManagersByLlm.get(llm);
+    if (!manager) return true;
+    return manager.canUnload();
+  }
   if (!defaultSessionManager) return true;
   return defaultSessionManager.canUnload();
 }

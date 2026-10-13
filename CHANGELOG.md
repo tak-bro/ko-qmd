@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- Idle-unload guard now sees `withLLMSessionForLlm` sessions: per-instance
+  session managers are shared through a WeakMap and `canUnloadLLM(llm)` scopes
+  the verdict to that instance, so a live store session vetoes its own unload
+  (no more idle-timer dispose of a working context) while an unrelated
+  instance's session no longer pins it. No-arg `canUnloadLLM()` behavior on the
+  default path is unchanged.
 - Rerank cascade head batch 15 → 8 (`RERANK_CASCADE_FIRST_BATCH`; `QMD_RERANK_FIRST_BATCH` /
   `QMD_RERANK_MARGIN` overrides added for tuning). Cold hard-44 probe at
   `candidateLimit` 40: rerank p50 2492 → 1267 ms, p90 2570 → 1352 ms, top-1

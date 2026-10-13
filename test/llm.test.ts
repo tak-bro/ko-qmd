@@ -34,6 +34,7 @@ import {
   pullModels,
   parseExpansionLines,
   withLLMSession,
+  withLLMSessionForLlm,
   canUnloadLLM,
   SessionReleasedError,
   inspectGgufFile,
@@ -1673,6 +1674,47 @@ describe.skipIf(!!process.env.CI)("LLM Session Management", () => {
         })
       ).rejects.toThrow("Custom test error");
     });
+  });
+});
+
+// =============================================================================
+// Idle unload guard visibility (unit, no models).
+// withLLMSessionForLlm used to create an unregistered manager per call, so a
+// live store session was invisible to the guard (premature dispose) while a
+// default session vetoed every instance's unload (VRAM pin). These run on CI.
+// =============================================================================
+
+describe("LLM idle unload guard visibility", () => {
+  test("forLlm session vetoes its own instance unload", async () => {
+    const llm = new LlamaCpp();
+    await withLLMSessionForLlm(llm, async (session) => {
+      expect(session.isValid).toBe(true);
+      expect(canUnloadLLM(llm)).toBe(false);
+    });
+    // Released sessions must not pin the unload (no leak pinning).
+    expect(canUnloadLLM(llm)).toBe(true);
+    await llm.dispose();
+  });
+
+  test("session on one instance does not pin another instance", async () => {
+    const busy = new LlamaCpp();
+    const idle = new LlamaCpp();
+    await withLLMSessionForLlm(busy, async (session) => {
+      expect(session.isValid).toBe(true);
+      expect(canUnloadLLM(busy)).toBe(false);
+      expect(canUnloadLLM(idle)).toBe(true);
+    });
+    expect(canUnloadLLM(busy)).toBe(true);
+    await busy.dispose();
+    await idle.dispose();
+  });
+
+  test("legacy default-path guard behavior is unchanged", async () => {
+    await withLLMSession(async (session) => {
+      expect(session.isValid).toBe(true);
+      expect(canUnloadLLM()).toBe(false);
+    });
+    expect(canUnloadLLM()).toBe(true);
   });
 });
 
