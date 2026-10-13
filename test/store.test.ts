@@ -8,7 +8,7 @@
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { openDatabase, loadSqliteVec } from "../src/db.js";
-import type { Database } from "../src/db.js";
+import type { Database, Statement } from "../src/db.js";
 import { unlink, mkdtemp, rmdir, writeFile, rm, mkdir, rename, chmod, readFile, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -60,6 +60,7 @@ import {
   STRONG_SIGNAL_MIN_GAP,
   insertContent,
   insertDocument,
+  insertEmbedding,
   cleanupOrphanedVectors,
   generateEmbeddings,
   maybeAdoptLegacyEmbeddingFingerprint,
@@ -3892,6 +3893,159 @@ describe("Vector Table", () => {
     expect(metadataCount.count).toBe(1);
 
     await cleanupTestDb(store);
+  });
+
+  // Fault injection at the insert seam: the content_vectors INSERT succeeds,
+  // the vectors_vec INSERT throws — the analogue of a crash between the two
+  // autocommits. `prepare` itself must not throw; only the vec INSERT's `run`.
+  function makeSeamFailingDb(db: Database): Database {
+    return {
+      exec: (sql: string) => db.exec(sql),
+      prepare: (sql: string): Statement => {
+        const stmt = db.prepare(sql);
+        if (!sql.includes("INSERT INTO vectors_vec")) return stmt;
+        return {
+          run: (..._params: Parameters<Statement["run"]>): never => {
+            throw new Error("injected failure at insert seam");
+          },
+          get: (...params: Parameters<Statement["get"]>) => stmt.get(...params),
+          all: (...params: Parameters<Statement["all"]>) => stmt.all(...params),
+          iterate: (...params: Parameters<Statement["iterate"]>) => stmt.iterate(...params),
+        };
+      },
+      transaction: (fn) => db.transaction(fn),
+      loadExtension: (path: string) => db.loadExtension(path),
+      close: () => db.close(),
+    };
+  }
+
+  test("rolls back the content_vectors INSERT when the vectors_vec INSERT fails (no phantom-complete row)", async () => {
+    const store = await createTestStore();
+    try {
+      const collectionName = await createTestCollection();
+      const model = "test-model";
+      const now = new Date().toISOString();
+      store.ensureVecTable(3);
+      await insertTestDocument(store.db, collectionName, { name: "phantom-doc", hash: "phantomhash" });
+
+      // Without atomicity this leaves the content_vectors row committed while
+      // its vector is missing — a phantom-complete row.
+      expect(() =>
+        insertEmbedding(makeSeamFailingDb(store.db), "phantomhash", 0, 0, new Float32Array([1, 2, 3]), model, now, 1)
+      ).toThrow("injected failure at insert seam");
+
+      // INVARIANT: the failed chunk must be entirely absent from both tables...
+      const meta = store.db.prepare(`SELECT COUNT(*) AS c FROM content_vectors WHERE hash = 'phantomhash'`).get() as { c: number };
+      const vec = store.db.prepare(`SELECT COUNT(*) AS c FROM vectors_vec WHERE hash_seq = 'phantomhash_0'`).get() as { c: number };
+      expect(meta.c).toBe(0);
+      expect(vec.c).toBe(0);
+      // ...so pending checks still see the hash and the next embed run re-selects it.
+      expect(store.getHashesNeedingEmbedding(model)).toBe(1);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("fault on the content_vectors INSERT leaves both tables empty (kill before txn body)", async () => {
+    const store = await createTestStore();
+    try {
+      const collectionName = await createTestCollection();
+      const model = "test-model";
+      const now = new Date().toISOString();
+      store.ensureVecTable(3);
+      await insertTestDocument(store.db, collectionName, { name: "prefault-doc", hash: "prefaulthash" });
+
+      const db = store.db;
+      const realPrepare = db.prepare.bind(db);
+      const earlyFailingDb: Database = {
+        exec: (sql: string) => db.exec(sql),
+        prepare: (sql: string): Statement => {
+          const stmt = realPrepare(sql);
+          if (!sql.includes("INSERT OR REPLACE INTO content_vectors")) return stmt;
+          return {
+            run: (..._params: Parameters<Statement["run"]>): never => {
+              throw new Error("injected failure before first write");
+            },
+            get: (...params: Parameters<Statement["get"]>) => stmt.get(...params),
+            all: (...params: Parameters<Statement["all"]>) => stmt.all(...params),
+            iterate: (...params: Parameters<Statement["iterate"]>) => stmt.iterate(...params),
+          };
+        },
+        transaction: (fn) => db.transaction(fn),
+        loadExtension: (path: string) => db.loadExtension(path),
+        close: () => db.close(),
+      };
+
+      expect(() =>
+        insertEmbedding(earlyFailingDb, "prefaulthash", 0, 0, new Float32Array([1, 2, 3]), model, now, 1)
+      ).toThrow("injected failure before first write");
+
+      const meta = db.prepare(`SELECT COUNT(*) AS c FROM content_vectors WHERE hash = 'prefaulthash'`).get() as { c: number };
+      const vec = db.prepare(`SELECT COUNT(*) AS c FROM vectors_vec WHERE hash_seq = 'prefaulthash_0'`).get() as { c: number };
+      expect(meta.c).toBe(0);
+      expect(vec.c).toBe(0);
+      expect(store.getHashesNeedingEmbedding(model)).toBe(1);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("successful insert writes byte-identical rows to both tables", async () => {
+    const store = await createTestStore();
+    try {
+      store.ensureVecTable(3);
+      const model = "test-model";
+      const now = new Date().toISOString();
+      const embedding = new Float32Array([0.5, -0.25, 0.125]);
+
+      insertEmbedding(store.db, "bytehash", 2, 77, embedding, model, now, 3, "fp1");
+
+      expect(
+        store.db.prepare(`SELECT hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at FROM content_vectors WHERE hash = ?`).get("bytehash")
+      ).toEqual({
+        hash: "bytehash",
+        seq: 2,
+        pos: 77,
+        model,
+        embed_fingerprint: "fp1",
+        total_chunks: 3,
+        embedded_at: now,
+      });
+
+      // Vector round-trips through vec0 with float32 fidelity (decode mirrors
+      // decodeStoredEmbedding in src/cli/qmd.ts).
+      const row = store.db.prepare(`SELECT embedding FROM vectors_vec WHERE hash_seq = ?`).get("bytehash_2") as { embedding: Uint8Array };
+      const decoded = new Float32Array(row.embedding.buffer.slice(row.embedding.byteOffset, row.embedding.byteOffset + row.embedding.byteLength));
+      expect(Array.from(decoded)).toEqual(Array.from(embedding));
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("partial hash from a killed batch stays pending and converges on re-embed", async () => {
+    const store = await createTestStore();
+    try {
+      const collectionName = await createTestCollection();
+      const model = "test-model";
+      const now = new Date().toISOString();
+      store.ensureVecTable(3);
+      await insertTestDocument(store.db, collectionName, { name: "partial-doc", hash: "partialhash" });
+
+      // Batch killed after chunk 0 of 2: chunk 0 fully committed (atomic unit).
+      insertEmbedding(store.db, "partialhash", 0, 0, new Float32Array([1, 2, 3]), model, now, 2);
+      expect(store.getHashesNeedingEmbedding(model)).toBe(1);
+
+      // Next run re-embeds the missing chunk; hash converges to complete.
+      insertEmbedding(store.db, "partialhash", 1, 10, new Float32Array([4, 5, 6]), model, now, 2);
+      expect(store.getHashesNeedingEmbedding(model)).toBe(0);
+
+      const meta = store.db.prepare(`SELECT COUNT(*) AS c FROM content_vectors WHERE hash = 'partialhash'`).get() as { c: number };
+      const vec = store.db.prepare(`SELECT COUNT(*) AS c FROM vectors_vec WHERE hash_seq IN ('partialhash_0', 'partialhash_1')`).get() as { c: number };
+      expect(meta.c).toBe(2);
+      expect(vec.c).toBe(2);
+    } finally {
+      await cleanupTestDb(store);
+    }
   });
 });
 
