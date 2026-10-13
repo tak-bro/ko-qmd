@@ -5785,10 +5785,28 @@ export function extractIntentTerms(intent: string): string[] {
     .filter(t => t.length > 1 && !INTENT_STOP_WORDS.has(t));
 }
 
+/**
+ * Count '\n' chars in `text` before index `end`. Identical to
+ * `text.slice(0, end).split('\n').length - 1` without allocating the array.
+ */
+function countNewlinesBefore(text: string, end: number): number {
+  let count = 0;
+  let idx = text.indexOf('\n');
+  while (idx !== -1 && idx < end) {
+    count++;
+    idx = text.indexOf('\n', idx + 1);
+  }
+  return count;
+}
+
 export function extractSnippet(body: string, query: string, maxLen = 500, chunkPos?: number, chunkLen?: number, intent?: string): SnippetResult {
-  const totalLines = body.split('\n').length;
+  // Single split of the full body, reused as the search lines whenever no
+  // chunk window is active (previously totalLines + lines split it twice).
+  const allLines = body.split('\n');
+  const totalLines = allLines.length;
   let searchBody = body;
   let lineOffset = 0;
+  let lines: string[] = allLines;
 
   if (chunkPos !== undefined && chunkPos >= 0) {
     // Search within the chunk region, with some padding for context
@@ -5798,11 +5816,10 @@ export function extractSnippet(body: string, query: string, maxLen = 500, chunkP
     const contextEnd = Math.min(body.length, chunkPos + searchLen + 100);
     searchBody = body.slice(contextStart, contextEnd);
     if (contextStart > 0) {
-      lineOffset = body.slice(0, contextStart).split('\n').length - 1;
+      lineOffset = countNewlinesBefore(body, contextStart);
     }
+    lines = searchBody.split('\n');
   }
-
-  const lines = searchBody.split('\n');
   const queryTerms = query.toLowerCase().split(/\s+/).filter(t => t.length > 0);
   const intentTerms = intent ? extractIntentTerms(intent) : [];
   let bestLine = 0, bestScore = -1;
@@ -5835,7 +5852,7 @@ export function extractSnippet(body: string, query: string, maxLen = 500, chunkP
     // than disregarding the reranker's pick.
     const contextStart = Math.max(0, chunkPos - 100);
     bestLine = chunkPos > contextStart
-      ? searchBody.slice(0, chunkPos - contextStart).split('\n').length - 1
+      ? countNewlinesBefore(searchBody, chunkPos - contextStart)
       : 0;
   }
 

@@ -2842,6 +2842,37 @@ describe("Snippet Extraction", () => {
 
     expect(line).toBe(201);
   });
+
+  test("extractSnippet falls back to full-body scan when chunk window is whitespace-only", () => {
+    // A chunk window anchored deep inside a blank run scores nothing and slices
+    // a whitespace-only snippet; the fallback must rescan the full body.
+    const body = "keyword far away line one\n" + "\n".repeat(300) + "tail line here\n";
+    const chunkPos = body.indexOf("\n\n\n") + 50;
+
+    const { line, snippet } = extractSnippet(body, "keyword", 200, chunkPos, 50);
+
+    expect(line).toBe(1);
+    expect(snippet).toContain("keyword far away");
+  });
+
+  test("extractSnippet splits a full body only once per call", () => {
+    // Regression: totalLines and lines used to split the same body twice.
+    // Count '\n' splits applied to the body itself across two calls.
+    const body = `hit TARGET here\n${"padding line with some words in it\n".repeat(2000)}`;
+    const origSplit = String.prototype.split;
+    let bodySplits = 0;
+    String.prototype.split = function (sep: string | RegExp, ...rest: string[]) {
+      if (sep === "\n" && String(this) === body) bodySplits++;
+      return origSplit.call(this, sep, ...rest);
+    };
+    try {
+      extractSnippet(body, "TARGET", 500);
+      extractSnippet(body, "TARGET", 500);
+    } finally {
+      String.prototype.split = origSplit;
+    }
+    expect(bodySplits).toBe(2);
+  });
 });
 
 // =============================================================================
