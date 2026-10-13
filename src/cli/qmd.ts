@@ -2202,13 +2202,17 @@ function resolveModelsForRuntime(): { embed: string; generate: string; rerank: s
   return resolveModels();
 }
 
-async function vectorIndex(
+// Exported for regression tests (cursor-restore coverage); the CLI calls it
+// without `deps` so production always uses the real generateEmbeddings.
+export async function vectorIndex(
   model: string = resolveEmbedModelForCli(),
   force: boolean = false,
   batchOptions?: { maxDocsPerBatch?: number; maxBatchBytes?: number; chunkStrategy?: ChunkStrategy; collection?: string; maxDurationMs?: number },
+  deps?: { runEmbeddings?: typeof generateEmbeddings },
 ): Promise<void> {
   const storeInstance = getStore();
   const db = storeInstance.db;
+  const runEmbeddings = deps?.runEmbeddings ?? generateEmbeddings;
 
   // Exclusive process lock — concurrent embeds race on vectors_vec (#825)
   const embedLock = tryAcquireEmbedLock(embedLockPathForDb(getDbPath()));
@@ -2242,7 +2246,10 @@ async function vectorIndex(
 
     const startTime = Date.now();
 
-    const result = await generateEmbeddings(storeInstance, {
+    // Pair cursor.hide() with a finally restore: generateEmbeddings throws
+    // (dim mismatch, dims fetch) propagate to exitWithError→process.exit,
+    // which would otherwise leave the terminal cursor hidden.
+    const result = await runEmbeddings(storeInstance, {
       force,
       model,
       collection: batchOptions?.collection,
@@ -2275,10 +2282,10 @@ async function vectorIndex(
 
         if (isTTY) process.stderr.write(`\r${c.cyan}${bar}${c.reset} ${c.bold}${percentStr}% input${c.reset} ${c.dim}${chunkStr}${errStr} · ${inputStr} · ${throughput} · ETA ${eta}${c.reset}   `);
       },
+    }).finally(() => {
+      progress.clear();
+      cursor.show();
     });
-
-    progress.clear();
-    cursor.show();
 
     const totalTimeSec = result.durationMs / 1000;
 
