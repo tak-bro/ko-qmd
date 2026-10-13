@@ -2215,7 +2215,12 @@ async function vectorIndex(
   if (!embedLock) {
     console.log(EMBED_LOCK_BUSY_MESSAGE);
     closeDb();
-    return;
+    // A skipped run is not a success: exit nonzero so automation
+    // (`qmd embed && deploy`) can tell skip from success. Mirrors the
+    // "Already running" guards elsewhere in the CLI (mcp daemon, EADDRINUSE),
+    // which exit 1. Direct process.exit (not exitCode) because
+    // finishSuccessfulCliCommand resets exitCode to 0 after the switch.
+    process.exit(1);
   }
 
   try {
