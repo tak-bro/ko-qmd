@@ -922,6 +922,18 @@ describe("CLI Status Command", () => {
     expect(stdout).toContain("stale1");
   }, 20000);
 
+  test("qmd doctor recommends plain embed (not --force) on pre-embed index", async () => {
+    const env = await createIsolatedTestEnv("doctor-pre-embed");
+    await runQmd(["collection", "add", "."], { dbPath: env.dbPath, configDir: env.configDir });
+    const { stdout, exitCode } = await runQmd(["doctor"], { dbPath: env.dbPath, configDir: env.configDir });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("no vector table to test");
+    expect(stdout).toContain("Run `qmd embed`");
+    const idx = stdout.indexOf("Recommended next step");
+    const tail = idx >= 0 ? stdout.slice(idx) : stdout;
+    expect(tail).not.toContain("qmd embed --force");
+  }, 20000);
+
   test("shows index status", async () => {
     const { stdout, exitCode } = await runQmd(["status"]);
     expect(exitCode).toBe(0);

@@ -3950,6 +3950,7 @@ function shortHashSeq(hashSeq: string): string {
 type DoctorVectorSampleResult = {
   ok: boolean;
   details: string;
+  empty: boolean;
 };
 
 function decodeStoredEmbedding(bytes: Uint8Array): Float32Array {
@@ -4180,12 +4181,12 @@ function checkModelCache(activeModels: { embed: string; generate: string; rerank
 async function checkEmbeddingVectorSamples(db: Database, model: string, fingerprint: string, sampleSize: number = 3): Promise<DoctorVectorSampleResult> {
   const activeDocs = (db.prepare(`SELECT COUNT(*) AS count FROM documents WHERE active = 1`).get() as { count: number }).count;
   if (activeDocs === 0) {
-    return { ok: true, details: "no active documents indexed" };
+    return { ok: true, details: "no active documents indexed", empty: true };
   }
 
   const vecTableExists = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
   if (!vecTableExists) {
-    return { ok: false, details: "no vector table to test; please run qmd embed again" };
+    return { ok: false, details: "no vector table to test; please run qmd embed again", empty: true };
   }
 
   const samples = db.prepare(`
@@ -4200,7 +4201,7 @@ async function checkEmbeddingVectorSamples(db: Database, model: string, fingerpr
   `).all(model, fingerprint, sampleSize) as { hash: string; seq: number; body: string; path: string }[];
 
   if (samples.length === 0) {
-    return { ok: false, details: "no current embedded chunks to test; please run qmd embed again" };
+    return { ok: false, details: "no current embedded chunks to test; please run qmd embed again", empty: true };
   }
 
   const threshold = 0.0001;
@@ -4240,12 +4241,14 @@ async function checkEmbeddingVectorSamples(db: Database, model: string, fingerpr
     return {
       ok: false,
       details: `${mismatches.length}/${samples.length} sampled chunks differ from stored vectors (${mismatches[0]}). Rebuild with \`qmd embed --force\``,
+      empty: false,
     };
   }
 
   return {
     ok: true,
     details: `${samples.length} sampled ${samples.length === 1 ? "chunk" : "chunks"} reproduce stored vectors`,
+    empty: false,
   };
 }
 
@@ -4481,7 +4484,7 @@ async function showDoctor(): Promise<void> {
   try {
     const vectorSample = await checkEmbeddingVectorSamples(db, embedModel, fingerprint);
     doctorCheck("embedding vector sample", vectorSample.ok, vectorSample.details);
-    if (!vectorSample.ok) {
+    if (!vectorSample.ok && !vectorSample.empty) {
       nextSteps.push("Run `qmd embed --force` to rebuild existing vectors that no longer reproduce under the current embedding pipeline.");
     }
   } catch (error) {
