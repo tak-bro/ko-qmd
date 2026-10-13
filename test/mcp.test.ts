@@ -1396,6 +1396,207 @@ describe("MCP HTTP Transport — 2026-07-28 protocol", () => {
 
 
 // =============================================================================
+// get / multi_get tool envelope pins (T2 #2)
+// =============================================================================
+//
+// findDocument/findDocuments return raw store results; the tool handlers in
+// src/mcp/server.ts re-wrap them (isError flag, "No files matched pattern:"
+// vs "Errors:" prefixes, "[SKIPPED: …]" shape, "<!-- Context: -->" prefix,
+// resource mimeType). Nothing pinned that re-wrap at tool level before — the
+// suites above either call store helpers directly or assert content.length
+// only. These tests call the tools over HTTP (same tools/call style as the
+// suites above, temp DB + temp config fixtures) and pin the CURRENT contract.
+// get/multi_get touch neither embeddings nor the LLM, so they stay green in CI.
+
+describe("MCP get/multi_get tool envelope", () => {
+  let handle: HttpServerHandle | undefined;
+  let baseUrl: string;
+  let dbPath: string;
+  let configDir: string | undefined;
+  const origIndexPath = process.env.INDEX_PATH;
+  const origConfigDir = process.env.QMD_CONFIG_DIR;
+
+  beforeAll(async () => {
+    dbPath = `/tmp/qmd-mcp-tool-envelope-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`;
+    const db = openDatabase(dbPath);
+    initTestDatabase(db);
+    seedTestData(db);
+    const testConfig: CollectionConfig = {
+      collections: {
+        docs: {
+          path: "/test/docs",
+          pattern: "**/*.md",
+          context: { "/meetings": "Meeting notes and transcripts" },
+        },
+      },
+    };
+    syncConfigToDb(db, testConfig);
+    db.close();
+
+    const configPrefix = join(tmpdir(), `qmd-mcp-tool-envelope-config-${Date.now()}-`);
+    configDir = await mkdtemp(configPrefix);
+    await writeFile(join(configDir, "index.yml"), YAML.stringify(testConfig));
+
+    process.env.INDEX_PATH = dbPath;
+    process.env.QMD_CONFIG_DIR = configDir;
+    handle = await startMcpHttpServer(0, { quiet: true, dbPath });
+    baseUrl = `http://localhost:${handle.port}`;
+  });
+
+  afterAll(async () => {
+    if (handle) await handle.stop();
+    _resetProductionModeForTesting();
+    if (origIndexPath !== undefined) process.env.INDEX_PATH = origIndexPath;
+    else delete process.env.INDEX_PATH;
+    if (origConfigDir !== undefined) process.env.QMD_CONFIG_DIR = origConfigDir;
+    else delete process.env.QMD_CONFIG_DIR;
+    try { unlinkSync(dbPath); } catch {}
+    if (configDir) {
+      try {
+        const files = await readdir(configDir);
+        for (const f of files) await unlink(join(configDir, f));
+        await rmdir(configDir);
+      } catch {}
+    }
+  });
+
+  type ToolBlock =
+    | { type: "text"; text: string }
+    | { type: "resource"; resource: { uri: string; name: string; title?: string; mimeType: string; text: string } };
+  type ToolResult = { content: ToolBlock[]; isError?: boolean };
+
+  const callTool = async (name: string, args: Record<string, unknown>): Promise<{ status: number; result: ToolResult }> => {
+    const res = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": MCP_2026,
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": name,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name, arguments: args, _meta: mcp2026Meta },
+      }),
+    });
+    const json = await res.json() as { result: ToolResult };
+    return { status: res.status, result: json.result };
+  };
+
+  const resourcesOf = (result: ToolResult) =>
+    result.content.filter((b): b is Extract<ToolBlock, { type: "resource" }> => b.type === "resource");
+
+  test("get hit returns a text/markdown resource envelope without isError", async () => {
+    const { status, result } = await callTool("get", { file: "readme.md" });
+    expect(status).toBe(200);
+    expect(result.isError).toBeFalsy();
+    expect(result.content.length).toBe(1);
+    const [block] = result.content;
+    expect(block!.type).toBe("resource");
+    const [resource] = resourcesOf(result);
+    expect(resource!.resource.uri).toBe("qmd://docs/readme.md");
+    // The handler builds name/title (server.ts get tool), but the MCP SDK
+    // transport drops them — the wire block is {uri, mimeType, text} only.
+    expect(resource!.resource.name).toBeUndefined();
+    expect(resource!.resource.title).toBeUndefined();
+    expect(resource!.resource.mimeType).toBe("text/markdown");
+    // Line numbers are on by default ("N: content").
+    expect(resource!.resource.text).toContain("1: # Project README");
+  });
+
+  test("get miss returns isError with a 'Document not found:' prefix", async () => {
+    const { status, result } = await callTool("get", { file: "no-such-doc-xyz.md" });
+    expect(status).toBe(200);
+    expect(result.isError).toBe(true);
+    expect(result.content.length).toBe(1);
+    expect(result.content[0]!.type).toBe("text");
+    expect((result.content[0] as Extract<ToolBlock, { type: "text" }>).text)
+      .toMatch(/^Document not found: no-such-doc-xyz\.md/);
+  });
+
+  test("get near-miss appends Did-you-mean suggestions", async () => {
+    const { result } = await callTool("get", { file: "readm.md" });
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as Extract<ToolBlock, { type: "text" }>).text;
+    expect(text).toMatch(/^Document not found: readm\.md/);
+    expect(text).toContain("Did you mean one of these?");
+    expect(text).toContain("readme.md");
+  });
+
+  test("get prefixes '<!-- Context: -->' for docs under a context path", async () => {
+    const { result } = await callTool("get", { file: "meetings/meeting-2024-01.md" });
+    expect(result.isError).toBeFalsy();
+    const [resource] = resourcesOf(result);
+    expect(resource!.resource.mimeType).toBe("text/markdown");
+    expect(resource!.resource.text.startsWith("<!-- Context: Meeting notes and transcripts -->\n\n")).toBe(true);
+  });
+
+  test("multi_get glob hit returns one text/markdown resource per doc without isError", async () => {
+    const { status, result } = await callTool("multi_get", { pattern: "meetings/*.md" });
+    expect(status).toBe(200);
+    expect(result.isError).toBeFalsy();
+    const resources = resourcesOf(result);
+    expect(resources.length).toBe(2);
+    for (const r of resources) expect(r.resource.mimeType).toBe("text/markdown");
+    expect(resources.map((r) => r.resource.uri).sort()).toEqual([
+      "qmd://docs/meetings/meeting-2024-01.md",
+      "qmd://docs/meetings/meeting-2024-02.md",
+    ]);
+  });
+
+  test("multi_get glob miss wraps the store error in an 'Errors:' block without isError", async () => {
+    const pattern = "zzz-no-such-dir/*.md";
+    const { status, result } = await callTool("multi_get", { pattern });
+    expect(status).toBe(200);
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toEqual([{ type: "text", text: `Errors:\nNo files matched pattern: ${pattern}` }]);
+  });
+
+  test("multi_get comma-list miss reports 'Errors:' yet still returns hits", async () => {
+    const { result } = await callTool("multi_get", { pattern: "readme.md, no-such-doc-xyz.md" });
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0]).toEqual({ type: "text", text: "Errors:\nFile not found: no-such-doc-xyz.md" });
+    const resources = resourcesOf(result);
+    expect(resources.length).toBe(1);
+    expect(resources[0]!.resource.uri).toBe("qmd://docs/readme.md");
+    expect(resources[0]!.resource.mimeType).toBe("text/markdown");
+  });
+
+  test("multi_get emits '[SKIPPED: …]' for files over maxBytes", async () => {
+    const { result } = await callTool("multi_get", { pattern: "*.md", maxBytes: 1000 });
+    expect(result.isError).toBeFalsy();
+    const texts = result.content
+      .filter((b): b is Extract<ToolBlock, { type: "text" }> => b.type === "text")
+      .map((b) => b.text);
+    const skipped = texts.find((t) => t.startsWith("[SKIPPED: docs/large-file.md"));
+    expect(skipped).toBeDefined();
+    expect(skipped).toMatch(/^\[SKIPPED: docs\/large-file\.md - File too large \(.+\)\. Use 'qmd_get' with file="docs\/large-file\.md" to retrieve\.\]$/);
+  });
+
+  test("multi_get prefixes '<!-- Context: -->' for docs under a context path", async () => {
+    const { result } = await callTool("multi_get", { pattern: "meetings/meeting-2024-01.md" });
+    expect(result.isError).toBeFalsy();
+    const resources = resourcesOf(result);
+    expect(resources.length).toBe(1);
+    expect(resources[0]!.resource.text.startsWith("<!-- Context: Meeting notes and transcripts -->\n\n")).toBe(true);
+  });
+
+  test("multi_get returns bare 'No files matched pattern:' with isError when the store yields no docs and no errors", async () => {
+    // The store only reaches zero-docs-zero-errors for degenerate input (a
+    // comma list that filters down to zero names); every other miss carries
+    // an error string and takes the 'Errors:' branch above.
+    const { status, result } = await callTool("multi_get", { pattern: "," });
+    expect(status).toBe(200);
+    expect(result.isError).toBe(true);
+    expect(result.content).toEqual([{ type: "text", text: "No files matched pattern: ," }]);
+  });
+});
+
+
+// =============================================================================
 // HTTP Transport — CI-visible legacy FTS open (#792)
 // =============================================================================
 //
