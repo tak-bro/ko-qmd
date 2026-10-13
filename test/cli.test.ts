@@ -3020,6 +3020,20 @@ describe("mcp http daemon", () => {
       await new Promise<void>((resolve) => decoy.once("close", () => resolve()));
     }
   });
+
+  test("--daemon reports a bind failure instead of Started and leaves no PID file", async () => {
+    const port = randomPort();
+    // 256.256.256.256 never resolves, so the child fails to bind on any
+    // platform without needing a real port occupier (unreliable on macOS,
+    // where SO_REUSEADDR allows duplicate loopback binds).
+    const { stdout, stderr, exitCode } = await runDaemonQmd([
+      "mcp", "--http", "--daemon", "--port", String(port), "--host", "256.256.256.256",
+    ]);
+    expect(exitCode).toBe(1);
+    expect(stderr.length).toBeGreaterThan(0);
+    expect(stdout).not.toContain("Started");
+    expect(existsSync(pidPath())).toBe(false);
+  });
 });
 
 // =============================================================================

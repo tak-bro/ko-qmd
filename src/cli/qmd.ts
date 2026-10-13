@@ -225,6 +225,47 @@ function mcpDaemonPaths(): { cacheDir: string; pidPath: string; logPath: string 
   };
 }
 
+/**
+ * Wait until a freshly spawned `--daemon` child reports listening in its log
+ * file, or fail. The daemon branch must not print `Started` before this
+ * resolves: a bind failure (e.g. an occupied port) would otherwise exit 0
+ * while the child dies and its exit handler removes the pidfile, leaving
+ * `stop` reporting Not running. On failure no pidfile is written, so
+ * `stop`/`status` keep their missing-pidfile behavior.
+ */
+export async function waitForDaemonListening(
+  child: ReturnType<typeof nodeSpawn>,
+  logPath: string,
+  timeoutMs = 15000,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  let exited = child.exitCode !== null;
+  child.on("exit", () => { exited = true; });
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    let log = "";
+    try {
+      log = readFileSync(logPath, "utf-8");
+    } catch { /* log not written yet */ }
+    if (/listening on /i.test(log)) return { ok: true };
+    if (exited || child.exitCode !== null) {
+      const bindFailure = log.match(/^.*(?:already in use|EADDRINUSE).*$/gim);
+      if (bindFailure) {
+        const lastLine = bindFailure[bindFailure.length - 1] ?? "Port already in use.";
+        return { ok: false, message: lastLine.trim() };
+      }
+      return {
+        ok: false,
+        message: `Daemon exited before listening (code ${child.exitCode ?? "?"}). See logs: ${logPath}`,
+      };
+    }
+    if (Date.now() >= deadline) {
+      try { child.kill("SIGTERM"); } catch { /* already dead */ }
+      return { ok: false, message: `Timed out waiting for the daemon to listen. See logs: ${logPath}` };
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
 function setIndexName(name: string | null): void {
   let normalizedName = name;
   // Normalize relative paths to prevent malformed database paths. Windows
@@ -5065,6 +5106,14 @@ if (isMain) {
           });
           child.unref();
           closeSync(logFd); // parent's copy; child inherited the fd
+
+          // Report Started only once the child is actually listening —
+          // otherwise a bind failure exits 0 while the child dies unseen.
+          const listening = await waitForDaemonListening(child, logPath);
+          if (!listening.ok) {
+            console.error(listening.message);
+            process.exit(1);
+          }
 
           writeFileSync(pidPath, String(child.pid));
           console.log(`Started on http://${host ?? "localhost"}:${port}/mcp (PID ${child.pid})`);
