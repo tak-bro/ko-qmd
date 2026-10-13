@@ -385,14 +385,6 @@ export function setGlobalContext(context: string | undefined): void {
 }
 
 /**
- * Get all contexts for a collection
- */
-export function getContexts(collectionName: string): ContextMap | undefined {
-  const collection = getCollection(collectionName);
-  return collection?.context;
-}
-
-/**
  * Add or update a context for a specific path in a collection
  */
 export function addContext(
@@ -534,13 +526,4 @@ export function configExists(): boolean {
   if (configSource.type === 'inline') return true;
   const path = configSource.path || getConfigFilePath();
   return existsSync(path);
-}
-
-/**
- * Validate a collection name
- * Collection names must be valid and not contain special characters
- */
-export function isValidCollectionName(name: string): boolean {
-  // Allow alphanumeric, hyphens, underscores
-  return /^[a-zA-Z0-9_-]+$/.test(name);
 }
