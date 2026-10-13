@@ -8,7 +8,7 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll, vi } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -238,6 +238,107 @@ describe("model download progress (#776)", () => {
         { directory: cacheDir, cli: false },
       );
     } finally {
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("pullModels hf etag/refresh", () => {
+  const originalFetch = globalThis.fetch;
+
+  function writeGguf(path: string): void {
+    const header = Buffer.alloc(16);
+    header.write("GGUF", 0, "ascii");
+    writeFileSync(path, header);
+  }
+
+  function mockFetchEtag(etag: string): void {
+    globalThis.fetch = (async () => ({
+      ok: true,
+      headers: { get: () => etag },
+    })) as any;
+  }
+
+  function mockResolveTo(landingPath: string) {
+    return vi.fn(async () => {
+      writeGguf(landingPath);
+      return landingPath;
+    });
+  }
+
+  function mockLlama(resolveModelFile: unknown): void {
+    setNodeLlamaCppModuleForTest({
+      LlamaLogLevel: { error: "error" },
+      resolveModelFile,
+      LlamaChatSession: vi.fn() as any,
+      getLlama: vi.fn(),
+    } as any);
+  }
+
+  test("etag match keeps cache, refreshed:false", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-pull-etag-match-"));
+    const cachedPath = join(cacheDir, "model.gguf");
+    const etagPath = join(cacheDir, "model.gguf.etag");
+    writeGguf(cachedPath);
+    writeFileSync(etagPath, '"etag-v1"\n');
+    mockFetchEtag('"etag-v1"');
+    const resolveModelFile = vi.fn(async () => cachedPath);
+    mockLlama(resolveModelFile);
+    try {
+      const results = await pullModels(["hf:org/repo/model.gguf"], { cacheDir });
+      expect(resolveModelFile).toHaveBeenCalledWith(
+        "hf:org/repo/model.gguf",
+        { directory: cacheDir, cli: false },
+      );
+      expect(existsSync(cachedPath)).toBe(true);
+      expect(readFileSync(etagPath, "utf-8").trim()).toBe('"etag-v1"');
+      expect(results[0]?.refreshed).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  test("etag mismatch deletes cache, redownloads, re-records etag, refreshed:true", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-pull-etag-mismatch-"));
+    const cachedPath = join(cacheDir, "model.gguf");
+    const etagPath = join(cacheDir, "model.gguf.etag");
+    writeGguf(cachedPath);
+    writeFileSync(etagPath, '"etag-v1"\n');
+    mockFetchEtag('"etag-v2"');
+    const landingPath = join(cacheDir, "downloaded.gguf");
+    mockLlama(mockResolveTo(landingPath));
+    try {
+      const results = await pullModels(["hf:org/repo/model.gguf"], { cacheDir });
+      expect(existsSync(cachedPath)).toBe(false);
+      expect(existsSync(landingPath)).toBe(true);
+      expect(readFileSync(etagPath, "utf-8").trim()).toBe('"etag-v2"');
+      expect(results[0]?.refreshed).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  test("explicit --refresh forces redownload even on etag match", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-pull-etag-refresh-"));
+    const cachedPath = join(cacheDir, "model.gguf");
+    const etagPath = join(cacheDir, "model.gguf.etag");
+    writeGguf(cachedPath);
+    writeFileSync(etagPath, '"etag-v1"\n');
+    mockFetchEtag('"etag-v1"');
+    const landingPath = join(cacheDir, "downloaded.gguf");
+    mockLlama(mockResolveTo(landingPath));
+    try {
+      const results = await pullModels(["hf:org/repo/model.gguf"], { cacheDir, refresh: true });
+      expect(existsSync(cachedPath)).toBe(false);
+      expect(existsSync(landingPath)).toBe(true);
+      expect(results[0]?.refreshed).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
       setNodeLlamaCppModuleForTest(null);
       rmSync(cacheDir, { recursive: true, force: true });
     }
