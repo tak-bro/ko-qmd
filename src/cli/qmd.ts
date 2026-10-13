@@ -4907,24 +4907,28 @@ if (isMain) {
       break;
 
     case "pull": {
-      await resolveLocalConfigTrust();
-      const refresh = cli.values.refresh === undefined ? false : Boolean(cli.values.refresh);
-      const activeModels = resolveModelsForRuntime();
-      const models = [
-        activeModels.embed,
-        activeModels.generate,
-        activeModels.rerank,
-      ];
-      console.log(`${c.bold}Pulling models${c.reset}`);
-      const results = await pullModels(models, {
-        refresh,
-        cacheDir: DEFAULT_MODEL_CACHE_DIR,
-        cli: Boolean(cli.values.progress),
-      });
-      for (const result of results) {
-        const size = formatBytes(result.sizeBytes);
-        const note = result.refreshed ? "refreshed" : "cached/checked";
-        console.log(`- ${result.model} -> ${result.path} (${size}, ${note})`);
+      try {
+        await resolveLocalConfigTrust();
+        const refresh = cli.values.refresh === undefined ? false : Boolean(cli.values.refresh);
+        const activeModels = resolveModelsForRuntime();
+        const models = [
+          activeModels.embed,
+          activeModels.generate,
+          activeModels.rerank,
+        ];
+        console.log(`${c.bold}Pulling models${c.reset}`);
+        const results = await pullModels(models, {
+          refresh,
+          cacheDir: DEFAULT_MODEL_CACHE_DIR,
+          cli: Boolean(cli.values.progress),
+        });
+        for (const result of results) {
+          const size = formatBytes(result.sizeBytes);
+          const note = result.refreshed ? "refreshed" : "cached/checked";
+          console.log(`- ${result.model} -> ${result.path} (${size}, ${note})`);
+        }
+      } catch (error) {
+        exitWithError(error);
       }
       break;
     }
@@ -4953,12 +4957,16 @@ if (isMain) {
         process.exit(1);
       }
       // Default min-score for vector search is 0.3
-      if (!cli.values["min-score"]) {
-        cli.opts.minScore = 0.3;
+      try {
+        if (!cli.values["min-score"]) {
+          cli.opts.minScore = 0.3;
+        }
+        cli.opts.filter = parseCliMetadataFilter(cli.values.filter);
+        await resolveLocalConfigTrust();
+        await vectorSearch(cli.query, cli.opts);
+      } catch (error) {
+        exitWithError(error);
       }
-      cli.opts.filter = parseCliMetadataFilter(cli.values.filter);
-      await resolveLocalConfigTrust();
-      await vectorSearch(cli.query, cli.opts);
       break;
 
     case "query":
