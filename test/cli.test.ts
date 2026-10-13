@@ -1549,6 +1549,9 @@ describe("status Tips branches (#T2)", () => {
     // metadata to pin the Pending/Metadata branch (mirrors seedOrphans above).
     const db = openDatabase(env.dbPath);
     const now = new Date().toISOString();
+    // documents.hash FK-references content(hash) (store.ts) — seed the
+    // content row first, as seedOrphans does for inactive docs above.
+    db.prepare(`INSERT OR IGNORE INTO content (hash, doc, created_at) VALUES (?, 'unextracted', ?)`).run("tips-meta-no-metadata", now);
     db.prepare(`
       INSERT INTO documents (collection, path, title, hash, created_at, modified_at, active)
       VALUES ('tips-meta', 'unextracted.md', 'Unextracted', 'tips-meta-no-metadata', ?, ?, 1)
