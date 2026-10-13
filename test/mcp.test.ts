@@ -2050,6 +2050,22 @@ describe("REST /query takes path and time filters", () => {
     expect(result.content[0]!.text).toMatch(/not a time/);
   });
 
+  test("a typo'd collection is a tool error naming the bad name, not a silent empty", async () => {
+    // Without validation the SQL IN filter matches 0 rows and the agent reads
+    // "No results" as "the corpus has nothing on the topic".
+    const result = await callQuery({ searches: [{ type: "lex", query: "zanzibar" }], collections: ["docz"], limit: 10, rerank: false });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toMatch(/unknown collection: docz/);
+    expect(result.content[0]!.text).toMatch(/Known collections: docs/);
+  });
+
+  test("a mixed known/unknown collection list names only the bad name", async () => {
+    const result = await callQuery({ searches: [{ type: "lex", query: "zanzibar" }], collections: ["docs", "docz"], limit: 10, rerank: false });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toMatch(/docz/);
+    expect(result.content[0]!.text).not.toMatch(/docs, /);
+  });
+
   // ---------------------------------------------------------------------------
   // The grep tool — the same corpus, matched exactly instead of ranked.
   // ---------------------------------------------------------------------------

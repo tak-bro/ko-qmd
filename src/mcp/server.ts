@@ -562,6 +562,25 @@ Intent-aware lex (C++ performance, not sports):
       // Use default collections if none specified
       const effectiveCollections = collections ?? defaultCollectionNames;
 
+      // An unknown collection name is a caller typo, not an empty corpus: the SQL
+      // IN filter would silently match 0 rows. Fail loudly naming the bad names
+      // (path/since/until mismatches get the same treatment via describeEmptyFilteredSearch).
+      // The default path is skipped: defaults are known by construction, and an
+      // explicit [] still means "search everything" as before.
+      if (collections !== undefined) {
+        const knownNames = (await store.listCollections()).map(c => c.name);
+        const known = new Set(knownNames);
+        const unknown = collections.filter(c => !known.has(c));
+        if (unknown.length > 0) {
+          const plural = unknown.length === 1 ? "collection" : "collections";
+          const knownList = knownNames.length > 0 ? knownNames.join(", ") : "(none)";
+          return {
+            content: [{ type: "text" as const, text: `Error: unknown ${plural}: ${unknown.join(", ")}. Known collections: ${knownList}` }],
+            isError: true,
+          };
+        }
+      }
+
       // Plain `query` takes the SDK's hybrid path (expand unless it has Hangul → fuse → rerank);
       // `searches` runs the caller's typed sub-queries directly.
       const searchOptions = query
