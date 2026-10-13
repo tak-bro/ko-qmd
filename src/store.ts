@@ -1736,18 +1736,40 @@ export async function reindexCollection(
         }
       } else {
         insertContent(db, hash, content, now);
-        const stat = statSync(filepath);
+        let stat: ReturnType<typeof statSync> | undefined;
+        try {
+          stat = statSync(filepath);
+        } catch (err) {
+          // Skip files that vanish between read and stat (ENOENT when an
+          // update hook mutates the tree mid-pass) instead of aborting the
+          // rest of the collection — same as the read guard above (#460).
+          processed++;
+          skippedFiles.push({ file: relativeFile, code: fsErrorCode(err) });
+          options?.onProgress?.({ file: relativeFile, current: processed, total });
+          continue;
+        }
         updateDocument(db, existing.id, title, hash,
           stat ? new Date(stat.mtime).toISOString() : now);
         updated++;
       }
     } else {
-      indexed++;
       insertContent(db, hash, content, now);
-      const stat = statSync(filepath);
+      let stat: ReturnType<typeof statSync> | undefined;
+      try {
+        stat = statSync(filepath);
+      } catch (err) {
+        // Skip files that vanish between read and stat (ENOENT when an
+        // update hook mutates the tree mid-pass) instead of aborting the
+        // rest of the collection — same as the read guard above (#460).
+        processed++;
+        skippedFiles.push({ file: relativeFile, code: fsErrorCode(err) });
+        options?.onProgress?.({ file: relativeFile, current: processed, total });
+        continue;
+      }
       documentId = insertDocument(db, collectionName, path, title, hash,
         stat ? new Date(stat.birthtime).toISOString() : now,
         stat ? new Date(stat.mtime).toISOString() : now);
+      indexed++;
     }
 
     // Unchanged content still backfills missing or stale extraction state.

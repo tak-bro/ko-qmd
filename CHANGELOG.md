@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- Reindex no longer aborts the whole `qmd update` when a file vanishes
+  between read and stat (ENOENT mid-pass, e.g. an update hook mutating the
+  tree): the `statSync` pair is guarded exactly like the #460 read guard —
+  skip + report via `skippedFiles`, rest of the pass completes.
 - Rerank cascade head batch 15 → 8 (`RERANK_CASCADE_FIRST_BATCH`; `QMD_RERANK_FIRST_BATCH` /
   `QMD_RERANK_MARGIN` overrides added for tuning). Cold hard-44 probe at
   `candidateLimit` 40: rerank p50 2492 → 1267 ms, p90 2570 → 1352 ms, top-1
