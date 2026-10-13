@@ -13,7 +13,7 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { spawn } from "child_process";
 import { setTimeout as sleep } from "timers/promises";
-import { buildEditorUri, termLink, resolveEmbedModelForCli } from "../src/cli/qmd.ts";
+import { buildEditorUri, termLink, resolveEmbedModelForCli, parseEmbedBatchMbOption } from "../src/cli/qmd.ts";
 import { openDatabase } from "../src/db.ts";
 import { DEFAULT_EMBED_MODEL_URI, DEFAULT_GENERATE_MODEL_URI, DEFAULT_RERANK_MODEL_URI } from "../src/llm.ts";
 import { setConfigSource } from "../src/collections.ts";
@@ -351,7 +351,18 @@ describe("CLI Embed", () => {
   test("rejects invalid --max-batch-mb", async () => {
     const { stderr, exitCode } = await runQmd(["embed", "--max-batch-mb", "0"]);
     expect(exitCode).toBe(1);
-    expect(stderr).toContain("maxBatchBytes");
+    expect(stderr).toContain("--max-batch-mb");
+    expect(stderr).not.toContain("maxBatchBytes");
+  });
+
+  test("parseEmbedBatchMbOption accepts fractional megabytes", () => {
+    expect(parseEmbedBatchMbOption(undefined)).toBeUndefined();
+    expect(parseEmbedBatchMbOption("0.5")).toBe(0.5);
+    expect(parseEmbedBatchMbOption("1")).toBe(1);
+    expect(parseEmbedBatchMbOption("0.1")).toBeCloseTo(0.1);
+    expect(() => parseEmbedBatchMbOption("0")).toThrow("--max-batch-mb");
+    expect(() => parseEmbedBatchMbOption("-1")).toThrow("--max-batch-mb");
+    expect(() => parseEmbedBatchMbOption("abc")).toThrow("--max-batch-mb");
   });
 });
 

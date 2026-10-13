@@ -2138,6 +2138,18 @@ function parseEmbedBatchOption(name: string, value: unknown): number | undefined
   return parsed;
 }
 
+// --max-batch-mb is expressed in megabytes, so fractional values (e.g. 0.5)
+// are valid. Kept separate from parseEmbedBatchOption on purpose: that
+// helper pins the integer contract relied on by --max-docs-per-batch.
+export function parseEmbedBatchMbOption(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`--max-batch-mb must be a positive number`);
+  }
+  return parsed;
+}
+
 function parseChunkStrategy(value: unknown): ChunkStrategy | undefined {
   if (value === undefined) return undefined;
   const s = String(value);
@@ -4885,7 +4897,7 @@ if (isMain) {
       try {
         await resolveLocalConfigTrust();
         const maxDocsPerBatch = parseEmbedBatchOption("maxDocsPerBatch", cli.values["max-docs-per-batch"]);
-        const maxBatchMb = parseEmbedBatchOption("maxBatchBytes", cli.values["max-batch-mb"]);
+        const maxBatchMb = parseEmbedBatchMbOption(cli.values["max-batch-mb"]);
         const embedChunkStrategy = parseChunkStrategy(cli.values["chunk-strategy"]);
         const embedMaxDurationMs = parseEmbedTimeoutOption(cli.values["timeout"]);
         // Validate -c against configured collections before dispatching, so a
@@ -4894,9 +4906,16 @@ if (isMain) {
         // embed operates on a single collection; only the first value is used.
         const embedValidatedCollections = resolveCollectionFilter(cli.opts.collection, false);
         const embedCollection = embedValidatedCollections[0];
+        // Round to whole bytes: fractional MB values (e.g. 0.1) rarely land
+        // on a byte boundary, and downstream expects an integer byte count.
+        const maxBatchBytes =
+          maxBatchMb === undefined ? undefined : Math.round(maxBatchMb * 1024 * 1024);
+        if (maxBatchBytes !== undefined && maxBatchBytes < 1) {
+          throw new Error(`--max-batch-mb is too small (rounds to 0 bytes)`);
+        }
         await vectorIndex(resolveModelsForRuntime().embed, !!cli.values.force, {
           maxDocsPerBatch,
-          maxBatchBytes: maxBatchMb === undefined ? undefined : maxBatchMb * 1024 * 1024,
+          maxBatchBytes,
           chunkStrategy: embedChunkStrategy,
           collection: embedCollection,
           maxDurationMs: embedMaxDurationMs,
