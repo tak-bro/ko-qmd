@@ -1469,6 +1469,99 @@ describe("orphaned embedding vectors (#768)", () => {
   });
 });
 
+describe("status Tips branches (#T2)", () => {
+  test("hints when no collections exist", async () => {
+    const env = await createIsolatedTestEnv("status-tips-empty");
+    const { stdout, exitCode } = await runQmd(["status"], { dbPath: env.dbPath, configDir: env.configDir });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("No collections. Run 'qmd collection add .' to index markdown files.");
+  });
+
+  test("tips context-less collections, gates update-cmd tip on multiple collections", async () => {
+    const env = await createIsolatedTestEnv("status-tips-single");
+    const add = await runQmd(
+      ["collection", "add", fixturesDir, "--name", "tips-single"],
+      { dbPath: env.dbPath, configDir: env.configDir },
+    );
+    expect(add.exitCode).toBe(0);
+
+    const { stdout, exitCode } = await runQmd(["status"], { dbPath: env.dbPath, configDir: env.configDir });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("Add context to collections for better search results: tips-single");
+    expect(stdout).toContain("qmd context add");
+    // Single collection: the update-cmd tip is gated on collections.length > 1
+    expect(stdout).not.toContain("Add update commands");
+    // Fresh index: embeddings never ran
+    expect(stdout).toMatch(/Pending:\s+\d+ need embedding/);
+    expect(stdout).toContain("qmd embed");
+  });
+
+  test("tips update-cmd when multiple collections lack commands", async () => {
+    const env = await createIsolatedTestEnv("status-tips-multi");
+    for (const [name, dir] of [["tips-a", fixturesDir], ["tips-b", join(fixturesDir, "notes")]] as const) {
+      const add = await runQmd(
+        ["collection", "add", dir, "--name", name],
+        { dbPath: env.dbPath, configDir: env.configDir },
+      );
+      expect(add.exitCode).toBe(0);
+    }
+
+    const { stdout, exitCode } = await runQmd(["status"], { dbPath: env.dbPath, configDir: env.configDir });
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("Add context to collections for better search results: tips-a, tips-b");
+    expect(stdout).toContain("Add update commands to keep collections fresh: tips-a, tips-b");
+    expect(stdout).toContain("qmd collection update-cmd");
+
+    // Setting update commands clears that tip but keeps the context tip.
+    for (const name of ["tips-a", "tips-b"]) {
+      const set = await runQmd(
+        ["collection", "update-cmd", name, "git pull"],
+        { dbPath: env.dbPath, configDir: env.configDir },
+      );
+      expect(set.exitCode).toBe(0);
+    }
+    const after = await runQmd(["status"], { dbPath: env.dbPath, configDir: env.configDir });
+    expect(after.exitCode).toBe(0);
+    expect(after.stdout).not.toContain("Add update commands");
+    expect(after.stdout).toContain("Add context to collections");
+
+    // Adding context everywhere clears the Tips section entirely.
+    for (const name of ["tips-a", "tips-b"]) {
+      const ctx = await runQmd(
+        ["context", "add", `qmd://${name}/`, `${name} test fixtures`],
+        { dbPath: env.dbPath, configDir: env.configDir },
+      );
+      expect(ctx.exitCode).toBe(0);
+    }
+    const done = await runQmd(["status"], { dbPath: env.dbPath, configDir: env.configDir });
+    expect(done.exitCode).toBe(0);
+    expect(done.stdout).not.toContain("Tips");
+  });
+
+  test("reports documents pending metadata extraction", async () => {
+    const env = await createIsolatedTestEnv("status-tips-metadata");
+    const add = await runQmd(
+      ["collection", "add", fixturesDir, "--name", "tips-meta"],
+      { dbPath: env.dbPath, configDir: env.configDir },
+    );
+    expect(add.exitCode).toBe(0);
+    // Freshly indexed docs carry metadata rows; seed one active doc without
+    // metadata to pin the Pending/Metadata branch (mirrors seedOrphans above).
+    const db = openDatabase(env.dbPath);
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO documents (collection, path, title, hash, created_at, modified_at, active)
+      VALUES ('tips-meta', 'unextracted.md', 'Unextracted', 'tips-meta-no-metadata', ?, ?, 1)
+    `).run(now, now);
+    db.close();
+
+    const { stdout, exitCode } = await runQmd(["status"], { dbPath: env.dbPath, configDir: env.configDir });
+    expect(exitCode).toBe(0);
+    expect(stdout).toMatch(/Metadata:\s+1 need extraction/);
+    expect(stdout).toContain("qmd update");
+  });
+});
+
 describe("CLI Error Handling", () => {
   test("handles unknown command", async () => {
     const { stderr, exitCode } = await runQmd(["unknowncommand"]);
