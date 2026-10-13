@@ -1857,9 +1857,13 @@ async function collectionAdd(pwd: string, globPattern: string, name?: string): P
     process.exit(1);
   }
 
-  // Check if a collection with this pwd+glob already exists in YAML
+  // Check if a collection with this pwd+glob already exists in YAML.
+  // Compare canonical paths: entries stored before path canonicalization
+  // (e.g. a raw $PWD like /tmp/... vs /private/tmp/...) must still match.
+  // getRealPath() is idempotent for canonical paths and falls back to
+  // resolve() for missing paths, so normal adds are unaffected.
   const allCollections = yamlListCollections();
-  const existingPwdGlob = allCollections.find(c => c.path === pwd && c.pattern === globPattern);
+  const existingPwdGlob = allCollections.find(c => getRealPath(c.path) === pwd && c.pattern === globPattern);
 
   if (existingPwdGlob) {
     console.error(`${c.yellow}A collection already exists for this path and pattern:${c.reset}`);
@@ -4705,7 +4709,13 @@ if (isMain) {
             console.error("  --mask / --glob: glob (default **/*.md), brace group, or comma-separated list");
             process.exit(1);
           }
-          const resolvedPwd = pwd === '.' ? getPwd() : getRealPath(resolve(pwd));
+          // Canonicalize both branches identically: '.' uses $PWD (logical cwd,
+          // which may contain symlinked components like /tmp on macOS), so it
+          // must go through getRealPath() too — otherwise the string-compared
+          // dup guard in collectionAdd() misses the same dir added twice.
+          // getRealPath() falls back to resolve() when realpath fails, so an
+          // unresolvable cwd still keeps the old getPwd() value.
+          const resolvedPwd = getRealPath(pwd === '.' ? getPwd() : resolve(pwd));
           const globPattern = collectionGlobFromCli(cli.values);
           const name = cli.values.name as string | undefined;
 
