@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- `qmd update` no longer claims "✓ All collections updated." when trust-gated
+  collections were skipped: it prints `Updated N of M collection(s), skipped K`
+  and exits 1 so unattended runs can detect the partial update. No skips keeps
+  the success line and exit 0.
+
 - Rerank cascade head batch 15 → 8 (`RERANK_CASCADE_FIRST_BATCH`; `QMD_RERANK_FIRST_BATCH` /
   `QMD_RERANK_MARGIN` overrides added for tuning). Cold hard-44 probe at
   `candidateLimit` 40: rerank p50 2492 → 1267 ms, p90 2570 → 1352 ms, top-1

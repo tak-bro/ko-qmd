@@ -920,7 +920,7 @@ function manageTrust(subcommand?: string): void {
   console.log(`${c.dim}Editing a hook, out-of-project path, or custom model will ask again. Revoke with 'qmd trust revoke'.${c.reset}`);
 }
 
-async function updateCollections(): Promise<void> {
+async function updateCollections(): Promise<number> {
   // Prompt before opening the store so an approval is visible to getStore (#889).
   const allowed = await resolveLocalConfigTrust();
 
@@ -936,7 +936,7 @@ async function updateCollections(): Promise<void> {
   if (collections.length === 0) {
     console.log(`${c.dim}No collections found. Run 'qmd collection add .' to index markdown files.${c.reset}`);
     closeDb();
-    return;
+    return 0;
   }
 
   // A project-local .qmd/index.yml travels with a `git clone`, so its `update:`
@@ -947,6 +947,7 @@ async function updateCollections(): Promise<void> {
 
   console.log(`${c.bold}Updating ${collections.length} collection(s)...${c.reset}\n`);
 
+  let skippedCollections = 0;
   for (let i = 0; i < collections.length; i++) {
     const col = collections[i];
     if (!col) continue;
@@ -958,6 +959,7 @@ async function updateCollections(): Promise<void> {
     if (!hooksAllowed && isLocalConfigPath(configPath) && !isCollectionPathInsideProject(configPath, rawPath)) {
       console.log(`${c.yellow}Skipping collection '${col.name}' — path ${rawPath} is outside this project and this .qmd config is not trusted.${c.reset}`);
       console.log(`${c.dim}Approve with 'qmd trust'.${c.reset}\n`);
+      skippedCollections++;
       continue;
     }
     if (yamlCol?.update && hooksAllowed) {
@@ -1026,13 +1028,22 @@ async function updateCollections(): Promise<void> {
   const orphanedVectors = countOrphanedVectors(db);
   closeDb();
 
-  console.log(`${c.green}✓ All collections updated.${c.reset}`);
+  if (skippedCollections > 0) {
+    // A skip is not an update: never claim "All" when some collections were
+    // left untouched. The nonzero exit is reported by the caller (mirrors the
+    // hook-failure process.exit(1) above); finishSuccessfulCliCommand would
+    // reset process.exitCode to 0, so the count must travel via return value.
+    console.log(`${c.yellow}Updated ${collections.length - skippedCollections} of ${collections.length} collection(s), skipped ${skippedCollections} (not trusted — run 'qmd trust').${c.reset}`);
+  } else {
+    console.log(`${c.green}✓ All collections updated.${c.reset}`);
+  }
   if (needsEmbedding > 0) {
     console.log(`\nRun 'qmd embed' to update embeddings (${needsEmbedding} unique hashes need vectors)`);
   }
   if (vectorTotal > 0 && orphanedVectors / vectorTotal >= ORPHAN_VECTOR_HINT_RATIO) {
     console.log(`\n${formatOrphanedVectorHint(orphanedVectors, vectorTotal)}`);
   }
+  return skippedCollections;
 }
 
 /**
@@ -4873,9 +4884,11 @@ if (isMain) {
       await showDoctor();
       break;
 
-    case "update":
-      await updateCollections();
+    case "update": {
+      const skipped = await updateCollections();
+      if (skipped > 0) process.exit(1);
       break;
+    }
 
     case "trust":
       manageTrust(cli.args[0]);
