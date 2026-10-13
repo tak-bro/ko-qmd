@@ -737,6 +737,18 @@ Intent-aware lex (C++ performance, not sports):
       }),
     },
     track(async ({ pattern, maxLines, maxBytes, lineNumbers }) => {
+      if (maxLines !== undefined && (!Number.isInteger(maxLines) || maxLines < 1)) {
+        return {
+          content: [{ type: "text", text: "maxLines must be a positive integer" }],
+          isError: true,
+        };
+      }
+      if (maxBytes !== undefined && (!Number.isInteger(maxBytes) || maxBytes < 1)) {
+        return {
+          content: [{ type: "text", text: "maxBytes must be a positive integer" }],
+          isError: true,
+        };
+      }
       const { docs, errors } = await store.multiGet(pattern, { includeBody: true, maxBytes: maxBytes || DEFAULT_MULTI_GET_MAX_BYTES });
 
       if (docs.length === 0 && errors.length === 0) {

@@ -1392,6 +1392,50 @@ describe("MCP HTTP Transport — 2026-07-28 protocol", () => {
     expect(res.status).toBe(405);
     expect(res.headers.get("mcp-session-id")).toBeNull();
   });
+
+  async function callMultiGet(args: Record<string, unknown>, id: number): Promise<any> {
+    const { json } = await postMcp(
+      {
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name: "multi_get", arguments: args, _meta: mcp2026Meta },
+      },
+      {
+        "MCP-Protocol-Version": MCP_2026,
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": "multi_get",
+      },
+    );
+    expect(json.error).toBeUndefined();
+    return json.result;
+  }
+
+  test("tools/call multi_get rejects negative maxLines", async () => {
+    const result = await callMultiGet({ pattern: "readme.md", maxLines: -1 }, 101);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("maxLines must be a positive integer");
+  });
+
+  test("tools/call multi_get rejects maxLines 0", async () => {
+    const result = await callMultiGet({ pattern: "readme.md", maxLines: 0 }, 102);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("maxLines must be a positive integer");
+  });
+
+  test("tools/call multi_get rejects negative maxBytes", async () => {
+    const result = await callMultiGet({ pattern: "readme.md", maxBytes: -5 }, 103);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("maxBytes must be a positive integer");
+  });
+
+  test("tools/call multi_get honors valid maxLines", async () => {
+    const result = await callMultiGet({ pattern: "readme.md", maxLines: 2 }, 104);
+    expect(result.isError).toBeFalsy();
+    const resource = result.content.find((c: any) => c.type === "resource");
+    expect(resource).toBeDefined();
+    expect(resource.resource.text).toContain("[... truncated 3 more lines]");
+  });
 });
 
 
