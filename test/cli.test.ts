@@ -5,7 +5,7 @@
  * These tests spawn actual qmd processes to verify end-to-end functionality.
  */
 
-import { describe, test, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import { chmod, copyFile, mkdtemp, rm, writeFile, mkdir } from "fs/promises";
 import { existsSync, lstatSync, readFileSync, symlinkSync, writeFileSync, unlinkSync } from "fs";
 import { tmpdir } from "os";
@@ -13,7 +13,7 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { spawn } from "child_process";
 import { setTimeout as sleep } from "timers/promises";
-import { buildEditorUri, termLink, resolveEmbedModelForCli } from "../src/cli/qmd.ts";
+import { buildEditorUri, termLink, resolveDaemonHost, resolveEmbedModelForCli } from "../src/cli/qmd.ts";
 import { openDatabase } from "../src/db.ts";
 import { DEFAULT_EMBED_MODEL_URI, DEFAULT_GENERATE_MODEL_URI, DEFAULT_RERANK_MODEL_URI } from "../src/llm.ts";
 import { setConfigSource } from "../src/collections.ts";
@@ -2253,6 +2253,35 @@ describe("editor URI templates", () => {
   });
 });
 
+describe("daemon host resolution", () => {
+  const ENV_KEY = "QMD_HOST";
+  let saved: string | undefined;
+
+  beforeEach(() => {
+    saved = process.env[ENV_KEY];
+  });
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env[ENV_KEY];
+    else process.env[ENV_KEY] = saved;
+  });
+
+  test("--host flag wins over QMD_HOST env", () => {
+    process.env[ENV_KEY] = "127.0.0.1";
+    expect(resolveDaemonHost("0.0.0.0")).toBe("0.0.0.0");
+  });
+
+  test("QMD_HOST env is used when no --host flag is given", () => {
+    process.env[ENV_KEY] = "127.0.0.1";
+    expect(resolveDaemonHost(undefined)).toBe("127.0.0.1");
+  });
+
+  test("defaults to localhost when neither flag nor env is set", () => {
+    delete process.env[ENV_KEY];
+    expect(resolveDaemonHost(undefined)).toBe("localhost");
+  });
+});
+
 // =============================================================================
 // Get Command Path Normalization Tests
 // =============================================================================
@@ -2878,6 +2907,42 @@ describe("mcp http daemon", () => {
     process.kill(pid, "SIGTERM");
     await sleep(500);
     try { unlinkSync(pidPath()); } catch {}
+  });
+
+  test("--daemon announcement matches the actual bind when QMD_HOST is set", async () => {
+    const port = randomPort();
+    const { stdout, exitCode } = await runQmd(
+      ["mcp", "--http", "--daemon", "--port", String(port)],
+      {
+        dbPath: daemonDbPath,
+        configDir: daemonConfigDir,
+        env: { XDG_CACHE_HOME: daemonCacheDir, QMD_HOST: "127.0.0.1" },
+      },
+    );
+    expect(exitCode).toBe(0);
+    // Announcement must name the effective bind host, not the default.
+    expect(stdout).toContain(`http://127.0.0.1:${port}/mcp`);
+    expect(stdout).not.toContain(`http://localhost:${port}/mcp`);
+
+    // PID file should exist
+    expect(existsSync(pidPath())).toBe(true);
+
+    const pid = parseInt(readFileSync(pidPath(), "utf-8").trim());
+    spawnedPids.push(pid);
+
+    try {
+      // Server should be reachable
+      const ready = await waitForServer(port);
+      expect(ready).toBe(true);
+
+      // Child must bind the same host the parent announced.
+      const log = readFileSync(join(daemonCacheDir, "qmd", "mcp.log"), "utf-8");
+      expect(log).toContain(`http://127.0.0.1:${port}/mcp`);
+    } finally {
+      try { process.kill(pid, "SIGTERM"); } catch { /* already stopped */ }
+      await sleep(500);
+      try { unlinkSync(pidPath()); } catch {}
+    }
   });
 
   test("stop kills daemon and removes PID file", async () => {

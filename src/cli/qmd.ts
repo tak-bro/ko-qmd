@@ -2555,6 +2555,17 @@ export function termLink(text: string, url: string, isTTY: boolean = !!process.s
   return `\x1b]8;;${url}\x07${text}\x1b]8;;\x07`;
 }
 
+/**
+ * Resolve the effective MCP HTTP bind host (single source of truth).
+ * Same precedence the daemon child uses in startMcpHttpServer:
+ * `--host` flag ?? QMD_HOST env ?? "localhost". The daemon parent uses
+ * this for both the Started announcement and the explicit --host passed
+ * to the child, so the announced URL always matches the actual bind.
+ */
+export function resolveDaemonHost(flagHost: string | undefined): string {
+  return flagHost ?? process.env.QMD_HOST ?? "localhost";
+}
+
 function outputResults(results: OutputRow[], query: string, opts: OutputOptions): void {
   const filtered = results.filter(r => r.score >= opts.minScore).slice(0, opts.limit);
 
@@ -5031,7 +5042,11 @@ if (isMain) {
         // --host overrides the default localhost bind; QMD_HOST env is the
         // fallback (resolved in startMcpHttpServer). Use "0.0.0.0" to accept
         // off-host connections, e.g. a container liveness probe.
-        const host = cli.values.host ? String(cli.values.host) : undefined;
+        const flagHost = cli.values.host ? String(cli.values.host) : undefined;
+        // Single source of truth: same precedence the child uses
+        // (options.host ?? QMD_HOST ?? "localhost") so the announced URL
+        // always matches the actual bind.
+        const host = resolveDaemonHost(flagHost);
 
         if (cli.values.daemon) {
           // Guard: check if already running (identity-checked — recycled PIDs are stale)
@@ -5049,7 +5064,7 @@ if (isMain) {
           const logFd = openSync(logPath, "w"); // truncate — fresh log per daemon run
           const selfPath = fileURLToPath(import.meta.url);
           const indexArgs = cli.values.index ? ["--index", String(cli.values.index)] : [];
-          const hostArgs = host ? ["--host", host] : [];
+          const hostArgs = ["--host", host];
           const spawnArgs = selfPath.endsWith(".ts")
             ? ["--import", pathJoin(dirname(selfPath), "..", "..", "node_modules", "tsx", "dist", "esm", "index.mjs"), selfPath, ...indexArgs, "mcp", "--http", "--port", String(port), ...hostArgs]
             : [selfPath, ...indexArgs, "mcp", "--http", "--port", String(port), ...hostArgs];
@@ -5067,7 +5082,7 @@ if (isMain) {
           closeSync(logFd); // parent's copy; child inherited the fd
 
           writeFileSync(pidPath, String(child.pid));
-          console.log(`Started on http://${host ?? "localhost"}:${port}/mcp (PID ${child.pid})`);
+          console.log(`Started on http://${host}:${port}/mcp (PID ${child.pid})`);
           console.log(`Logs: ${logPath}`);
           process.exit(0);
         }
