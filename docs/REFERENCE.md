@@ -585,7 +585,7 @@ The SDK requires explicit `dbPath` — no defaults are assumed. This makes it sa
                           │   RRF Fusion + Bonus  │
                           │  Original query: ×2   │
                           │  Top-rank bonus: +0.05│
-                          │     Top 30 Kept       │
+                          │     Top 40 Kept       │
                           └───────────┬───────────┘
                                       │
                                       ▼
@@ -597,10 +597,9 @@ The SDK requires explicit `dbPath` — no defaults are assumed. This makes it sa
                                       │
                                       ▼
                           ┌───────────────────────┐
-                          │  Position-Aware Blend │
-                          │  Top 1-3:  75% RRF    │
-                          │  Top 4-10: 60% RRF    │
-                          │  Top 11+:  40% RRF    │
+                          │ Linear Position Blend │
+                          │ 90% rerank + 10% pos  │
+                          │ (tiebreak, not gate)  │
                           └───────────────────────┘
 ```
 
@@ -616,20 +615,38 @@ The SDK requires explicit `dbPath` — no defaults are assumed. This makes it sa
 
 ### Fusion Strategy
 
-The `query` command uses **Reciprocal Rank Fusion (RRF)** with position-aware blending:
+The `query` command uses **Reciprocal Rank Fusion (RRF)** with a linear
+position tiebreak (`getHybridRrfWeights` / `getStructuredRrfWeights`,
+`rrfDocMultipliers`, `blendRerankScore` in `src/store.ts`):
 
-1. **Query Expansion**: Original query (×2 for weighting) + 1 LLM variation
-2. **Parallel Retrieval**: Each query searches both FTS and vector indexes
-3. **RRF Fusion**: Combine all result lists using `score = Σ(1/(k+rank+1))` where k=60
-4. **Top-Rank Bonus**: Documents ranking #1 in any list get +0.05, #2-3 get +0.02
-5. **Top-K Selection**: Take top 30 candidates for reranking
-6. **Re-ranking**: LLM scores each document (yes/no with logprobs confidence)
-7. **Position-Aware Blending**:
-   - RRF rank 1-3: 75% retrieval, 25% reranker (preserves exact matches)
-   - RRF rank 4-10: 60% retrieval, 40% reranker
-   - RRF rank 11+: 40% retrieval, 60% reranker (trust reranker more)
+1. **Query Expansion**: the LLM produces typed `lex` / `vec` / `hyde` variants.
+   Expansion is **skipped** when the query contains Hangul or when the initial
+   FTS hit is a strong exact signal (`store.ts:6391-6396`).
+2. **Parallel Retrieval**: each query searches both FTS and vector indexes
+3. **RRF Fusion**: `score = Σ(weight × multiplier / (k+rank+1))` where k=60.
+   List weights (`getHybridRrfWeights`): original-query FTS **2.0**,
+   original-query vector **1.0** (2.0 × 0.5 `VEC_LIST_WEIGHT`), expansion lex
+   **0.75** (`EXPANSION_LIST_WEIGHT`), expansion vec/hyde **0.375** (0.75 × 0.5).
+   A relaxed (`matchMode: "any"`) FTS list halves its weight again (× 0.5
+   `RELAXED_LIST_WEIGHT`). `structuredSearch` instead weights the caller's
+   first list **2.0** and the rest **1.0** (caller-ordered importance), with a
+   relaxed first list at **0.25** and other relaxed lists at **0.5**.
+4. **Per-document coverage multiplier**: each hit from a relaxed list scales by
+   `0.5 + 0.5 × coverage`, where coverage is the fraction of query words found
+   in the document (`rrfDocMultipliers`, `store.ts:5082-5095`). Non-relaxed
+   lists keep multiplier 1.0.
+5. **Top-Rank Bonus**: Documents ranking #1 in any list get +0.05, #2-3 get +0.02
+6. **Top-K Selection**: Take top **40** candidates for reranking
+   (`RERANK_CANDIDATE_LIMIT`, `store.ts:437`)
+7. **Re-ranking**: LLM scores each document (yes/no with logprobs confidence)
+8. **Linear position tiebreak**: `blended = 0.9 × rerankScore + 0.1 ×
+   (1 - (rrfRank-1)/candidateLimit)` (`blendRerankScore`, `store.ts:6076-6079`;
+   `POSITION_TIEBREAK_WEIGHT = 0.1`). The reranker decides; retrieval position
+   only separates documents the reranker scores alike. (This replaced the old
+   rank-gated 75/60/40 blend, under which no reranker score could displace the
+   top retrieval hit.)
 
-**Why this approach**: Pure RRF can dilute exact matches when expanded queries don't match. The top-rank bonus preserves documents that score #1 for the original query. Position-aware blending prevents the reranker from destroying high-confidence retrieval results.
+**Why this approach**: Pure RRF can dilute exact matches when expanded queries don't match. The top-rank bonus preserves documents that score #1 for the original query. The linear tiebreak prevents the reranker from destroying high-confidence retrieval results without making the top retrieval hit unbeatable.
 
 ### Score Interpretation
 
@@ -1017,7 +1034,7 @@ contribution, its backend score and the text it actually ran:
 ```
 Explain: fts=[0.6700, 0.5100] vec=[0.4400]
   RRF: total=0.0889 base=0.0389 bonus=0.0500 rank=1
-  Blend: 75%*1.0000 + 25%*0.8200 = 0.9550
+  Blend: 10%*1.0000 + 90%*0.8200 = 0.8380
   Sub-query ranks (3 of the expansion's lists placed this document):
     fts/original   #1  rrf=0.0328 backend=0.6700  한글 토큰화
     vec/hyde       #2  rrf=0.0161 backend=0.4400  형태소 분석기는 어절을 나눌 때...
@@ -1527,17 +1544,15 @@ Query ──► LLM Expansion ──► [Original, Variant 1, Variant 2]
          Top-rank bonus: +0.05/#1, +0.02/#2-3
                 │
                 ▼
-         Top 30 candidates
+         Top 40 candidates
                 │
                 ▼
          LLM Re-ranking
          (yes/no + logprob confidence)
                 │
                 ▼
-         Position-Aware Blend
-         Rank 1-3:  75% RRF / 25% reranker
-         Rank 4-10: 60% RRF / 40% reranker
-         Rank 11+:  40% RRF / 60% reranker
+         Linear Position Blend
+         90% reranker + 10% position (tiebreak)
                 │
                 ▼
          Final Results
