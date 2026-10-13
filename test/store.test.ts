@@ -4737,6 +4737,48 @@ describe("Embedding batching", () => {
     }
   });
 
+  test("generateEmbeddings reports only actually processed docs when the session expires early", async () => {
+    const store = await createTestStore();
+    const db = store.db;
+    // Same seam as the stops-early test: a slow embedder so the short
+    // session cap trips between document batches.
+    const embedBatchCalls: string[][] = [];
+    const slowLlm = {
+      ...createFakeTokenizer(),
+      async embed() { return { embedding: [0.1, 0.2, 0.3], model: "fake-embed" }; },
+      async embedBatch(texts: string[]) {
+        embedBatchCalls.push([...texts]);
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        return texts.map((_text, index) => ({ embedding: [index + 1, index + 2, index + 3], model: "fake-embed" }));
+      },
+    };
+
+    setDefaultLlamaCpp(createFakeTokenizer() as any);
+    store.llm = slowLlm as any;
+
+    try {
+      await insertTestDocument(db, "docs", { name: "one", body: "# One\n\nAlpha" });
+      await insertTestDocument(db, "docs", { name: "two", body: "# Two\n\nBeta" });
+      await insertTestDocument(db, "docs", { name: "three", body: "# Three\n\nGamma" });
+
+      const result = await generateEmbeddings(store, {
+        maxDocsPerBatch: 1,           // one doc per batch, so the cap can stop between docs
+        maxBatchBytes: 1024 * 1024,
+        maxDurationMs: 10,            // trips ~10ms in, well before the 80ms batches finish
+      });
+
+      // Only the batches that actually ran may be reported — never the full
+      // pending snapshot when the session expired mid-run.
+      expect(embedBatchCalls.length).toBeGreaterThanOrEqual(1);
+      expect(embedBatchCalls.length).toBeLessThan(3);
+      expect(result.docsProcessed).toBe(embedBatchCalls.length);
+      expect(result.docsProcessed).toBeLessThan(3);
+    } finally {
+      setDefaultLlamaCpp(null);
+      await cleanupTestDb(store);
+    }
+  });
+
   test("generateEmbeddings flushes batches when maxBatchBytes is reached", async () => {
     const store = await createTestStore();
     const db = store.db;

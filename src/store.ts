@@ -2031,7 +2031,6 @@ export async function generateEmbeddings(
     return { docsProcessed: 0, chunksEmbedded: 0, errors: 0, durationMs: 0 };
   }
   const totalBytes = docsToEmbed.reduce((sum, doc) => sum + Math.max(0, doc.bytes), 0);
-  const totalDocs = docsToEmbed.length;
   const startTime = Date.now();
 
   // Use store's LlamaCpp or global singleton, wrapped in a session
@@ -2042,6 +2041,7 @@ export async function generateEmbeddings(
     let chunksEmbedded = 0;
     let bytesProcessed = 0;
     let totalChunks = 0;
+    let docsProcessed = 0;
     let vectorTableInitialized = false;
     const BATCH_SIZE = 32;
     const RETRY_AFTER_SUCCESSFUL_CHUNKS = 64;
@@ -2185,6 +2185,7 @@ export async function generateEmbeddings(
 
       const totalBatchChunkBytes = batchChunks.reduce((sum, chunk) => sum + chunk.bytes, 0);
       let batchChunkBytesProcessed = 0;
+      let batchCompleted = true;
 
       for (let batchStart = 0; batchStart < batchChunks.length; batchStart += BATCH_SIZE) {
         // Abort early if session has been invalidated (e.g. max duration exceeded)
@@ -2192,6 +2193,7 @@ export async function generateEmbeddings(
           const remainingChunks = batchChunks.slice(batchStart);
           for (const chunk of remainingChunks) recordFailure(chunk, "LLM session expired before embedding chunk");
           console.warn(`⚠ Session expired — skipping ${remainingChunks.length} remaining chunks`);
+          batchCompleted = false;
           break;
         }
 
@@ -2201,6 +2203,7 @@ export async function generateEmbeddings(
           const remainingChunks = batchChunks.slice(batchStart);
           for (const chunk of remainingChunks) recordFailure(chunk, "embedding aborted because error rate was too high");
           console.warn(`⚠ Error rate too high (${activeErrorCount()}/${processed}) — aborting embedding`);
+          batchCompleted = false;
           break;
         }
 
@@ -2260,16 +2263,22 @@ export async function generateEmbeddings(
       if (removedPartialChunks > 0) {
         chunksEmbedded = Math.max(0, chunksEmbedded - removedPartialChunks);
       }
+      // Only batches that ran to completion count toward docsProcessed, so an
+      // early session-expiry (or error-rate abort) break reports the docs
+      // actually embedded instead of the full pending snapshot.
+      if (batchCompleted) {
+        docsProcessed += expectedChunksByHash.size;
+      }
 
       bytesProcessed += batchBytes;
       options?.onProgress?.({ chunksEmbedded, totalChunks, bytesProcessed, totalBytes, errors: activeErrorCount(), failures: failureList() });
     }
 
-    return { chunksEmbedded, errors: activeErrorCount(), failures: failureList() };
+    return { chunksEmbedded, docsProcessed, errors: activeErrorCount(), failures: failureList() };
   }, { maxDuration: options?.maxDurationMs ?? DEFAULT_EMBED_MAX_DURATION_MS, name: 'generateEmbeddings' });
 
   return {
-    docsProcessed: totalDocs,
+    docsProcessed: result.docsProcessed,
     chunksEmbedded: result.chunksEmbedded,
     errors: result.errors,
     failures: result.failures,
