@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- SDK `addCollection` write-through no longer drops `ignore` (and preserves
+  `includeByDefault`/`update`/`context`): the YAML/inline entry is merged
+  instead of replaced, so `ignore` survives a close/reopen round-trip instead
+  of being nulled in the DB on resync.
+
 - Rerank cascade head batch 15 → 8 (`RERANK_CASCADE_FIRST_BATCH`; `QMD_RERANK_FIRST_BATCH` /
   `QMD_RERANK_MARGIN` overrides added for tuning). Cold hard-44 probe at
   `candidateLimit` 40: rerank p50 2492 → 1267 ms, p90 2570 → 1352 ms, top-1

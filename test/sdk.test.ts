@@ -454,6 +454,67 @@ describe("YAML config file mode", () => {
     expect(parsed.collections.newcol!.path).toBe(docsDir);
   });
 
+  test("addCollection with ignore persists ignore to YAML file", async () => {
+    const configPath = join(testDir, `config-ignore-${Date.now()}.yml`);
+    writeFileSync(configPath, YAML.stringify({ collections: {} }));
+
+    const store = await createStore({ dbPath: freshDbPath(), configPath });
+    await store.addCollection("docs", { path: docsDir, pattern: "**/*.md", ignore: ["Sessions/**"] });
+    await store.close();
+
+    const raw = readFileSync(configPath, "utf-8");
+    const parsed = YAML.parse(raw) as CollectionConfig;
+    expect(parsed.collections.docs!.ignore).toEqual(["Sessions/**"]);
+  });
+
+  test("addCollection with ignore survives close/reopen round-trip", async () => {
+    const configPath = join(testDir, `config-roundtrip-${Date.now()}.yml`);
+    writeFileSync(configPath, YAML.stringify({ collections: {} }));
+    const dbPath = freshDbPath();
+
+    const store = await createStore({ dbPath, configPath });
+    await store.addCollection("docs", { path: docsDir, pattern: "**/*.md", ignore: ["Sessions/**"] });
+    await store.close();
+
+    // Reopen with the same DB + YAML: YAML is canonical, DB must keep ignore
+    const store2 = await createStore({ dbPath, configPath });
+    const row = store2.internal.db
+      .prepare("SELECT ignore_patterns FROM store_collections WHERE name = ?")
+      .get("docs") as { ignore_patterns: string | null };
+    expect(row).toBeDefined();
+    expect(row.ignore_patterns).not.toBeNull();
+    expect(JSON.parse(row.ignore_patterns!)).toEqual(["Sessions/**"]);
+    await store2.close();
+  });
+
+  test("addCollection write-through preserves existing entry fields", async () => {
+    const configPath = join(testDir, `config-merge-${Date.now()}.yml`);
+    writeFileSync(configPath, YAML.stringify({
+      collections: {
+        docs: {
+          path: docsDir,
+          pattern: "**/*.md",
+          ignore: ["Drafts/**"],
+          includeByDefault: false,
+          update: "git pull --ff-only",
+          context: { "/api": "API documentation" },
+        },
+      },
+    }));
+
+    const store = await createStore({ dbPath: freshDbPath(), configPath });
+    // Re-add without ignore: merge must preserve every existing field
+    await store.addCollection("docs", { path: docsDir, pattern: "**/*.md" });
+    await store.close();
+
+    const raw = readFileSync(configPath, "utf-8");
+    const parsed = YAML.parse(raw) as CollectionConfig;
+    expect(parsed.collections.docs!.ignore).toEqual(["Drafts/**"]);
+    expect(parsed.collections.docs!.includeByDefault).toBe(false);
+    expect(parsed.collections.docs!.update).toBe("git pull --ff-only");
+    expect(parsed.collections.docs!.context).toEqual({ "/api": "API documentation" });
+  });
+
   test("context persists to YAML file", async () => {
     const configPath = join(testDir, `config-ctx-${Date.now()}.yml`);
     writeFileSync(configPath, YAML.stringify({

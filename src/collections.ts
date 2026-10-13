@@ -315,14 +315,17 @@ export function updateCollectionSettings(
 export function addCollection(
   name: string,
   path: string,
-  pattern: string = "**/*.md"
+  pattern: string = "**/*.md",
+  opts?: { ignore?: string[] }
 ): void {
   const config = loadConfig();
+  const existing = config.collections[name];
 
   config.collections[name] = {
+    ...existing, // Merge: preserve ignore/includeByDefault/update/context, never drop
     path,
     pattern,
-    context: config.collections[name]?.context, // Preserve existing context
+    ...(opts?.ignore !== undefined ? { ignore: opts.ignore } : {}),
   };
 
   saveConfig(config);
