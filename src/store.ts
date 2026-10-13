@@ -4908,13 +4908,16 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
   if (cached) {
     try {
       const parsed = JSON.parse(cached) as unknown;
-      if (!Array.isArray(parsed)) return [];
-      const rows = parsed as Array<Record<string, unknown>>;
-      // Migrate old cache format: { type, text } → { type, query }
-      if (rows.length > 0 && typeof rows[0]?.query === "string") {
-        return rows.map((r) => ({ type: r.type as ExpandedQuery["type"], query: String(r.query) }));
-      } else if (rows.length > 0 && typeof rows[0]?.text === "string") {
-        return rows.map((r) => ({ type: r.type as ExpandedQuery["type"], query: String(r.text) }));
+      // Non-array valid JSON (poison row) falls through to re-expand like
+      // invalid JSON below, letting the fresh result overwrite it.
+      if (Array.isArray(parsed)) {
+        const rows = parsed as Array<Record<string, unknown>>;
+        // Migrate old cache format: { type, text } → { type, query }
+        if (rows.length > 0 && typeof rows[0]?.query === "string") {
+          return rows.map((r) => ({ type: r.type as ExpandedQuery["type"], query: String(r.query) }));
+        } else if (rows.length > 0 && typeof rows[0]?.text === "string") {
+          return rows.map((r) => ({ type: r.type as ExpandedQuery["type"], query: String(r.text) }));
+        }
       }
     } catch {
       // Old cache format (pre-typed, newline-separated text) — re-expand

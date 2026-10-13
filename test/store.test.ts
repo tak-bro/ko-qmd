@@ -1490,6 +1490,57 @@ describe("Query expansion cache (#818)", () => {
       await cleanupTestDb(store);
     }
   });
+
+  test("expandQuery re-expands a non-array cached object instead of returning []", async () => {
+    const store = await createTestStore();
+    try {
+      const model = "test-expand-model";
+      let llmCalls = 0;
+      store.llm = {
+        generateModelName: model,
+        expandQuery: async () => {
+          llmCalls++;
+          return [{ type: "vec", text: "healed-term" }];
+        },
+      } as any;
+      const cacheKey = getCacheKey("expandQuery", { query: "poison question", model });
+      store.setCachedResult(cacheKey, JSON.stringify({ not: "an array" }));
+
+      const out = await store.expandQuery("poison question");
+
+      expect(llmCalls).toBe(1);
+      expect(out).toEqual([{ type: "vec", query: "healed-term" }]);
+      // Poison row is healed by the fresh result via the normal write path.
+      expect(JSON.parse(store.getCachedResult(cacheKey)!)).toEqual([{ type: "vec", query: "healed-term" }]);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("expandQuery still serves a valid cached array without invoking the LLM", async () => {
+    const store = await createTestStore();
+    try {
+      const model = "test-expand-model";
+      let llmCalls = 0;
+      store.llm = {
+        generateModelName: model,
+        expandQuery: async () => {
+          llmCalls++;
+          return [{ type: "vec", text: "should-not-be-used" }];
+        },
+      } as any;
+      const seeded = [{ type: "lex", query: "seeded-term" }];
+      const cacheKey = getCacheKey("expandQuery", { query: "cached question", model });
+      store.setCachedResult(cacheKey, JSON.stringify(seeded));
+
+      const out = await store.expandQuery("cached question");
+
+      expect(out).toEqual(seeded);
+      expect(llmCalls).toBe(0);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
 });
 
 
