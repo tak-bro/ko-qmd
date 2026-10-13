@@ -68,6 +68,7 @@ import {
   escapeLikePattern,
   hybridQuery,
   vectorSearchQuery,
+  validateLexQuery,
   structuredSearch,
   addLineNumbers,
   type ExpandedQuery,
@@ -2929,6 +2930,14 @@ function warnPendingMetadata(db: Database): void {
 }
 
 function search(query: string, opts: OutputOptions): void {
+  // Same clean-error contract as the structured path (structuredSearch throws
+  // `Location (lex): <validateLexQuery message>`): an unclosed quote would
+  // otherwise silently become a trailing phrase in buildFTS5Query.
+  const lexError = validateLexQuery(query);
+  if (lexError) {
+    console.error(lexError);
+    process.exit(1);
+  }
   const db = getDb();
 
   // Validate collection filter (supports multiple -c flags)
