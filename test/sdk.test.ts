@@ -938,6 +938,40 @@ describe("update", () => {
     await store.close();
   });
 
+  test("update with unknown collection filter throws", async () => {
+    const store = await createStore({
+      dbPath: freshDbPath(),
+      config: {
+        collections: {
+          docs: { path: docsDir, pattern: "**/*.md" },
+        },
+      },
+    });
+
+    await expect(store.update({ collections: ["nope"] })).rejects.toThrow(
+      /unknown collection.*nope/i,
+    );
+
+    await store.close();
+  });
+
+  test("update with partially unknown collection filter throws", async () => {
+    const store = await createStore({
+      dbPath: freshDbPath(),
+      config: {
+        collections: {
+          docs: { path: docsDir, pattern: "**/*.md" },
+        },
+      },
+    });
+
+    await expect(
+      store.update({ collections: ["docs", "typo"] }),
+    ).rejects.toThrow(/unknown collection.*typo/i);
+
+    await store.close();
+  });
+
   test("update multiple collections", async () => {
     const store = await createStore({
       dbPath: freshDbPath(),
