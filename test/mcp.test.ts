@@ -213,6 +213,8 @@ import {
   getDocumentBody,
   findDocuments,
   getStatus,
+  upsertStoreCollection,
+  deleteStoreCollection,
   DEFAULT_EMBED_MODEL,
   getEmbeddingFingerprint,
   DEFAULT_QUERY_MODEL,
@@ -220,6 +222,7 @@ import {
   DEFAULT_MULTI_GET_MAX_BYTES,
   createStore,
 } from "../src/store";
+import { formatStatusCollectionLine } from "../src/mcp/server";
 import type { RankedResult } from "../src/store";
 // Note: searchResultsToMcpCsv no longer used in MCP - using structuredContent instead
 
@@ -610,6 +613,38 @@ describe("MCP Server", () => {
       const status = getStatus(testDb);
       // large-file.md doesn't have embeddings
       expect(status.needsEmbedding).toBe(1);
+    });
+
+    test("orphan collection renders (removed) instead of literal null", () => {
+      // removeCollection drops the store_collections row but leaves documents
+      // active (src/index.ts removeCollection); status must not print "null".
+      const now = new Date().toISOString();
+      upsertStoreCollection(testDb, "status-orphan-probec", { path: "/tmp/probec-docs" });
+      testDb.prepare(`INSERT OR IGNORE INTO content (hash, doc, created_at) VALUES (?, ?, ?)`)
+        .run("status-orphan-hash", "# Zxq Probe\n\nUnmatched body text.\n", now);
+      testDb.prepare(`INSERT INTO documents (collection, path, title, hash, created_at, modified_at, active) VALUES ('status-orphan-probec', 'probe.md', 'Probe', 'status-orphan-hash', ?, ?, 1)`)
+        .run(now, now);
+      try {
+        expect(deleteStoreCollection(testDb, "status-orphan-probec")).toBe(true);
+        const status = getStatus(testDb);
+        const orphan = status.collections.find(c => c.name === "status-orphan-probec");
+        expect(orphan).toBeDefined();
+        // structuredContent keeps the null exactly as-is
+        expect(orphan!.path).toBeNull();
+        expect(orphan!.documents).toBe(1);
+        // text renders a human token, never the literal "null"
+        const line = formatStatusCollectionLine(orphan!);
+        expect(line).toBe("    - status-orphan-probec: (removed) (1 docs)");
+        expect(line).not.toContain(": null (");
+      } finally {
+        testDb.prepare(`DELETE FROM documents WHERE collection = 'status-orphan-probec'`).run();
+        testDb.prepare(`DELETE FROM store_collections WHERE name = 'status-orphan-probec'`).run();
+      }
+    });
+
+    test("status line keeps real paths unchanged", () => {
+      expect(formatStatusCollectionLine({ name: "docs", path: "/test/docs", documents: 5 }))
+        .toBe("    - docs: /test/docs (5 docs)");
     });
   });
 

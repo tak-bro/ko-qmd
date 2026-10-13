@@ -90,14 +90,26 @@ type StatusResult = {
   totalDocuments: number;
   needsEmbedding: number;
   hasVectorIndex: boolean;
-  collections: {
-    name: string;
-    path: string | null;
-    pattern: string | null;
-    documents: number;
-    lastUpdated: string;
-  }[];
+  collections: StatusCollection[];
 };
+
+export type StatusCollection = {
+  name: string;
+  path: string | null;
+  pattern: string | null;
+  documents: number;
+  lastUpdated: string;
+};
+
+/**
+ * Render one collection line for the status text summary.
+ * path is null when the store_collections row is gone but documents remain
+ * active (e.g. after removeCollection); render a human token instead of the
+ * literal "null". structuredContent keeps the null unchanged.
+ */
+export function formatStatusCollectionLine(col: Pick<StatusCollection, "name" | "path" | "documents">): string {
+  return `    - ${col.name}: ${col.path ?? "(removed)"} (${col.documents} docs)`;
+}
 
 // =============================================================================
 // Helper functions
@@ -896,7 +908,7 @@ Smart case: a pattern containing an uppercase letter matches case-sensitively, o
       ];
 
       for (const col of status.collections) {
-        summary.push(`    - ${col.name}: ${col.path} (${col.documents} docs)`);
+        summary.push(formatStatusCollectionLine(col));
       }
       // ko-qmd: daemon query log state (only this process knows its env and write errors).
       const queryLog = queryLogStatus();
