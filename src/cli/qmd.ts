@@ -2973,7 +2973,7 @@ function grepCommand(pattern: string, opts: OutputOptions, values: Record<string
   const caseSensitive = values["case-sensitive"] ? true : (values["ignore-case"] ? false : undefined);
   let compiled: RegExp;
   try {
-    compiled = compileGrepPattern(pattern, { caseSensitive, fixedString: !!values["fixed-strings"] });
+    compiled = compileGrepPattern(pattern, { caseSensitive, fixedString: !!(values["fixed-strings"] || values["fixed-string"]) });
   } catch (error) {
     console.error(`qmd: ${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
@@ -3297,6 +3297,7 @@ function parseCLI() {
       "ignore-case": { type: "boolean", short: "i" },   // grep: force case-insensitive
       "case-sensitive": { type: "boolean", short: "S" },// grep: force case-sensitive
       "fixed-strings": { type: "boolean", short: "F" }, // grep: treat the pattern as literal
+      "fixed-string": { type: "boolean" },              // alias for --fixed-strings (MCP fixedString)
       "max-lines": { type: "string" },                  // grep: max reported lines per file
       since: { type: "string" },                 // only documents modified at/after this
       until: { type: "string" },                 // only documents modified at/before this
