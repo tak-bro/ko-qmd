@@ -2953,6 +2953,42 @@ describe("Reciprocal Rank Fusion", () => {
     expect(getStructuredRrfWeights(vecFirst)).toEqual([2.0, 1.0]);
   });
 
+  test("structured RRF weights share a subquery's slot across its collection fan-out", () => {
+    // One subquery fanned out to two collections: both lists are the first subquery's
+    // evidence, so -c order must not decide which gets 2x.
+    const fanOut: RankedListMeta[] = [
+      { source: "fts", queryType: "lex", query: "q", searchIndex: 0 },
+      { source: "fts", queryType: "lex", query: "q", searchIndex: 0 },
+    ];
+    expect(getStructuredRrfWeights(fanOut)).toEqual([2.0, 2.0]);
+
+    // Relaxed fan-out shares the relaxed first-slot weight too.
+    const relaxedFanOut: RankedListMeta[] = [
+      { source: "fts", queryType: "lex", query: "q", relaxed: true, searchIndex: 0 },
+      { source: "fts", queryType: "lex", query: "q", relaxed: true, searchIndex: 0 },
+    ];
+    expect(getStructuredRrfWeights(relaxedFanOut)).toEqual([0.25, 0.25]);
+  });
+
+  test("structured RRF weights still follow explicit multi-subquery ordering", () => {
+    // First subquery (with its two collection lists) keeps 2x; the second stays 1x.
+    const meta: RankedListMeta[] = [
+      { source: "fts", queryType: "lex", query: "first", searchIndex: 0 },
+      { source: "fts", queryType: "lex", query: "first", searchIndex: 0 },
+      { source: "fts", queryType: "lex", query: "second", searchIndex: 1 },
+      { source: "fts", queryType: "lex", query: "second", searchIndex: 1 },
+    ];
+    expect(getStructuredRrfWeights(meta)).toEqual([2.0, 2.0, 1.0, 1.0]);
+
+    // When the first subquery yields no list, the first producing subquery takes the boost.
+    const offset: RankedListMeta[] = [
+      { source: "fts", queryType: "lex", query: "second", searchIndex: 1 },
+      { source: "fts", queryType: "lex", query: "second", searchIndex: 1 },
+      { source: "vec", queryType: "vec", query: "third", searchIndex: 2 },
+    ];
+    expect(getStructuredRrfWeights(offset)).toEqual([2.0, 2.0, 1.0]);
+  });
+
   test("a relaxed first lex list no longer outranks the vector list's top hit", () => {
     // The ko-vault miss: a decoy sharing a few of the question's words led the relaxed lex list
     // and the right note led the vector list (hsh-03, hsh-11 — BASELINE.md 2026-09-27).
@@ -5346,6 +5382,35 @@ describe("Embedding batching", () => {
       expect(searchVecSpy.mock.calls[0]?.[0]).toBe("structured query");
       expect(searchVecSpy.mock.calls[0]?.[1]).toBe(model);
       expect(searchVecSpy.mock.calls[0]?.[5]).toEqual([1, 2, 3]);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("structuredSearch is invariant to collection order for same-subquery fan-out", async () => {
+    // -c alpha -c beta and -c beta -c alpha must fuse identically: one merged list per
+    // subquery, so collection position is never RRF weight.
+    const store = await createTestStore();
+    const alpha = await createTestCollection({ name: "alpha-order", pwd: "/test/alpha-order" });
+    const beta = await createTestCollection({ name: "beta-order", pwd: "/test/beta-order" });
+    await insertTestDocument(store.db, alpha, {
+      name: "a", title: "A", body: "zebraqx lighthouse keeper", displayPath: "a.md",
+    });
+    await insertTestDocument(store.db, beta, {
+      name: "b", title: "B", body: "zebraqx harbor ferry", displayPath: "b.md",
+    });
+
+    try {
+      const queries: ExpandedQuery[] = [{ type: "lex", query: "zebraqx" }];
+      const ab = await structuredSearch(store, queries, {
+        collections: [alpha, beta], limit: 5, minScore: 0, skipRerank: true,
+      });
+      const ba = await structuredSearch(store, queries, {
+        collections: [beta, alpha], limit: 5, minScore: 0, skipRerank: true,
+      });
+      expect(ab.map(r => r.file)).toEqual(ba.map(r => r.file));
+      expect(ab.map(r => r.score)).toEqual(ba.map(r => r.score));
+      expect(ab).toHaveLength(2);
     } finally {
       await cleanupTestDb(store);
     }

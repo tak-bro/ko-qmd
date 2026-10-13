@@ -5976,6 +5976,10 @@ export type RankedListMeta = {
   queryType: "original" | "lex" | "vec" | "hyde";
   query: string;
   relaxed?: boolean;  // ko-qmd: list came from the relaxed (ORed) FTS retry
+  // ko-qmd: index of the subquery that produced this list. structuredSearch merges each
+  // subquery's per-collection fan-out into one list tagged with its subquery, so positional
+  // weight follows caller-ordered subqueries, not -c order. Absent (older callers) = position.
+  searchIndex?: number;
 };
 
 /**
@@ -6029,20 +6033,25 @@ export function getHybridRrfWeights(rankedListMeta: RankedListMeta[]): number[] 
 }
 
 /**
- * RRF list weights for structuredSearch: the first list gets 2x (the caller ordered by
- * importance), the rest 1x.
+ * RRF list weights for structuredSearch: lists from the first subquery get 2x (the caller
+ * ordered subqueries by importance), the rest 1x. Lists sharing a searchIndex are one
+ * subquery fanned out across collections, so they share its weight — `-c a -c b` and
+ * `-c b -c a` fuse identically. Meta without searchIndex falls back to list position.
  *
  * ko-qmd: a relaxed FTS list counts half here too, as in getHybridRrfWeights. At a flat 2.0 a
  * lex line that only matched some of a question's words outranked the vector list, and a decoy
  * sharing a few of those words took rank 1 (test/fixtures/ko-vault/BASELINE.md 2026-09-27).
- * ko-qmd: a relaxed first list forfeits the positional boost and halves again (0.25) — even
- * halved, its rank 1 still tied a vector rank 1 with a lex rank 4 (hmu-05, 2026-10-09 probe).
+ * ko-qmd: a relaxed first-subquery list forfeits the positional boost and halves again
+ * (0.25) — even halved, its rank 1 still tied a vector rank 1 with a lex rank 4
+ * (hmu-05, 2026-10-09 probe).
  */
 const RELAXED_FIRST_LIST_WEIGHT = 0.25;
 export function getStructuredRrfWeights(rankedListMeta: RankedListMeta[]): number[] {
+  const firstKey = rankedListMeta[0]?.searchIndex ?? 0;
   return rankedListMeta.map((meta, i) => {
-    if (meta.relaxed) return i === 0 ? RELAXED_FIRST_LIST_WEIGHT : RELAXED_LIST_WEIGHT;
-    return i === 0 ? 2.0 : 1.0;
+    const isFirst = (meta.searchIndex ?? i) === firstKey;
+    if (meta.relaxed) return isFirst ? RELAXED_FIRST_LIST_WEIGHT : RELAXED_LIST_WEIGHT;
+    return isFirst ? 2.0 : 1.0;
   });
 }
 
@@ -6820,40 +6829,51 @@ export async function structuredSearch(
   // Helper to run search across collections (or all if undefined)
   const collectionList = collections ?? [undefined]; // undefined = all collections
 
-  // Step 1: Run FTS for all lex searches (sync, instant)
+  // Step 1: Run FTS for all lex searches (sync, instant).
+  // One list per subquery: fan out across collections, then merge by score (filepath
+  // breaks exact ties) so -c order never becomes RRF weight or tiebreak order.
   const ftsStart = Date.now();
-  for (const search of searches) {
-    if (search.type === 'lex') {
-      for (const coll of collectionList) {
-        const ftsResults = store.searchFTS(search.query, 20, coll, filter, scope);
-        if (ftsResults.length > 0) {
-          for (const r of ftsResults) docidMap.set(r.filepath, r.docid);
-          rankedLists.push(ftsResults.map(r => ({
-            file: r.filepath, displayPath: r.displayPath,
-            title: r.title, body: r.body || "", score: r.score,
-          })));
-          rankedListMeta.push({
-            source: "fts",
-            queryType: "lex",
-            query: search.query,
-            relaxed: ftsResults[0]?.matchMode === "any",
-          });
-        }
+  for (let si = 0; si < searches.length; si++) {
+    const search = searches[si]!;
+    if (search.type !== 'lex') continue;
+    const best = new Map<string, SearchResult>();
+    for (const coll of collectionList) {
+      const ftsResults = store.searchFTS(search.query, 20, coll, filter, scope);
+      for (const r of ftsResults) {
+        docidMap.set(r.filepath, r.docid);
+        const prev = best.get(r.filepath);
+        if (!prev || r.score > prev.score) best.set(r.filepath, r);
       }
     }
+    if (best.size === 0) continue;
+    const merged = Array.from(best.values()).sort((a, b) =>
+      b.score - a.score || (a.filepath < b.filepath ? -1 : a.filepath > b.filepath ? 1 : 0));
+    rankedLists.push(merged.map(r => ({
+      file: r.filepath, displayPath: r.displayPath,
+      title: r.title, body: r.body || "", score: r.score,
+    })));
+    rankedListMeta.push({
+      source: "fts",
+      queryType: "lex",
+      query: search.query,
+      relaxed: merged[0]?.matchMode === "any",
+      searchIndex: si,
+    });
   }
   if (searches.some(s => s.type === 'lex')) hooks?.onFtsDone?.(Date.now() - ftsStart);
 
   // Step 2: Batch embed and run vector searches for vec/hyde
   if (hasVectors) {
-    const vecSearches = searches.filter(
-      (s): s is ExpandedQuery & { type: 'vec' | 'hyde' } =>
-        s.type === 'vec' || s.type === 'hyde'
-    );
+    const vecSearches = searches
+      .map((s, searchIndex) => ({ s, searchIndex }))
+      .filter(
+        (e): e is { s: ExpandedQuery & { type: 'vec' | 'hyde' }; searchIndex: number } =>
+          e.s.type === 'vec' || e.s.type === 'hyde'
+      );
     if (vecSearches.length > 0) {
       const llm = getLlm(store);
       const embedModel = llm.embedModelName;
-      const textsToEmbed = vecSearches.map(s => formatQueryForEmbedding(s.query, embedModel));
+      const textsToEmbed = vecSearches.map(e => formatQueryForEmbedding(e.s.query, embedModel));
       hooks?.onEmbedStart?.(textsToEmbed.length);
       const embedStart = Date.now();
       const embeddings = await llm.embedBatch(textsToEmbed);
@@ -6864,24 +6884,33 @@ export async function structuredSearch(
         const embedding = embeddings[i]?.embedding;
         if (!embedding) continue;
 
+        // One list per subquery, merged across collections like the lex fan-out above.
+        const entry = vecSearches[i]!;
+        const best = new Map<string, SearchResult>();
         for (const coll of collectionList) {
           const vecResults = await store.searchVec(
-            vecSearches[i]!.query, embedModel, 20, coll,
+            entry.s.query, embedModel, 20, coll,
             undefined, embedding, filter, scope
           );
-          if (vecResults.length > 0) {
-            for (const r of vecResults) docidMap.set(r.filepath, r.docid);
-            rankedLists.push(vecResults.map(r => ({
-              file: r.filepath, displayPath: r.displayPath,
-              title: r.title, body: r.body || "", score: r.score,
-            })));
-            rankedListMeta.push({
-              source: "vec",
-              queryType: vecSearches[i]!.type,
-              query: vecSearches[i]!.query,
-            });
+          for (const r of vecResults) {
+            docidMap.set(r.filepath, r.docid);
+            const prev = best.get(r.filepath);
+            if (!prev || r.score > prev.score) best.set(r.filepath, r);
           }
         }
+        if (best.size === 0) continue;
+        const merged = Array.from(best.values()).sort((a, b) =>
+          b.score - a.score || (a.filepath < b.filepath ? -1 : a.filepath > b.filepath ? 1 : 0));
+        rankedLists.push(merged.map(r => ({
+          file: r.filepath, displayPath: r.displayPath,
+          title: r.title, body: r.body || "", score: r.score,
+        })));
+        rankedListMeta.push({
+          source: "vec",
+          queryType: entry.s.type,
+          query: entry.s.query,
+          searchIndex: entry.searchIndex,
+        });
       }
       hooks?.onVecDone?.(Date.now() - vecStart);
     }
@@ -6889,8 +6918,8 @@ export async function structuredSearch(
 
   if (rankedLists.length === 0) return [];
 
-  // Step 3: RRF fusion — first list gets 2x weight (assume caller ordered by importance),
-  // a relaxed FTS list half of its slot's weight, scaled per document by query coverage
+  // Step 3: RRF fusion — first subquery's lists get 2x weight (assume caller ordered by
+  // importance), a relaxed FTS list half of its slot's weight, scaled per document by query coverage
   const weights = getStructuredRrfWeights(rankedListMeta);
   const docMultipliers = rrfDocMultipliers(rankedLists, rankedListMeta);
   const fused = reciprocalRankFusion(rankedLists, weights, 60, docMultipliers);
