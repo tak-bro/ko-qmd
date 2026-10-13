@@ -6029,8 +6029,8 @@ export function getHybridRrfWeights(rankedListMeta: RankedListMeta[]): number[] 
 }
 
 /**
- * RRF list weights for structuredSearch: the first list gets 2x (the caller ordered by
- * importance), the rest 1x.
+ * RRF list weights for structuredSearch: the first non-empty list gets 2x (empty result
+ * lists are dropped before weighting), the rest 1x.
  *
  * ko-qmd: a relaxed FTS list counts half here too, as in getHybridRrfWeights. At a flat 2.0 a
  * lex line that only matched some of a question's words outranked the vector list, and a decoy
@@ -6889,7 +6889,7 @@ export async function structuredSearch(
 
   if (rankedLists.length === 0) return [];
 
-  // Step 3: RRF fusion — first list gets 2x weight (assume caller ordered by importance),
+  // Step 3: RRF fusion — first non-empty list gets 2x weight (empty lists dropped above),
   // a relaxed FTS list half of its slot's weight, scaled per document by query coverage
   const weights = getStructuredRrfWeights(rankedListMeta);
   const docMultipliers = rrfDocMultipliers(rankedLists, rankedListMeta);
