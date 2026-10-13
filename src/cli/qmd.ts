@@ -1488,18 +1488,24 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
 
     let body = doc.body;
 
-    // Apply line limit if specified
+    // Apply line limit if specified. The truncation notice is appended
+    // AFTER line numbering so it never occupies a content line number
+    // (mirrors get's offset-correct numbering).
+    let truncatedNotice: string | null = null;
     if (maxLines !== undefined) {
       const lines = body.split('\n');
       body = lines.slice(0, maxLines).join('\n');
       if (lines.length > maxLines) {
-        body += `\n\n[... truncated ${lines.length - maxLines} more lines]`;
+        truncatedNotice = `\n\n[... truncated ${lines.length - maxLines} more lines]`;
       }
     }
 
     // Line numbers on by default (disable with --no-line-numbers).
     if (lineNumbers) {
       body = addLineNumbers(body);
+    }
+    if (truncatedNotice) {
+      body += truncatedNotice;
     }
 
     results.push({

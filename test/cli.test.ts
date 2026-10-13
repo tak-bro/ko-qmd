@@ -1236,6 +1236,31 @@ describe("CLI Multi-Get Command", () => {
     expect(raw.stdout).not.toMatch(/^1: /m);
   });
 
+  test("truncated output keeps real-row numbers with an unnumbered notice", async () => {
+    const mg = await runQmd(["multi-get", "test1.md", "-l", "5"], { dbPath: localDbPath });
+    expect(mg.exitCode).toBe(0);
+    const numbered = mg.stdout.split("\n").filter((l) => /^\d+: /.test(l));
+    // Only the 5 content rows are numbered; the notice must not take a number.
+    expect(numbered).toHaveLength(5);
+    expect(numbered[0]).toBe("1: # Test Document 1");
+    expect(numbered[4]).toBe("5: It has multiple lines for testing line numbers.");
+    expect(mg.stdout).toContain("[... truncated");
+    expect(mg.stdout).not.toMatch(/^\d+:.*truncated/m);
+    // Row 5 agrees with get's offset-correct numbering.
+    const g = await runQmd(["get", "fixtures/test1.md:5:1"], { dbPath: localDbPath });
+    expect(g.exitCode).toBe(0);
+    expect(g.stdout).toContain("5: It has multiple lines for testing line numbers.");
+  });
+
+  test("untruncated multi-get output numbers every row consecutively", async () => {
+    const mg = await runQmd(["multi-get", "test1.md"], { dbPath: localDbPath });
+    expect(mg.exitCode).toBe(0);
+    expect(mg.stdout).not.toContain("[... truncated");
+    const numbered = mg.stdout.split("\n").filter((l) => /^\d+: /.test(l));
+    expect(numbered.length).toBeGreaterThan(0);
+    numbered.forEach((l, i) => expect(l.startsWith(`${i + 1}: `)).toBe(true));
+  });
+
   test("--full-path --md shows ./-prefixed on-disk paths and drops the docid", async () => {
     // Default runQmd cwd is fixturesDir, so notes/*.md files are subpaths.
     const { stdout, exitCode } = await runQmd(["multi-get", "notes/*.md", "--md", "--full-path"], { dbPath: localDbPath });
