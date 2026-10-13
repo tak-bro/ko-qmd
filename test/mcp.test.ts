@@ -2050,6 +2050,24 @@ describe("REST /query takes path and time filters", () => {
     expect(result.content[0]!.text).toMatch(/not a time/);
   });
 
+  test("a negative limit is a tool error, not an over-return", async () => {
+    const result = await callQuery({ limit: -1 });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toMatch(/limit must be a positive integer/);
+  });
+
+  test("a zero limit is a tool error, not an empty result", async () => {
+    const result = await callQuery({ limit: 0 });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toMatch(/limit must be a positive integer/);
+  });
+
+  test("a valid limit still caps the results", async () => {
+    const result = await callQuery({ limit: 5 });
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent!.results).toHaveLength(5);
+  });
+
   // ---------------------------------------------------------------------------
   // The grep tool — the same corpus, matched exactly instead of ranked.
   // ---------------------------------------------------------------------------

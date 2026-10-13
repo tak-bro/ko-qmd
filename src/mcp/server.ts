@@ -525,6 +525,14 @@ Intent-aware lex (C++ performance, not sports):
     },
     track(async ({ query, searches, limit, minScore, candidateLimit, collections, path, since, until, filter, intent, rerank }) => {
       const startedAt = Date.now();
+      // A non-positive limit would silently disarm the cap: slice(0, -1) drops
+      // only the last row (limit:-1) and slice(0, 0) empties the answer (limit:0).
+      if (!Number.isInteger(limit) || limit < 1) {
+        return {
+          content: [{ type: "text" as const, text: "Error: limit must be a positive integer" }],
+          isError: true,
+        };
+      }
       // Require exactly one of `query` (plain text, auto-expanded) or `searches` (typed sub-queries).
       if (!query && (!searches || searches.length === 0)) {
         return {
