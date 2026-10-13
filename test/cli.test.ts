@@ -348,6 +348,62 @@ describe("CLI Embed", () => {
     expect(stderr).toContain("maxDocsPerBatch");
   });
 
+  test("update hint counts against the configured embed model, not the default", async () => {
+    // T3#2: the end-of-update 'qmd embed' hint must use the same model
+    // fingerprint `qmd embed` uses, otherwise custom-model users get a false count.
+    const customModel = "hf:custom/embed-hint-model.gguf";
+    const { dbPath, configDir } = await createIsolatedTestEnv("embed-hint");
+    const collectionDir = join(testDir, `embed-hint-docs-${testCounter}`);
+    await mkdir(collectionDir, { recursive: true });
+    await writeFile(join(collectionDir, "note.md"), "# Note\n\nSome content for the embed hint test.\n");
+
+    const add = await runQmd(["collection", "add", collectionDir, "--name", "embed-hint"], {
+      dbPath, configDir, env: { QMD_EMBED_MODEL: customModel },
+    });
+    expect(add.exitCode).toBe(0);
+
+    // Vectors stored under the custom model's fingerprint, as `qmd embed`
+    // with the custom model configured would write them.
+    const { createStore } = await import("../src/store.ts");
+    const seeder = createStore(dbPath);
+    try {
+      seeder.ensureVecTable(3);
+      const docs = seeder.db.prepare(`SELECT hash FROM documents WHERE active = 1`).all() as { hash: string }[];
+      expect(docs.length).toBeGreaterThan(0);
+      const now = new Date().toISOString();
+      for (const doc of docs) {
+        seeder.insertEmbedding(doc.hash, 0, 0, new Float32Array([1, 2, 3]), customModel, now, 1);
+      }
+    } finally {
+      seeder.close();
+    }
+
+    // Sanity: status (which already resolves the configured model) reports clean.
+    const status = await runQmd(["status"], { dbPath, configDir, env: { QMD_EMBED_MODEL: customModel } });
+    expect(status.exitCode).toBe(0);
+
+    // The update hint must agree: no 'qmd embed' nudge when vectors are current.
+    const update = await runQmd(["update"], { dbPath, configDir, env: { QMD_EMBED_MODEL: customModel } });
+    expect(update.exitCode).toBe(0);
+    expect(update.stdout).not.toContain("Run 'qmd embed'");
+  });
+
+  test("update hint still appears for the default model when vectors are missing", async () => {
+    const { dbPath, configDir } = await createIsolatedTestEnv("embed-hint-default");
+    const collectionDir = join(testDir, `embed-hint-default-docs-${testCounter}`);
+    await mkdir(collectionDir, { recursive: true });
+    await writeFile(join(collectionDir, "note.md"), "# Note\n\nSome content for the default hint test.\n");
+
+    const add = await runQmd(["collection", "add", collectionDir, "--name", "embed-hint-default"], {
+      dbPath, configDir,
+    });
+    expect(add.exitCode).toBe(0);
+
+    const update = await runQmd(["update"], { dbPath, configDir });
+    expect(update.exitCode).toBe(0);
+    expect(update.stdout).toContain("Run 'qmd embed'");
+  });
+
   test("rejects invalid --max-batch-mb", async () => {
     const { stderr, exitCode } = await runQmd(["embed", "--max-batch-mb", "0"]);
     expect(exitCode).toBe(1);

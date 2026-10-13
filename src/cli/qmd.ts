@@ -926,6 +926,10 @@ async function updateCollections(): Promise<void> {
 
   const db = getDb();
   const storeInstance = getStore();
+  // Resolve once: the end-of-update 'qmd embed' hint must count against the
+  // same model fingerprint `qmd embed` itself uses (resolveModelsForRuntime),
+  // not the DEFAULT_EMBED_MODEL fallback.
+  const updateEmbedModel = resolveModelsForRuntime().embed;
   // Collections are defined in YAML; no duplicate cleanup needed.
 
   // Clear Ollama cache on update
@@ -1021,7 +1025,7 @@ async function updateCollections(): Promise<void> {
   }
 
   // Check if any documents need embedding (show once at end)
-  const needsEmbedding = getHashesNeedingEmbedding(db);
+  const needsEmbedding = getHashesNeedingEmbedding(db, undefined, updateEmbedModel);
   const vectorTotal = (db.prepare(`SELECT COUNT(*) as count FROM content_vectors`).get() as { count: number }).count;
   const orphanedVectors = countOrphanedVectors(db);
   closeDb();
