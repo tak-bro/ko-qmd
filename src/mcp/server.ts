@@ -1474,12 +1474,16 @@ export async function startMcpHttpServer(
         return;
       }
 
-      nodeRes.writeHead(404);
-      nodeRes.end("Not Found");
+      nodeRes.writeHead(404, { "Content-Type": "application/json" });
+      nodeRes.end(JSON.stringify({ error: "Not Found" }));
     } catch (err) {
       console.error("HTTP handler error:", err);
-      nodeRes.writeHead(500);
-      nodeRes.end("Internal Server Error");
+      if (!nodeRes.headersSent) {
+        nodeRes.writeHead(500, { "Content-Type": "application/json" });
+        nodeRes.end(JSON.stringify({ error: "Internal Server Error" }));
+      } else {
+        nodeRes.end();
+      }
     }
   });
 

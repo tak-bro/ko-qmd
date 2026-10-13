@@ -1030,6 +1030,28 @@ describe.skipIf(!!process.env.CI)("MCP HTTP Transport", () => {
   test("GET /other returns 404", async () => {
     const res = await fetch(`${baseUrl}/other`);
     expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect((await res.json()).error).toBe("Not Found");
+  });
+
+  test("unknown REST routes return JSON {error} envelope, not plain text", async () => {
+    const cases: Array<[string, string, string?]> = [
+      ["POST", "/health", JSON.stringify({})],
+      ["GET", "/query"],
+      ["PUT", "/query", JSON.stringify({})],
+      ["GET", "/search"],
+      ["DELETE", "/query"],
+    ];
+    for (const [method, path, body] of cases) {
+      const res = await fetch(`${baseUrl}${path}`, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        ...(body !== undefined ? { body } : {}),
+      });
+      expect(res.status).toBe(404);
+      expect(res.headers.get("content-type")).toContain("application/json");
+      expect(await res.json()).toEqual({ error: "Not Found" });
+    }
   });
 
   test("POST /query rejects malformed and non-object JSON with 400", async () => {
