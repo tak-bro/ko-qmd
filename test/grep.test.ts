@@ -165,6 +165,42 @@ describe("grepDocuments", () => {
     expect(note.matchCount).toBe(2);
   });
 
+  test("a zero file limit clamps to 1 rather than returning 1 file as truncated", () => {
+    const result = grep("TODO", { limit: 0 });
+    expect(result.files).toHaveLength(1);
+    expect(result.truncated).toBe(true);
+  });
+
+  test("a negative file limit clamps to 1", () => {
+    const result = grep("TODO", { limit: -5 });
+    expect(result.files).toHaveLength(1);
+    expect(result.truncated).toBe(true);
+  });
+
+  test("a zero per-file line cap clamps to 1 so lines stay addressable", () => {
+    const result = grep("todo", { maxLinesPerFile: 0 });
+    const note = result.files.find(f => f.displayPath === "docs/journals/note.md")!;
+    expect(note.matchCount).toBe(2);
+    expect(note.lines).toHaveLength(1);
+  });
+
+  test("a negative per-file line cap clamps to 1", () => {
+    const result = grep("todo", { maxLinesPerFile: -3 });
+    const note = result.files.find(f => f.displayPath === "docs/journals/note.md")!;
+    expect(note.lines).toHaveLength(1);
+  });
+
+  test("a fractional file limit floors to an integer", () => {
+    const result = grep("TODO", { limit: 1.5 });
+    expect(result.files).toHaveLength(1);
+    expect(result.truncated).toBe(true);
+  });
+
+  test("a non-finite bound falls back to the default", () => {
+    expect(grep("TODO", { limit: NaN }).files.length).toBeGreaterThan(1);
+    expect(grep("todo", { maxLinesPerFile: Infinity }).files.length).toBeGreaterThan(0);
+  });
+
   test("a regular expression is a regular expression", () => {
     const result = grep("TODO: (call|archived)");
     expect(result.files.map(f => f.displayPath).sort()).toEqual([

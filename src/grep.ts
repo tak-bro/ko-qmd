@@ -145,8 +145,16 @@ export const grepDocuments = (
   pattern: RegExp,
   options: GrepOptions = {},
 ): GrepResult => {
-  const limit = options.limit ?? DEFAULT_LIMIT;
-  const maxLinesPerFile = options.maxLinesPerFile ?? DEFAULT_MAX_LINES_PER_FILE;
+  // Bounds are enforced here, not at each caller: the CLI clamps only its own
+  // `--max-lines` flag and MCP passes `limit`/`maxLinesPerFile` straight from
+  // the tool schema, so a 0/negative value used to return 1 file with
+  // `truncated:true` (limit) or empty `lines` with `matchCount > 0`
+  // (maxLinesPerFile). Clamping (rather than rejecting with isError) matches
+  // the CLI's existing `Math.max(1, …)` behavior — least surprise across callers.
+  const clampCount = (value: number | undefined, fallback: number): number =>
+    value === undefined || !Number.isFinite(value) ? fallback : Math.max(1, Math.floor(value));
+  const limit = clampCount(options.limit, DEFAULT_LIMIT);
+  const maxLinesPerFile = clampCount(options.maxLinesPerFile, DEFAULT_MAX_LINES_PER_FILE);
   const filter = options.filter;
   const filtering = isNarrowing(filter);
   const collections = options.collections;
