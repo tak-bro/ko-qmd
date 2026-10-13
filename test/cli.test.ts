@@ -1133,6 +1133,54 @@ describe("CLI Multi-Get Command", () => {
     expect(stdout).toContain("Team Meeting");
   });
 
+  test("glob File: rows use qmd:// idents matching the comma branch", async () => {
+    const glob = await runQmd(["multi-get", "notes/*.md", "--no-line-numbers"], { dbPath: localDbPath });
+    expect(glob.exitCode).toBe(0);
+    expect(glob.stdout).toContain("File: qmd://fixtures/notes/meeting.md");
+    expect(glob.stdout).toContain("File: qmd://fixtures/notes/ideas.md");
+    expect(glob.stdout).not.toMatch(/^File: notes\//m);
+
+    // The comma branch must identify the same docs with the same idents.
+    const comma = await runQmd([
+      "multi-get",
+      "notes/meeting.md,notes/ideas.md",
+      "--no-line-numbers",
+    ], { dbPath: localDbPath });
+    expect(comma.exitCode).toBe(0);
+    expect(comma.stdout).toContain("File: qmd://fixtures/notes/meeting.md");
+    expect(comma.stdout).toContain("File: qmd://fixtures/notes/ideas.md");
+  });
+
+  test("glob disambiguates the same relpath across two collections", async () => {
+    // Two collections over different dirs sharing one relpath (kept outside
+    // fixturesDir so shared-fixture counts in other tests are unaffected).
+    const dirA = join(testDir, "two-a");
+    const dirB = join(testDir, "two-b");
+    await mkdir(join(dirA, "docs"), { recursive: true });
+    await mkdir(join(dirB, "docs"), { recursive: true });
+    await writeFile(join(dirA, "docs", "SYNTAX.md"), "TWO-A SYNTAX BODY\n");
+    await writeFile(join(dirB, "docs", "SYNTAX.md"), "TWO-B SYNTAX BODY\n");
+    const addA = await runQmd(["collection", "add", dirA, "--name", "twoa"], { dbPath: localDbPath });
+    expect(addA.exitCode).toBe(0);
+    const addB = await runQmd(["collection", "add", dirB, "--name", "twob"], { dbPath: localDbPath });
+    expect(addB.exitCode).toBe(0);
+
+    const glob = await runQmd(["multi-get", "docs/SYNTAX.md", "--no-line-numbers"], { dbPath: localDbPath });
+    expect(glob.exitCode).toBe(0);
+    // Same relpath in two collections must not collapse to one bare ident.
+    expect(glob.stdout).toContain("File: qmd://twoa/docs/SYNTAX.md");
+    expect(glob.stdout).toContain("File: qmd://twob/docs/SYNTAX.md");
+    expect(glob.stdout).not.toMatch(/^File: docs\/SYNTAX\.md/m);
+    expect(glob.stdout).toContain("TWO-A SYNTAX BODY");
+    expect(glob.stdout).toContain("TWO-B SYNTAX BODY");
+
+    // The comma branch must identify the same docs with the same idents.
+    const comma = await runQmd(["multi-get", "twoa/docs/SYNTAX.md,twob/docs/SYNTAX.md", "--no-line-numbers"], { dbPath: localDbPath });
+    expect(comma.exitCode).toBe(0);
+    expect(comma.stdout).toContain("File: qmd://twoa/docs/SYNTAX.md");
+    expect(comma.stdout).toContain("File: qmd://twob/docs/SYNTAX.md");
+  });
+
   test("comma-list accepts collection-prefixed paths (#759)", async () => {
     const { stdout, stderr, exitCode } = await runQmd([
       "multi-get",

@@ -1409,9 +1409,15 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
       process.exit(1);
     }
   } else {
-    // Glob pattern - matchFilesByGlob now returns virtual paths
+    // Glob pattern: show the qmd:// virtual path as the ident — the same shape
+    // as the comma branch above — so same-relpath docs in different
+    // collections stay distinguishable (File: rows keep identifying the same
+    // docs; only the display ident changes). matchFilesByGlob's own
+    // displayPath stays bare-relative (pinned by store tests); only the CLI
+    // ident is normalized here.
     files = matchFilesByGlob(db, pattern).map(f => ({
       ...f,
+      displayPath: f.filepath,
       collection: undefined,  // Will be fetched later if needed
       path: undefined
     }));
