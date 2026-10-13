@@ -4037,10 +4037,12 @@ function collectEnvironmentOverrides(activeModels: { embed: string; generate: st
   };
 
   add("INDEX_PATH", "overrides the SQLite index path; QMD reads/writes a different database");
+  add("QMD_SQLITE_BUSY_TIMEOUT", "overrides the SQLite busy-timeout in ms (default 120000, 0 = fail-fast); too low can surface SQLITE_BUSY under concurrent writers");
   add("QMD_CONFIG_DIR", "overrides the QMD config directory and takes precedence over XDG_CONFIG_HOME");
   add("XDG_CONFIG_HOME", "moves QMD config to $XDG_CONFIG_HOME/qmd when QMD_CONFIG_DIR is not set");
   add("XDG_CACHE_HOME", "moves the default index cache, model cache, MCP daemon PID files, and query logs");
   add("QMD_QUERY_LOG", "1/true/yes makes the HTTP daemon append each search to queries-YYYY-MM.jsonl in the cache dir");
+  add("QMD_HOST", "overrides the MCP HTTP server bind host (default localhost); 0.0.0.0 accepts off-host connections");
   addModel("QMD_EMBED_MODEL", "embed", activeModels.embed);
   addModel("QMD_GENERATE_MODEL", "generate", activeModels.generate);
   addModel("QMD_RERANK_MODEL", "rerank", activeModels.rerank);
@@ -4063,6 +4065,8 @@ function collectEnvironmentOverrides(activeModels: { embed: string; generate: st
   add("CI", "disables real LLM operations inside QMD's LlamaCpp wrapper");
   add("HF_ENDPOINT", "changes Hugging Face download endpoint used when pulling models");
   add("QMD_WRAPPER_CAPTURE", "test/debug hook for the qmd shell wrapper; should not be set in normal use");
+  add("QMD_TRUST_LOCAL_CONFIG", "trusts project-local .qmd config hooks/paths/models without prompting; runs unreviewed commands on update/query");
+  add("QMD_TRUST_UPDATE_HOOKS", "runs project-local update hooks without prompting; runs unreviewed commands on update");
   add("WSL_DISTRO_NAME", "enables WSL path handling heuristics");
   add("WSL_INTEROP", "enables WSL path handling heuristics");
   return overrides;
