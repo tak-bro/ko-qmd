@@ -2777,7 +2777,7 @@ describe("memory tools round trip", () => {
     expect(first.results[0].metadata).toMatchObject({ actor: "agent:claude-code", type: "fact", source: "ko-qmd/src/rerank-input.ts:40" });
     expect(first.results[0].superseded_by).toBeUndefined();
     expect(typeof first.vectors_stale).toBe("boolean");
-    // Omitting rerank takes the fused fast path, the only one that reports raw backend scores.
+    // Omitting rerank takes the fused fast path; fts_score comes from explain, which only that path enables.
     expect(first.results[0].fts_score).toEqual(expect.any(Number));
 
     const unsourced = await callTool("memory_correct", {

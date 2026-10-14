@@ -899,6 +899,7 @@ Intent-aware lex (C++ performance, not sports):
       }
 
       await refreshBeforeQuery(store, effective);
+      const fused = rerank !== true;
       const searchOptions = query
         ? { query }
         : { queries: (searches ?? []).map(s => ({ type: s.type, query: s.query })) };
@@ -908,8 +909,9 @@ Intent-aware lex (C++ performance, not sports):
         filter: combinedFilter,
         limit,
         // The SDK reranks unless told not to; recall's default is the fused fast path.
-        rerank: rerank === true,
-        explain: rerank !== true,
+        // explain (raw fts/vec scores) is tied to the same switch so the default stays observable.
+        rerank: !fused,
+        explain: fused,
         ...searchDeadlines(),
       });
       const primaryQuery = query
