@@ -69,6 +69,30 @@ describe("createIndexRefresher", () => {
     expect(f.snapshotted).toEqual(["notes", "notes"]);
   });
 
+  test("refreshNow re-walks inside the cooldown, so a just-written note is indexed", async () => {
+    const snapshots = { notes: { fileCount: 3, newestMtimeMs: 400_000 } };
+    const f = fakeDeps([notes], snapshots);
+    const refresher = createIndexRefresher({ ...f.deps, cooldownMs: 30_000 });
+    await refresher.refreshIfStale(["notes"]);
+    f.advance(1_000);
+    snapshots.notes = { fileCount: 4, newestMtimeMs: 1_001_000 };
+    await refresher.refreshIfStale(["notes"]);
+    expect(f.reindexed).toEqual([]);
+    await refresher.refreshNow(["notes"]);
+    expect(f.reindexed).toEqual(["notes"]);
+  });
+
+  test("refreshNow still walks when a concurrent query starts a pass right after the write", async () => {
+    const snapshots = { notes: { fileCount: 3, newestMtimeMs: 400_000 } };
+    const f = fakeDeps([notes], snapshots);
+    const refresher = createIndexRefresher({ ...f.deps, cooldownMs: 30_000 });
+    await refresher.refreshIfStale(["notes"]);
+    f.advance(1_000);
+    snapshots.notes = { fileCount: 4, newestMtimeMs: 1_001_000 };
+    await Promise.all([refresher.refreshNow(["notes"]), refresher.refreshIfStale(["notes"])]);
+    expect(f.reindexed).toEqual(["notes"]);
+  });
+
   test("a touched file whose content did not change does not re-index on every pass", async () => {
     // reindexCollection only bumps modified_at when content changes, so a file whose mtime
     // moved without its content moving stays "newer than the index" forever. Without the

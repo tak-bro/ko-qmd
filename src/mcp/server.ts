@@ -37,13 +37,15 @@ import { entryFromMcp, entryFromRest, isoWithOffset, logQuery, queryLogStatus, t
 import { formatDaemonHealthLine, resolveHealthLogIntervalMs } from "./daemon-health.js";
 import { createStoreIndexRefresher, type IndexRefresher } from "../refresh.js";
 import { buildDocumentFilter, describeFilter, type DocumentFilter } from "../filters.js";
-import { countFilteredDocuments, type SearchHooks } from "../store.js";
+import { countFilteredDocuments, getHashesNeedingEmbedding, DEFAULT_EMBED_MODEL, type SearchHooks } from "../store.js";
 import { normalizeRerankMaxDocTokens } from "../llm.js";
 import { compileGrepPattern, grepDocuments } from "../grep.js";
-import { writeFile, appendFile, readFile } from "node:fs/promises";
+import { writeFile, appendFile, readFile, lstat, realpath, unlink } from "node:fs/promises";
 import {
   MEMORY_COLLECTION,
   validateMemoryStoreInput,
+  validateCorrection,
+  parseSupersededBy,
   buildMemoryFilename,
   renderMemoryDoc,
   renderSupersededFooter,
@@ -172,6 +174,21 @@ function getPackageVersion(): string {
 const refreshers = new WeakMap<QMDStore, IndexRefresher>();
 
 /**
+ * memory_correct is read → validate → write → append; two calls on one file would both pass
+ * the "not yet superseded" check and fork the chain. Module-level because stateless HTTP
+ * builds a fresh McpServer per request. Serialises within this process only.
+ */
+const correctLocks = new Map<string, Promise<unknown>>();
+function withFileLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = correctLocks.get(key) ?? Promise.resolve();
+  const run = prev.then(fn, fn);
+  const settled = run.catch(() => {});
+  correctLocks.set(key, settled);
+  void settled.then(() => { if (correctLocks.get(key) === settled) correctLocks.delete(key); });
+  return run;
+}
+
+/**
  * ko-qmd: per-stage milliseconds for the query log. The hooks fill `stages` as
  * the search runs; the caller adds `refresh` and `serialize` around it. A stage
  * past its deadline lands in `timeouts`, with the ms it was waited on.
@@ -241,6 +258,27 @@ function describeTimeouts(timeouts: QueryLogTimeout[]): string {
  * throws — a failed refresh is logged and the query runs against the index as it was.
  */
 async function refreshBeforeQuery(store: QMDStore, collections: readonly string[]): Promise<void> {
+  const refresher = refresherFor(store);
+  try {
+    const targets = collections.length > 0
+      ? collections
+      : (await store.listCollections()).map(c => c.name);
+    await refresher.refreshIfStale(targets);
+  } catch (error) {
+    console.error(`qmd: index refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/** After a tool wrote into a collection: skip the cooldown so the next recall sees the file. */
+async function refreshAfterWrite(store: QMDStore, collection: string): Promise<void> {
+  try {
+    await refresherFor(store).refreshNow([collection]);
+  } catch (error) {
+    console.error(`qmd: index refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function refresherFor(store: QMDStore): IndexRefresher {
   let refresher = refreshers.get(store);
   if (!refresher) {
     refresher = createStoreIndexRefresher(store, {
@@ -251,14 +289,7 @@ async function refreshBeforeQuery(store: QMDStore, collections: readonly string[
     });
     refreshers.set(store, refresher);
   }
-  try {
-    const targets = collections.length > 0
-      ? collections
-      : (await store.listCollections()).map(c => c.name);
-    await refresher.refreshIfStale(targets);
-  } catch (error) {
-    console.error(`qmd: index refresh failed: ${error instanceof Error ? error.message : String(error)}`);
-  }
+  return refresher;
 }
 
 /**
@@ -734,6 +765,30 @@ Intent-aware lex (C++ performance, not sports):
     isError: true as const,
   });
 
+  /** Create-only write (append-only store): a name clash retries with a fresh name, never overwrites. */
+  async function writeNewMemory(dir: string, text: string, doc: string): Promise<string> {
+    for (let attempt = 0; ; attempt++) {
+      const filename = buildMemoryFilename(new Date(), text);
+      try {
+        await writeFile(`${dir}/${filename}`, doc, { encoding: "utf-8", flag: "wx" });
+        return filename;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST" || attempt >= 4) throw error;
+      }
+    }
+  }
+
+  /** null when the count itself failed (e.g. SQLITE_BUSY from `qmd update`) — the recall still answers. */
+  function memVectorsStale(): boolean | null {
+    try {
+      const model = store.internal.llm?.embedModelName ?? DEFAULT_EMBED_MODEL;
+      return getHashesNeedingEmbedding(store.internal.db, MEMORY_COLLECTION, model) > 0;
+    } catch {
+      return null;
+    }
+  }
+
+
   server.registerTool(
     "memory_store",
     {
@@ -763,9 +818,8 @@ Intent-aware lex (C++ performance, not sports):
       }
       const resolved = await resolveMemDir(store);
       if ("error" in resolved) return memError(`Error: ${resolved.error}`);
-      const filename = buildMemoryFilename(new Date(), text);
-      await writeFile(`${resolved.dir}/${filename}`, renderMemoryDoc(input), "utf-8");
-      await refreshBeforeQuery(store, [MEMORY_COLLECTION]);
+      const filename = await writeNewMemory(resolved.dir, text, renderMemoryDoc(input));
+      await refreshAfterWrite(store, MEMORY_COLLECTION);
       const payload = buildStoreReceipt(filename);
       return {
         content: [{ type: "text" as const, text: JSON.stringify(payload) }],
@@ -778,26 +832,26 @@ Intent-aware lex (C++ performance, not sports):
     "memory_recall",
     {
       title: "Recall Memory",
-      description: "Recall shared memory across the mem + kb collections (existing docs need no migration), with actor/project narrowing and provenance in every hit. kb-only when the mem collection is absent.",
+      description: "Recall shared memory across the mem + kb collections (existing docs need no migration), with actor/project narrowing. Hits carry qmd.metadata provenance (actor/type/source) when the doc has it, and superseded_by when a newer correction exists. kb-only when the mem collection is absent.",
       inputSchema: {
         query: z.string().optional().describe("Plain-text query, auto-expanded unless it has Hangul."),
         searches: z.array(z.object({
           type: z.enum(["lex", "vec", "hyde"]),
           query: z.string(),
         })).optional().describe("Typed sub-queries; mutually exclusive with 'query'."),
-        actor: z.string().optional().describe("Narrow to who said it."),
-        project: z.string().optional().describe("Narrow to a project tag."),
-        limit: z.number().int().default(5).describe("Max hits, positive integer."),
+        actor: z.string().nullable().optional().describe("Narrow to who said it."),
+        project: z.string().nullable().optional().describe("Narrow to a project tag."),
+        limit: z.number().int().max(50).default(5).describe("Max hits, 1..50."),
         collections: z.array(z.string()).optional().describe("Override search scope; default [mem, kb] ∩ known."),
         filter: z.any().optional().describe("Extra metadata filter (JSON AST), AND-combined with actor/project."),
-        rerank: z.boolean().optional().describe("Rerank with the LLM; omit for the fast path."),
+        rerank: z.boolean().optional().describe("true = rerank with the LLM (slower); omitted/false = fused RRF fast path."),
       },
     },
     track(async ({ query, searches, actor, project, limit, collections, filter, rerank }: {
       query?: string;
       searches?: { type: "lex" | "vec" | "hyde"; query: string }[];
-      actor?: string;
-      project?: string;
+      actor?: string | null;
+      project?: string | null;
       limit: number;
       collections?: string[];
       filter?: unknown;
@@ -817,8 +871,8 @@ Intent-aware lex (C++ performance, not sports):
         return memError(`Error: ${filterValidation.error}`);
       }
       const narrowing: { key: string; operator: "eq"; value: string }[] = [];
-      if (actor !== undefined) narrowing.push({ key: "actor", operator: "eq", value: actor });
-      if (project !== undefined) narrowing.push({ key: "project", operator: "eq", value: project });
+      if (actor != null) narrowing.push({ key: "actor", operator: "eq", value: actor });
+      if (project != null) narrowing.push({ key: "project", operator: "eq", value: project });
       const parts: unknown[] = [...narrowing];
       if (filterValidation.filter !== undefined) parts.push(filterValidation.filter);
       // Already-validated parts combined by construction — no re-parse.
@@ -853,8 +907,9 @@ Intent-aware lex (C++ performance, not sports):
         collections: effective,
         filter: combinedFilter,
         limit,
-        rerank,
-        explain: rerank === false,
+        // The SDK reranks unless told not to; recall's default is the fused fast path.
+        rerank: rerank === true,
+        explain: rerank !== true,
         ...searchDeadlines(),
       });
       const primaryQuery = query
@@ -864,21 +919,25 @@ Intent-aware lex (C++ performance, not sports):
         || "";
       const hits = results.map(r => {
         const { line, snippet } = extractSnippet(r.body, primaryQuery, 300, r.bestChunkPos, r.bestChunk.length);
+        const supersededBy = r.displayPath.startsWith(`${MEMORY_COLLECTION}/`) ? parseSupersededBy(r.body) : undefined;
         return {
           file: r.displayPath,
           title: r.title,
           score: roundScore(r.score),
           ...rawBackendScores(r.explain),
           ...(Object.keys(r.metadata).length > 0 ? { metadata: r.metadata } : {}),
+          ...(supersededBy !== undefined ? { superseded_by: `${MEMORY_COLLECTION}/${supersededBy}` } : {}),
           line,
           snippet,
         };
       });
+      const vectorsStale = effective.includes(MEMORY_COLLECTION) ? memVectorsStale() : false;
       const payload = {
         ok: true,
         collections_searched: effective,
         ...(notices.length > 0 ? { notices } : {}),
-        vectors_stale_note: VECTORS_STALE_NOTICE,
+        vectors_stale: vectorsStale,
+        ...(vectorsStale !== false ? { vectors_stale_note: VECTORS_STALE_NOTICE } : {}),
         results: hits,
       };
       return {
@@ -912,44 +971,55 @@ Intent-aware lex (C++ performance, not sports):
       source?: string | null;
       project?: string | null;
     }) => {
-      if (typeof reason !== "string" || reason.trim().length === 0) {
-        return memError("Error: reason is required");
-      }
       const resolved = await resolveMemDir(store);
       if ("error" in resolved) return memError(`Error: ${resolved.error}`);
       const abs = resolveInCollection(resolved.dir, file);
       if (abs === null) {
-        return memError("Error: file must be a flat .md filename inside the mem collection");
+        return memError("Error: file must be a tool-written mem filename (YYYYMMDD-HHMMSS-xxxx-xxxxxxxx.md)");
       }
-      let oldBody: string;
-      try {
-        oldBody = await readFile(abs, "utf-8");
-      } catch {
-        return memError(`Error: no such mem file: ${file}`);
-      }
-      const oldMeta = extractDocumentMetadata(oldBody, file).metadata;
-      const merged: MemoryStoreInput = {
-        text,
-        actor,
-        type: type ?? (oldMeta["type"] === "fact" || oldMeta["type"] === "opinion" || oldMeta["type"] === "decision" ? oldMeta["type"] : "opinion"),
-        source: source ?? (typeof oldMeta["source"] === "string" ? oldMeta["source"] : undefined),
-        project: project ?? (typeof oldMeta["project"] === "string" ? oldMeta["project"] : undefined),
-      };
-      const validation = validateMemoryStoreInput(merged);
-      if (!validation.ok) {
-        return memError(`Error [${validation.rule}]: ${validation.error}`);
-      }
-      const filename = buildMemoryFilename(new Date(), text);
-      await Promise.all([
-        writeFile(`${resolved.dir}/${filename}`, renderMemoryDoc(merged, { supersedes: file }), "utf-8"),
-        appendFile(abs, renderSupersededFooter(filename, reason), "utf-8"),
-      ]);
-      await refreshBeforeQuery(store, [MEMORY_COLLECTION]);
-      const payload = buildStoreReceipt(filename, file);
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(payload) }],
-        structuredContent: payload,
-      };
+      return withFileLock(abs, async () => {
+        let oldBody: string;
+        try {
+          const st = await lstat(abs);
+          if (!st.isFile()) return memError(`Error: not a regular mem file: ${file}`);
+          const [realDir, realFile] = await Promise.all([realpath(resolved.dir), realpath(abs)]);
+          if (!realFile.startsWith(`${realDir}/`)) return memError(`Error: ${file} resolves outside the mem collection`);
+          oldBody = await readFile(abs, "utf-8");
+        } catch {
+          return memError(`Error: no such mem file: ${file}`);
+        }
+        const correction = validateCorrection(oldBody, reason);
+        if (!correction.ok) {
+          return memError(`Error [${correction.rule}]: ${correction.error}`);
+        }
+        const oldMeta = extractDocumentMetadata(oldBody, file).metadata;
+        const merged: MemoryStoreInput = {
+          text,
+          actor,
+          type: type ?? (oldMeta["type"] === "fact" || oldMeta["type"] === "opinion" || oldMeta["type"] === "decision" ? oldMeta["type"] : "opinion"),
+          source: source ?? (typeof oldMeta["source"] === "string" ? oldMeta["source"] : undefined),
+          project: project ?? (typeof oldMeta["project"] === "string" ? oldMeta["project"] : undefined),
+        };
+        const validation = validateMemoryStoreInput(merged);
+        if (!validation.ok) {
+          return memError(`Error [${validation.rule}]: ${validation.error}`);
+        }
+        // New file first, footer second: a failed append rolls the new file back,
+        // so the chain never has a dangling half.
+        const filename = await writeNewMemory(resolved.dir, text, renderMemoryDoc(merged, { supersedes: file }));
+        try {
+          await appendFile(abs, renderSupersededFooter(filename, reason), "utf-8");
+        } catch (error) {
+          await unlink(`${resolved.dir}/${filename}`).catch(() => {});
+          return memError(`Error: could not mark ${file} superseded (${error instanceof Error ? error.message : String(error)}); nothing written`);
+        }
+        await refreshAfterWrite(store, MEMORY_COLLECTION);
+        const payload = buildStoreReceipt(filename, file);
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(payload) }],
+          structuredContent: payload,
+        };
+      });
     }),
   );
 

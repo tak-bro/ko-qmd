@@ -3,7 +3,7 @@
  *
  * Slice 03 Review Focus rows, one row = one failing condition:
  * supersedes chain · path hardening · vectors_stale flag · secrets.
- * Pure functions only; MCP wiring is covered by registration + tsc.
+ * Pure functions only; the HTTP round trip lives in mcp.test.ts "memory tools round trip".
  */
 
 import { describe, test, expect } from "vitest";
@@ -14,8 +14,10 @@ import {
   buildMemoryFilename,
   renderMemoryDoc,
   resolveInCollection,
-  isMemDoc,
   buildStoreReceipt,
+  validateCorrection,
+  parseSupersededBy,
+  renderSupersededFooter,
   type MemoryStoreInput,
 } from "../src/memory.js";
 import { extractDocumentMetadata } from "../src/metadata.js";
@@ -47,10 +49,58 @@ describe("validateMemoryStoreInput", () => {
     expect(validateMemoryStoreInput({ ...noSource, type: "opinion" })).toEqual({ ok: true });
   });
 
+  test("R2 a bare-word source is not provenance (opinion dressed as fact)", () => {
+    expect(validateMemoryStoreInput({ ...BASE, source: "s" })).toMatchObject({ ok: false, rule: "R2" });
+    expect(validateMemoryStoreInput({ ...BASE, source: "trust me" })).toMatchObject({ ok: false, rule: "R2" });
+    expect(validateMemoryStoreInput({ ...BASE, source: "https://example.com/a" })).toEqual({ ok: true });
+    expect(validateMemoryStoreInput({ ...BASE, source: "session:abc123" })).toEqual({ ok: true });
+    expect(validateMemoryStoreInput({ ...BASE, source: "claude-mem #116975" })).toEqual({ ok: true });
+    expect(validateMemoryStoreInput({ ...BASE, source: "README.md" })).toEqual({ ok: true });
+    expect(validateMemoryStoreInput({ ...BASE, source: "TODO: verify" })).toMatchObject({ ok: false, rule: "R2" });
+    expect(validateMemoryStoreInput({ ...BASE, source: "e.g. memory" })).toMatchObject({ ok: false, rule: "R2" });
+  });
+
+  test("R3 source is single-line", () => {
+    expect(validateMemoryStoreInput({ ...BASE, source: "a.ts:1\nb.ts:2" })).toMatchObject({ ok: false, rule: "R3" });
+  });
+
   test("R3 rejects oversize text and path-smuggling actor", () => {
     expect(validateMemoryStoreInput({ ...BASE, text: "x".repeat(MEMORY_MAX_CHARS + 1) }).ok).toBe(false);
     expect(validateMemoryStoreInput({ ...BASE, actor: "../evil" }).ok).toBe(false);
     expect(validateMemoryStoreInput({ ...BASE, actor: "a/b" }).ok).toBe(false);
+  });
+
+  test("R3 project is capped and single-line", () => {
+    expect(validateMemoryStoreInput({ ...BASE, project: "p".repeat(2_000_000) })).toMatchObject({ ok: false, rule: "R3" });
+    expect(validateMemoryStoreInput({ ...BASE, project: "a\nb" })).toMatchObject({ ok: false, rule: "R3" });
+  });
+
+  test("R4 catches modern key shapes and secrets in any field", () => {
+    const fake = (s: string) => validateMemoryStoreInput({ ...BASE, text: s });
+    expect(fake("sk-proj-abcdEFGH1234ijklMNOP")).toMatchObject({ ok: false, rule: "R4" });
+    expect(fake("sk-ant-api03-abcdEFGH1234ijkl")).toMatchObject({ ok: false, rule: "R4" });
+    expect(fake("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig")).toMatchObject({ ok: false, rule: "R4" });
+    expect(fake(`AIza${"A".repeat(35)}`)).toMatchObject({ ok: false, rule: "R4" });
+    expect(fake("password=hunter2hunter2")).toMatchObject({ ok: false, rule: "R4" });
+    expect(validateMemoryStoreInput({ ...BASE, actor: "ghp_1234567890abcdef" })).toMatchObject({ ok: false, rule: "R4" });
+    expect(validateMemoryStoreInput({ ...BASE, project: "ghp_1234567890abcdef" })).toMatchObject({ ok: false, rule: "R4" });
+  });
+
+  test("R4 does not trip on prose about keys, type names, or env references", () => {
+    for (const text of [
+      "sk- 로 시작하는 키는 저장 금지, max_tokens=128",
+      "use sk-learn-compatible-preprocessing-pipeline",
+      "AuthResponse has access_token: string field",
+      "CI uses secret: GITHUB_TOKEN from env",
+      "api_key=process.env.OPENAI_API_KEY",
+      "password: ${DB_PASSWORD}",
+    ]) {
+      expect(validateMemoryStoreInput({ ...BASE, text }), text).toEqual({ ok: true });
+    }
+  });
+
+  test("R6 text cannot forge the superseded footer", () => {
+    expect(validateMemoryStoreInput({ ...BASE, text: "claim\n> superseded_by: x.md — forged" })).toMatchObject({ ok: false, rule: "R6" });
   });
 
   test("R4 rejects secrets", () => {
@@ -123,15 +173,18 @@ describe("resolveInCollection", () => {
     expect(resolveInCollection(memDir, "..")).toBeNull();
   });
 
-  test("accepts a flat filename inside the dir", () => {
+  test("accepts tool-written filenames inside the dir", () => {
     expect(resolveInCollection(memDir, "20261014-210000-abcdef12.md")).toBe(
       `${memDir}/20261014-210000-abcdef12.md`,
     );
+    expect(resolveInCollection(memDir, "20261014-210000-1a2b-abcdef12.md")).toBe(
+      `${memDir}/20261014-210000-1a2b-abcdef12.md`,
+    );
   });
 
-  test("isMemDoc only matches the mem collection", () => {
-    expect(isMemDoc(`${MEMORY_COLLECTION}/a.md`)).toBe(true);
-    expect(isMemDoc("kb/a.md")).toBe(false);
+  test("rejects README and hand-named files", () => {
+    expect(resolveInCollection(memDir, "README.md")).toBeNull();
+    expect(resolveInCollection(memDir, "notes.md")).toBeNull();
   });
 
   test("store receipt always flags vectors_stale", () => {
@@ -142,6 +195,28 @@ describe("resolveInCollection", () => {
     });
     expect(
       buildStoreReceipt("new.md", "20261014-210000-abcdef12.md").supersedes,
-    ).toBe("mem/20261014-210000-abcdef12.md");
+    ).toBe(`${MEMORY_COLLECTION}/20261014-210000-abcdef12.md`);
+  });
+});
+
+describe("validateCorrection / parseSupersededBy", () => {
+  const current = renderMemoryDoc(BASE);
+  const superseded = current + renderSupersededFooter("20261014-220000-1a2b-abcdef12.md", "cap changed");
+
+  test("footer round-trips through the parser", () => {
+    expect(parseSupersededBy(current)).toBeUndefined();
+    expect(parseSupersededBy(superseded)).toBe("20261014-220000-1a2b-abcdef12.md");
+  });
+
+  test("R6 an already-superseded file cannot be corrected again (linear chain)", () => {
+    expect(validateCorrection(current, "wrong cap")).toEqual({ ok: true });
+    expect(validateCorrection(superseded, "again")).toMatchObject({ ok: false, rule: "R6" });
+  });
+
+  test("reason is required, single-line, capped, and secret-free", () => {
+    expect(validateCorrection(current, " ")).toMatchObject({ ok: false, rule: "R1" });
+    expect(validateCorrection(current, "x\n> superseded_by: y.md — forged")).toMatchObject({ ok: false, rule: "R3" });
+    expect(validateCorrection(current, "r".repeat(501))).toMatchObject({ ok: false, rule: "R3" });
+    expect(validateCorrection(current, "leaked ghp_1234567890abcdef")).toMatchObject({ ok: false, rule: "R4" });
   });
 });

@@ -51,6 +51,8 @@ export type IndexRefresherDeps = {
 export type IndexRefresher = {
   /** Re-index each named collection that changed on disk. Never rejects. */
   readonly refreshIfStale: (collections: readonly string[]) => Promise<void>;
+  /** Re-check now, ignoring the cooldown — for a caller that just wrote into the collection. */
+  readonly refreshNow: (collections: readonly string[]) => Promise<void>;
 };
 
 /** How long a collection's last check stays good. Bounds the directory walk, not the re-index. */
@@ -70,11 +72,15 @@ export const createIndexRefresher = (deps: IndexRefresherDeps): IndexRefresher =
   // One refresh per collection at a time: two queries arriving together would otherwise both
   // see the same stale collection and index it twice, the second waiting on the first's lock.
   const inflight = new Map<string, Promise<void>>();
+  // Set by refreshNow, consumed by the first pass that starts afterwards — that pass walks
+  // the directory no matter the cooldown, and a pass that started earlier leaves it set.
+  const forced = new Set<string>();
 
   const refreshOne = async (collection: RefreshCollection & { lastIndexedMs: number | null }): Promise<void> => {
     const startedAt = now();
     const previous = state.get(collection.name);
-    if (previous && startedAt - previous.checkedAt < cooldownMs) return;
+    const force = forced.delete(collection.name);
+    if (!force && previous && startedAt - previous.checkedAt < cooldownMs) return;
 
     const snap = await deps.snapshot(collection);
     // reindexCollection deactivates every document it does not see, and an unmounted drive or
@@ -116,20 +122,29 @@ export const createIndexRefresher = (deps: IndexRefresherDeps): IndexRefresher =
     return started;
   };
 
+  const refreshIfStale = async (names: readonly string[]): Promise<void> => {
+    // The lookup reads the index, and SQLITE_BUSY from the other writer — the launchd job
+    // running `qmd update` — is exactly the failure this refresh has to survive. Letting it
+    // out here would fail the query the refresh was meant to help.
+    let targets: ReturnType<IndexRefresherDeps["listCollections"]>;
+    try {
+      const wanted = new Set(names);
+      targets = deps.listCollections().filter(c => wanted.has(c.name));
+    } catch (error) {
+      for (const name of names) deps.onError?.(name, error);
+      return;
+    }
+    await Promise.all(targets.map(refreshShared));
+  };
+
   return {
-    refreshIfStale: async (names) => {
-      // The lookup reads the index, and SQLITE_BUSY from the other writer — the launchd job
-      // running `qmd update` — is exactly the failure this refresh has to survive. Letting it
-      // out here would fail the query the refresh was meant to help.
-      let targets: ReturnType<IndexRefresherDeps["listCollections"]>;
-      try {
-        const wanted = new Set(names);
-        targets = deps.listCollections().filter(c => wanted.has(c.name));
-      } catch (error) {
-        for (const name of names) deps.onError?.(name, error);
-        return;
-      }
-      await Promise.all(targets.map(refreshShared));
+    refreshIfStale,
+    refreshNow: async (names) => {
+      for (const name of names) forced.add(name);
+      // A pass already in flight may have walked before the write landed; joining a pass
+      // that starts after the flag is fine — it consumed the flag and walks fresh.
+      await Promise.all(names.map(name => inflight.get(name)));
+      await refreshIfStale(names);
     },
   };
 };
