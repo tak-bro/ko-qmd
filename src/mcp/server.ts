@@ -48,8 +48,8 @@ import {
   renderMemoryDoc,
   renderSupersededFooter,
   resolveInCollection,
-  isMemDoc,
   buildStoreReceipt,
+  VECTORS_STALE_NOTICE,
   type MemoryStoreInput,
 } from "../memory.js";
 import { extractDocumentMetadata } from "../metadata.js";
@@ -743,20 +743,20 @@ Intent-aware lex (C++ performance, not sports):
         text: z.string().describe("The claim, one idea per call."),
         actor: z.string().describe("Who says it: user | agent:<harness|lane>."),
         type: z.enum(["fact", "opinion", "decision"]).describe("Opinions need no source; facts and decisions do."),
-        source: z.string().optional().describe("Where it came from: file:line, URL, or session ref. Required for fact/decision."),
-        project: z.string().optional().describe("Project tag for narrowing recall."),
-        confidence: z.number().min(0).max(1).optional().describe("0..1 when known."),
+        source: z.string().nullable().optional().describe("Where it came from: file:line, URL, or session ref. Required for fact/decision."),
+        project: z.string().nullable().optional().describe("Project tag for narrowing recall."),
+        confidence: z.number().min(0).max(1).nullable().optional().describe("0..1 when known."),
       },
     },
     track(async ({ text, actor, type, source, project, confidence }: {
       text: string;
       actor: string;
       type: "fact" | "opinion" | "decision";
-      source?: string;
-      project?: string;
-      confidence?: number;
+      source?: string | null;
+      project?: string | null;
+      confidence?: number | null;
     }) => {
-      const input: MemoryStoreInput = { text, actor, type, source, project, confidence };
+      const input: MemoryStoreInput = { text, actor, type, source: source ?? undefined, project: project ?? undefined, confidence: confidence ?? undefined };
       const validation = validateMemoryStoreInput(input);
       if (!validation.ok) {
         return memError(`Error [${validation.rule}]: ${validation.error}`);
@@ -821,13 +821,8 @@ Intent-aware lex (C++ performance, not sports):
       if (project !== undefined) narrowing.push({ key: "project", operator: "eq", value: project });
       const parts: unknown[] = [...narrowing];
       if (filterValidation.filter !== undefined) parts.push(filterValidation.filter);
-      let combined: unknown = undefined;
-      if (parts.length === 1) combined = parts[0];
-      else if (parts.length > 1) combined = { operator: "and", operands: parts };
-      const combinedValidation = validateFilterArgument(combined);
-      if (combinedValidation.error) {
-        return memError(`Error: ${combinedValidation.error}`);
-      }
+      // Already-validated parts combined by construction — no re-parse.
+      const combinedFilter = (parts.length === 0 ? undefined : parts.length === 1 ? parts[0] : { operator: "and", operands: parts }) as MetadataFilter | undefined;
 
       const knownNames = (await store.listCollections()).map(c => c.name);
       const known = new Set(knownNames);
@@ -856,7 +851,7 @@ Intent-aware lex (C++ performance, not sports):
       const results = await store.search({
         ...searchOptions,
         collections: effective,
-        filter: combinedValidation.filter,
+        filter: combinedFilter,
         limit,
         rerank,
         explain: rerank === false,
@@ -883,7 +878,7 @@ Intent-aware lex (C++ performance, not sports):
         ok: true,
         collections_searched: effective,
         ...(notices.length > 0 ? { notices } : {}),
-        vectors_stale_note: "mem hits before `qmd embed -c mem` are lex-only",
+        vectors_stale_note: VECTORS_STALE_NOTICE,
         results: hits,
       };
       return {
@@ -903,9 +898,9 @@ Intent-aware lex (C++ performance, not sports):
         text: z.string().describe("The corrected claim."),
         reason: z.string().describe("Why the old claim was wrong."),
         actor: z.string().describe("Who corrects it: user | agent:<harness|lane>."),
-        type: z.enum(["fact", "opinion", "decision"]).optional().describe("Defaults to the old claim's type."),
-        source: z.string().optional().describe("Defaults to the old claim's source."),
-        project: z.string().optional().describe("Defaults to the old claim's project."),
+        type: z.enum(["fact", "opinion", "decision"]).nullable().optional().describe("Defaults to the old claim's type."),
+        source: z.string().nullable().optional().describe("Defaults to the old claim's source."),
+        project: z.string().nullable().optional().describe("Defaults to the old claim's project."),
       },
     },
     track(async ({ file, text, reason, actor, type, source, project }: {
@@ -913,9 +908,9 @@ Intent-aware lex (C++ performance, not sports):
       text: string;
       reason: string;
       actor: string;
-      type?: "fact" | "opinion" | "decision";
-      source?: string;
-      project?: string;
+      type?: "fact" | "opinion" | "decision" | null;
+      source?: string | null;
+      project?: string | null;
     }) => {
       if (typeof reason !== "string" || reason.trim().length === 0) {
         return memError("Error: reason is required");
@@ -923,7 +918,7 @@ Intent-aware lex (C++ performance, not sports):
       const resolved = await resolveMemDir(store);
       if ("error" in resolved) return memError(`Error: ${resolved.error}`);
       const abs = resolveInCollection(resolved.dir, file);
-      if (abs === null || !isMemDoc(`${MEMORY_COLLECTION}/${file}`)) {
+      if (abs === null) {
         return memError("Error: file must be a flat .md filename inside the mem collection");
       }
       let oldBody: string;
@@ -945,8 +940,10 @@ Intent-aware lex (C++ performance, not sports):
         return memError(`Error [${validation.rule}]: ${validation.error}`);
       }
       const filename = buildMemoryFilename(new Date(), text);
-      await writeFile(`${resolved.dir}/${filename}`, renderMemoryDoc(merged, { supersedes: file }), "utf-8");
-      await appendFile(abs, renderSupersededFooter(filename, reason), "utf-8");
+      await Promise.all([
+        writeFile(`${resolved.dir}/${filename}`, renderMemoryDoc(merged, { supersedes: file }), "utf-8"),
+        appendFile(abs, renderSupersededFooter(filename, reason), "utf-8"),
+      ]);
       await refreshBeforeQuery(store, [MEMORY_COLLECTION]);
       const payload = buildStoreReceipt(filename, file);
       return {

@@ -84,9 +84,9 @@ export function validateMemoryStoreInput(input: unknown): MemoryValidation {
   if (confidence !== undefined && (typeof confidence !== "number" || !Number.isFinite(confidence) || confidence < 0 || confidence > 1)) {
     return { ok: false, error: "confidence must be a number in 0..1", rule: "R5" };
   }
-  const haystack = `${text}\n${typeof source === "string" ? source : ""}`;
+  const haystacks = [text, ...(typeof source === "string" ? [source] : [])];
   for (const { pattern, label } of SECRET_PATTERNS) {
-    if (pattern.test(haystack)) {
+    if (haystacks.some(h => pattern.test(h))) {
       return { ok: false, error: `rejected: looks like a ${label} — never store secrets`, rule: "R4" };
     }
   }
@@ -97,7 +97,8 @@ function pad(n: number): string {
   return String(n).padStart(2, "0");
 }
 
-/** `YYYYMMDD-HHMMSS-<hash8>.md`, derived — callers never take a filename. */
+/** `YYYYMMDD-HHMMSS-<rand4>-<hash8>.md`, derived — callers never take a filename.
+ * The random segment keeps same-second/same-text writes from colliding. */
 export function buildMemoryFilename(now: Date, text: string): string {
   const stamp = `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}-${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}${pad(now.getUTCSeconds())}`;
   let hash = 0;
@@ -105,7 +106,8 @@ export function buildMemoryFilename(now: Date, text: string): string {
     hash = (Math.imul(hash, 31) + text.charCodeAt(i)) | 0;
   }
   const suffix = (hash >>> 0).toString(16).padStart(8, "0");
-  return `${stamp}-${suffix}.md`;
+  const rand = Math.floor(Math.random() * 0xffff).toString(16).padStart(4, "0");
+  return `${stamp}-${rand}-${suffix}.md`;
 }
 
 /** Full markdown: YAML frontmatter (qmd.metadata) + `# title` + claim body. */

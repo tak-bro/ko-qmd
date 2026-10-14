@@ -81,9 +81,14 @@ describe("validateMemoryStoreInput", () => {
 describe("buildMemoryFilename", () => {
   test("timestamp prefix, no path chars even for hostile text", () => {
     const name = buildMemoryFilename(new Date("2026-10-14T21:00:00Z"), "../../evil\ntitle");
-    expect(name).toMatch(/^20261014-210000-[0-9a-f]{8}\.md$/);
+    expect(name).toMatch(/^20261014-210000-[0-9a-f]{4}-[0-9a-f]{8}\.md$/);
     expect(name).not.toContain("/");
     expect(name).not.toContain("\n");
+  });
+
+  test("same text twice yields distinct filenames", () => {
+    const now = new Date("2026-10-14T21:00:00Z");
+    expect(buildMemoryFilename(now, "same")).not.toBe(buildMemoryFilename(now, "same"));
   });
 });
 
