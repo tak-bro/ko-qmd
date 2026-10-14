@@ -49,7 +49,13 @@ export function validateMemoryStoreInput(input: unknown): MemoryValidation {
   if (typeof input !== "object" || input === null) {
     return { ok: false, error: "input must be an object", rule: "R1" };
   }
-  const { text, actor, type, source, project, confidence } = input as Record<string, unknown>;
+  // JSON callers send explicit null for absent optionals — treat as absent.
+  const raw = input as Record<string, unknown>;
+  const nonNull = (v: unknown): unknown => (v === null ? undefined : v);
+  const { text, actor, type } = raw;
+  const source = nonNull(raw["source"]);
+  const project = nonNull(raw["project"]);
+  const confidence = nonNull(raw["confidence"]);
 
   if (typeof text !== "string" || text.trim().length === 0) {
     return { ok: false, error: "text is required", rule: "R1" };

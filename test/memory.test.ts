@@ -70,6 +70,12 @@ describe("validateMemoryStoreInput", () => {
     expect(validateMemoryStoreInput({ ...BASE, confidence: 2 }).ok).toBe(false);
     expect(validateMemoryStoreInput({ ...BASE, confidence: NaN }).ok).toBe(false);
   });
+
+  test("explicit null optionals count as absent (JSON callers)", () => {
+    expect(
+      validateMemoryStoreInput({ text: "t", actor: "user", type: "opinion", source: null, project: null, confidence: null }),
+    ).toEqual({ ok: true });
+  });
 });
 
 describe("buildMemoryFilename", () => {
