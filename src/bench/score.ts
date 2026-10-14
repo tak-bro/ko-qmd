@@ -27,7 +27,7 @@ export function pathsMatch(result: string, expected: string): boolean {
   const nr = normalizePath(result);
   const ne = normalizePath(expected);
   if (nr === ne) return true;
-  if (nr.endsWith(ne) || ne.endsWith(nr)) return true;
+  if (nr.endsWith("/" + ne) || ne.endsWith("/" + nr)) return true;
   return false;
 }
 

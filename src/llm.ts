@@ -365,12 +365,6 @@ const DEFAULT_RERANK_MODEL = "hf:ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF/qwen3-re
 // const DEFAULT_GENERATE_MODEL = "hf:ggml-org/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf";
 const DEFAULT_GENERATE_MODEL = "hf:tobil/qmd-query-expansion-1.7B-gguf/qmd-query-expansion-1.7B-q4_k_m.gguf";
 
-// Alternative generation models for query expansion:
-// LiquidAI LFM2 - hybrid architecture optimized for edge/on-device inference
-// Use these as base for fine-tuning with configs/sft_lfm2.yaml
-export const LFM2_GENERATE_MODEL = "hf:LiquidAI/LFM2-1.2B-GGUF/LFM2-1.2B-Q4_K_M.gguf";
-export const LFM2_INSTRUCT_MODEL = "hf:LiquidAI/LFM2.5-1.2B-Instruct-GGUF/LFM2.5-1.2B-Instruct-Q4_K_M.gguf";
-
 export const DEFAULT_EMBED_MODEL_URI = DEFAULT_EMBED_MODEL;
 export const DEFAULT_RERANK_MODEL_URI = DEFAULT_RERANK_MODEL;
 export const DEFAULT_GENERATE_MODEL_URI = DEFAULT_GENERATE_MODEL;
@@ -629,7 +623,18 @@ export async function pullModels(
         ? readFileSync(etagPath, "utf-8").trim()
         : null;
       const shouldRefresh =
-        options.refresh || !remoteEtag || remoteEtag !== localEtag || cached.length === 0;
+        options.refresh || (remoteEtag !== null && (remoteEtag !== localEtag || cached.length === 0));
+
+      if (!options.refresh && remoteEtag === null && cached.length > 0) {
+        // Fail-closed: the remote version is unknown (offline or HEAD
+        // request failed), so "unknown" must not count as "newer". Deleting
+        // the cache here would destroy gigabytes that a failing re-download
+        // cannot restore. Keep the cache and warn that it may be stale.
+        console.warn(
+          `Could not check for a newer ${filename} (offline or unreachable remote). ` +
+            `Keeping the cached model; it may be stale.`
+        );
+      }
 
       if (shouldRefresh) {
         for (const candidate of cached) {
@@ -1014,7 +1019,9 @@ export class LlamaCpp implements LLM {
         // Check if session manager allows unloading
         // canUnloadLLM is defined later in this file - it checks the session manager
         // We use dynamic import pattern to avoid circular dependency issues
-        if (typeof canUnloadLLM === 'function' && !canUnloadLLM()) {
+        // Scope the check to this instance: a live session here must veto our
+        // unload, while a session on another instance must not pin it.
+        if (typeof canUnloadLLM === 'function' && !canUnloadLLM(this)) {
           // Active sessions/operations - reschedule timer
           this.touchActivity();
           return;
@@ -2182,6 +2189,25 @@ class LLMSession implements ILLMSession {
   }
 }
 
+// Per-instance session managers. withLLMSessionForLlm used to create an
+// unregistered manager per call, leaving its sessions invisible to the idle
+// unload guard (premature dispose of a working context). Managers are cached
+// per LlamaCpp in a WeakMap so sharing a manager neither pins the instance
+// nor outlives it.
+const sessionManagersByLlm = new WeakMap<LlamaCpp, LLMSessionManager>();
+
+/**
+ * Get (creating if needed) the session manager for a LlamaCpp instance.
+ */
+function getManagerForLlm(llm: LlamaCpp): LLMSessionManager {
+  let manager = sessionManagersByLlm.get(llm);
+  if (!manager) {
+    manager = new LLMSessionManager(llm);
+    sessionManagersByLlm.set(llm, manager);
+  }
+  return manager;
+}
+
 // Session manager for the default LlamaCpp instance
 let defaultSessionManager: LLMSessionManager | null = null;
 
@@ -2191,7 +2217,7 @@ let defaultSessionManager: LLMSessionManager | null = null;
 function getSessionManager(): LLMSessionManager {
   const llm = getDefaultLlamaCpp();
   if (!defaultSessionManager || defaultSessionManager.getLlamaCpp() !== llm) {
-    defaultSessionManager = new LLMSessionManager(llm);
+    defaultSessionManager = getManagerForLlm(llm);
   }
   return defaultSessionManager;
 }
@@ -2227,13 +2253,15 @@ export async function withLLMSession<T>(
 /**
  * Execute a function with a scoped LLM session using a specific LlamaCpp instance.
  * Unlike withLLMSession, this does not use the global singleton.
+ * The session is tracked on the instance's shared manager, so the idle
+ * unload guard sees it (no premature dispose mid-operation).
  */
 export async function withLLMSessionForLlm<T>(
   llm: LlamaCpp,
   fn: (session: ILLMSession) => Promise<T>,
   options?: LLMSessionOptions
 ): Promise<T> {
-  const manager = new LLMSessionManager(llm);
+  const manager = getManagerForLlm(llm);
   const session = new LLMSession(manager, options);
 
   try {
@@ -2246,8 +2274,18 @@ export async function withLLMSessionForLlm<T>(
 /**
  * Check if idle unload is safe (no active sessions or operations).
  * Used internally by LlamaCpp idle timer.
+ *
+ * With no argument this keeps the legacy verdict for the default instance.
+ * Pass a LlamaCpp instance (as the idle timer does) to scope the verdict to
+ * that instance's sessions only, so an unrelated instance's session neither
+ * blocks nor is ignored by this instance's unload.
  */
-export function canUnloadLLM(): boolean {
+export function canUnloadLLM(llm?: LlamaCpp): boolean {
+  if (llm) {
+    const manager = sessionManagersByLlm.get(llm);
+    if (!manager) return true;
+    return manager.canUnload();
+  }
   if (!defaultSessionManager) return true;
   return defaultSessionManager.canUnload();
 }
@@ -2307,11 +2345,6 @@ export function installDarwinExitGuard(): void {
   // Intentional no-op. See isDarwinMetalMitigationActive() for the real check.
 }
 
-/** @deprecated Replaced by isDarwinMetalMitigationActive. */
-export function isDarwinExitGuardInstalled(): boolean {
-  return isDarwinMetalMitigationActive();
-}
-
 // =============================================================================
 // Singleton for default LlamaCpp instance
 // =============================================================================
@@ -2339,14 +2372,6 @@ export function getDefaultLlamaCpp(): LlamaCpp {
 export function setDefaultLlamaCpp(llm: LlamaCpp | null): void {
   if (llm !== null) installDarwinExitGuard();
   defaultLlamaCpp = llm;
-}
-
-/**
- * Peek at the default LlamaCpp instance without instantiating one. Used by
- * doctor and lifecycle diagnostics.
- */
-export function hasDefaultLlamaCpp(): boolean {
-  return defaultLlamaCpp !== null;
 }
 
 /**

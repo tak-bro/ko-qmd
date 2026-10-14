@@ -159,3 +159,34 @@ describe("qmd search --filter", () => {
     expect(stderr).toMatch(/unknown operator 'equal'/);
   }, 30000);
 });
+
+describe("qmd grep --filter", () => {
+  test("applies a valid --filter instead of running unfiltered", async () => {
+    const { stdout, exitCode } = await runQmd([
+      "grep", "cli filter keyword",
+      "--format", "json",
+      "--filter", '{"key":"status","operator":"eq","value":"published"}',
+    ]);
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout).files.map((f: { file: string }) => f.file)).toEqual([
+      "qmd://notes/published.md",
+    ]);
+  }, 30000);
+
+  test("rejects malformed --filter JSON with a non-zero exit", async () => {
+    const { stderr, exitCode } = await runQmd([
+      "grep", "cli filter keyword", "--filter", "{not json",
+    ]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toMatch(/Invalid --filter JSON/);
+  }, 30000);
+
+  test("rejects valid JSON with an invalid filter AST", async () => {
+    const { stderr, exitCode } = await runQmd([
+      "grep", "cli filter keyword", "--filter", '{"key":"status","operator":"equal","value":"x"}',
+    ]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toMatch(/Invalid metadata filter at \$/);
+    expect(stderr).toMatch(/unknown operator 'equal'/);
+  }, 30000);
+});

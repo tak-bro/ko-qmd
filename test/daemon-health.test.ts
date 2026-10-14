@@ -22,6 +22,14 @@ describe("health log interval", () => {
     expect(resolveHealthLogIntervalMs("60000")).toBe(60_000);
   });
 
+  test.each(["1", "10", "100", "999"])("%j below the 1s floor falls back to the default", (value) => {
+    expect(resolveHealthLogIntervalMs(value)).toBe(3_600_000);
+  });
+
+  test("1000 is the smallest accepted nonzero interval", () => {
+    expect(resolveHealthLogIntervalMs("1000")).toBe(1000);
+  });
+
   test.each(["", "abc", "-5", "1.5", "2147483648", "99999999999999999999"])("%j falls back to the default", (value) => {
     expect(resolveHealthLogIntervalMs(value)).toBe(3_600_000);
   });

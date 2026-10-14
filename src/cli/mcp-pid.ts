@@ -6,7 +6,7 @@
  * or treating it as "already running".
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, fchmodSync, openSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
 /**
@@ -20,6 +20,19 @@ export function mcpDaemonStateFiles(indexName: string = "index"): { pidFile: str
     pidFile: `mcp${suffix}.pid`,
     logFile: `mcp${suffix}.log`,
   };
+}
+
+/**
+ * Open (truncate-or-create) the daemon mcp.log with owner-only permissions.
+ * The daemon log carries query text, so it mirrors the 0600 convention of
+ * the opt-in query log (appendFile mode 0o600). The explicit open mode
+ * covers creation; fchmod covers truncation of a pre-existing file, where
+ * the open mode is ignored.
+ */
+export function openDaemonLogFile(logPath: string): number {
+  const fd = openSync(logPath, "w", 0o600);
+  fchmodSync(fd, 0o600);
+  return fd;
 }
 
 /** True if a process command line looks like a qmd CLI invocation. */

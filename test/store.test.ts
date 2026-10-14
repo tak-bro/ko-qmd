@@ -8,7 +8,7 @@
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { openDatabase, loadSqliteVec } from "../src/db.js";
-import type { Database } from "../src/db.js";
+import type { Database, Statement } from "../src/db.js";
 import { unlink, mkdtemp, rmdir, writeFile, rm, mkdir, rename, chmod, readFile, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -60,6 +60,7 @@ import {
   STRONG_SIGNAL_MIN_GAP,
   insertContent,
   insertDocument,
+  insertEmbedding,
   cleanupOrphanedVectors,
   generateEmbeddings,
   maybeAdoptLegacyEmbeddingFingerprint,
@@ -68,6 +69,8 @@ import {
   relaxedDocCoverage,
   rrfDocMultipliers,
   cascadeNeedsSecondBatch,
+  rerankCascadeMargin,
+  RERANK_CASCADE_MARGIN,
   rerankWithDeadline,
   resolveLoadTimeoutMs,
   isRerankCascadeEnabled,
@@ -1490,6 +1493,57 @@ describe("Query expansion cache (#818)", () => {
       await cleanupTestDb(store);
     }
   });
+
+  test("expandQuery re-expands a non-array cached object instead of returning []", async () => {
+    const store = await createTestStore();
+    try {
+      const model = "test-expand-model";
+      let llmCalls = 0;
+      store.llm = {
+        generateModelName: model,
+        expandQuery: async () => {
+          llmCalls++;
+          return [{ type: "vec", text: "healed-term" }];
+        },
+      } as any;
+      const cacheKey = getCacheKey("expandQuery", { query: "poison question", model });
+      store.setCachedResult(cacheKey, JSON.stringify({ not: "an array" }));
+
+      const out = await store.expandQuery("poison question");
+
+      expect(llmCalls).toBe(1);
+      expect(out).toEqual([{ type: "vec", query: "healed-term" }]);
+      // Poison row is healed by the fresh result via the normal write path.
+      expect(JSON.parse(store.getCachedResult(cacheKey)!)).toEqual([{ type: "vec", query: "healed-term" }]);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("expandQuery still serves a valid cached array without invoking the LLM", async () => {
+    const store = await createTestStore();
+    try {
+      const model = "test-expand-model";
+      let llmCalls = 0;
+      store.llm = {
+        generateModelName: model,
+        expandQuery: async () => {
+          llmCalls++;
+          return [{ type: "vec", text: "should-not-be-used" }];
+        },
+      } as any;
+      const seeded = [{ type: "lex", query: "seeded-term" }];
+      const cacheKey = getCacheKey("expandQuery", { query: "cached question", model });
+      store.setCachedResult(cacheKey, JSON.stringify(seeded));
+
+      const out = await store.expandQuery("cached question");
+
+      expect(out).toEqual(seeded);
+      expect(llmCalls).toBe(0);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
 });
 
 
@@ -2141,6 +2195,49 @@ describe("Document Retrieval", () => {
       await cleanupTestDb(store);
     });
 
+    test("findDocument does not fetch a filename fragment (#759 single-get)", async () => {
+      const store = await createTestStore();
+      const collectionName = await createTestCollection({ name: "qmd", pwd: "/test/qmd" });
+      await insertTestDocument(store.db, collectionName, {
+        name: "syntax",
+        displayPath: "docs/SYNTAX.md",
+        body: "# Syntax\n\nThe real document.",
+      });
+
+      const fragment = store.findDocument("NTAX.md");
+      expect("error" in fragment).toBe(true);
+
+      const boundary = store.findDocument("SYNTAX.md");
+      expect("error" in boundary).toBe(false);
+
+      await cleanupTestDb(store);
+    });
+
+    test("findDocument errors on ambiguous names instead of LIMIT 1 (#759 single-get)", async () => {
+      const store = await createTestStore();
+      const collA = await createTestCollection({ name: "tweet", pwd: "/test/tweet" });
+      const collB = await createTestCollection({ name: "bird", pwd: "/test/bird" });
+      await insertTestDocument(store.db, collA, {
+        name: "readme-a",
+        displayPath: "README.md",
+        body: "# Tweet readme",
+      });
+      await insertTestDocument(store.db, collB, {
+        name: "readme-b",
+        displayPath: "README.md",
+        body: "# Bird readme",
+      });
+
+      const result = store.findDocument("README.md");
+      expect("error" in result).toBe(true);
+      if ("error" in result && result.error === "not_found") {
+        expect(result.similarFiles).toContain("qmd://bird/README.md");
+        expect(result.similarFiles).toContain("qmd://tweet/README.md");
+      }
+
+      await cleanupTestDb(store);
+    });
+
     test("findDocument includes body when requested", async () => {
       const store = await createTestStore();
       const collectionName = await createTestCollection({ pwd: "/path", glob: "**/*.md" });
@@ -2467,6 +2564,84 @@ describe("Document Retrieval", () => {
       await cleanupTestDb(store);
     });
 
+    test("findDocument falls back to path when an isDocid-shaped bare name misses", async () => {
+      const store = await createTestStore();
+      const collectionName = await createTestCollection();
+
+      await insertTestDocument(store.db, collectionName, {
+        name: "shadow",
+        displayPath: "ab12cd",
+        body: "# Shadow\n\nhex-named file content",
+      });
+
+      // Bare name is isDocid-shaped but no content hash matches: the real
+      // file must resolve instead of 404ing.
+      const doc = store.findDocument("ab12cd");
+      expect("error" in doc).toBe(false);
+      if (!("error" in doc)) {
+        expect(doc.displayPath).toBe(`${collectionName}/ab12cd`);
+      }
+
+      // Collection-prefixed form keeps working.
+      const prefixed = store.findDocument(`${collectionName}/ab12cd`);
+      expect("error" in prefixed).toBe(false);
+
+      // A true docid miss (no such file either) still 404s.
+      expect("error" in store.findDocument("#000000")).toBe(true);
+
+      await cleanupTestDb(store);
+    });
+
+    test("findDocuments resolves an isDocid-shaped bare name without self-suggestion", async () => {
+      const store = await createTestStore();
+      const collectionName = await createTestCollection();
+
+      await insertTestDocument(store.db, collectionName, {
+        name: "shadow",
+        displayPath: "ab12cd",
+        body: "# Shadow\n\nhex-named file content",
+      });
+
+      const { docs, errors } = store.findDocuments("ab12cd");
+      expect(errors).toHaveLength(0);
+      expect(docs).toHaveLength(1);
+      expect(docs[0]!.doc.displayPath).toBe(`${collectionName}/ab12cd`);
+
+      await cleanupTestDb(store);
+    });
+
+    test("docid still wins over a same-named file on collision", async () => {
+      const store = await createTestStore();
+      const collectionName = await createTestCollection();
+
+      // Doc B owns the `ab12cd` hash prefix; doc A is the real file named `ab12cd`.
+      await insertTestDocument(store.db, collectionName, {
+        name: "hash-owner",
+        displayPath: "other.md",
+        hash: `ab12cd${"0".repeat(58)}`,
+        body: "# Hash Owner\n\nowns the prefix",
+      });
+      await insertTestDocument(store.db, collectionName, {
+        name: "shadow",
+        displayPath: "ab12cd",
+        body: "# Shadow\n\nhex-named file content",
+      });
+
+      const doc = store.findDocument("ab12cd");
+      expect("error" in doc).toBe(false);
+      if (!("error" in doc)) {
+        expect(doc.displayPath).toBe(`${collectionName}/other.md`);
+        expect(doc.docid).toBe("ab12cd");
+      }
+
+      const { docs, errors } = store.findDocuments("ab12cd");
+      expect(errors).toHaveLength(0);
+      expect(docs).toHaveLength(1);
+      expect(docs[0]!.doc.displayPath).toBe(`${collectionName}/other.md`);
+
+      await cleanupTestDb(store);
+    });
+
     test("findDocuments reports errors for not found files", async () => {
       const store = await createTestStore();
       const collectionName = await createTestCollection();
@@ -2501,6 +2676,37 @@ describe("Document Retrieval", () => {
       expect(docs[0]!.skipped).toBe(true);
       if (docs[0]!.skipped) {
         expect((docs[0] as { skipped: true; skipReason: string }).skipReason).toContain("too large");
+      }
+
+      await cleanupTestDb(store);
+    });
+
+    test("findDocuments measures body_length in bytes for CJK", async () => {
+      const store = await createTestStore();
+      const collectionName = await createTestCollection();
+
+      await insertTestDocument(store.db, collectionName, {
+        name: "cjk-over",
+        filepath: "/path/cjk-over.md",
+        displayPath: "cjk-over.md",
+        body: "한".repeat(22000), // 22000 chars = 66000 bytes > 64KB
+      });
+      await insertTestDocument(store.db, collectionName, {
+        name: "cjk-under",
+        filepath: "/path/cjk-under.md",
+        displayPath: "cjk-under.md",
+        body: "한".repeat(20000), // 20000 chars = 60000 bytes < 64KB
+      });
+
+      const over = store.findDocuments("cjk-over.md", { includeBody: true });
+      expect(over.docs).toHaveLength(1);
+      expect(over.docs[0]!.skipped).toBe(true);
+
+      const under = store.findDocuments("cjk-under.md", { includeBody: true });
+      expect(under.docs).toHaveLength(1);
+      expect(under.docs[0]!.skipped).toBe(false);
+      if (!under.docs[0]!.skipped) {
+        expect(under.docs[0]!.doc.bodyLength).toBe(60000);
       }
 
       await cleanupTestDb(store);
@@ -2842,6 +3048,37 @@ describe("Snippet Extraction", () => {
 
     expect(line).toBe(201);
   });
+
+  test("extractSnippet falls back to full-body scan when chunk window is whitespace-only", () => {
+    // A chunk window anchored deep inside a blank run scores nothing and slices
+    // a whitespace-only snippet; the fallback must rescan the full body.
+    const body = "keyword far away line one\n" + "\n".repeat(300) + "tail line here\n";
+    const chunkPos = body.indexOf("\n\n\n") + 50;
+
+    const { line, snippet } = extractSnippet(body, "keyword", 200, chunkPos, 50);
+
+    expect(line).toBe(1);
+    expect(snippet).toContain("keyword far away");
+  });
+
+  test("extractSnippet splits a full body only once per call", () => {
+    // Regression: totalLines and lines used to split the same body twice.
+    // Count '\n' splits applied to the body itself across two calls.
+    const body = `hit TARGET here\n${"padding line with some words in it\n".repeat(2000)}`;
+    const origSplit = String.prototype.split;
+    let bodySplits = 0;
+    String.prototype.split = function (sep: string | RegExp, ...rest: string[]) {
+      if (sep === "\n" && String(this) === body) bodySplits++;
+      return origSplit.call(this, sep, ...rest);
+    };
+    try {
+      extractSnippet(body, "TARGET", 500);
+      extractSnippet(body, "TARGET", 500);
+    } finally {
+      String.prototype.split = origSplit;
+    }
+    expect(bodySplits).toBe(2);
+  });
 });
 
 // =============================================================================
@@ -2953,6 +3190,42 @@ describe("Reciprocal Rank Fusion", () => {
     expect(getStructuredRrfWeights(vecFirst)).toEqual([2.0, 1.0]);
   });
 
+  test("structured RRF weights share a subquery's slot across its collection fan-out", () => {
+    // One subquery fanned out to two collections: both lists are the first subquery's
+    // evidence, so -c order must not decide which gets 2x.
+    const fanOut: RankedListMeta[] = [
+      { source: "fts", queryType: "lex", query: "q", searchIndex: 0 },
+      { source: "fts", queryType: "lex", query: "q", searchIndex: 0 },
+    ];
+    expect(getStructuredRrfWeights(fanOut)).toEqual([2.0, 2.0]);
+
+    // Relaxed fan-out shares the relaxed first-slot weight too.
+    const relaxedFanOut: RankedListMeta[] = [
+      { source: "fts", queryType: "lex", query: "q", relaxed: true, searchIndex: 0 },
+      { source: "fts", queryType: "lex", query: "q", relaxed: true, searchIndex: 0 },
+    ];
+    expect(getStructuredRrfWeights(relaxedFanOut)).toEqual([0.25, 0.25]);
+  });
+
+  test("structured RRF weights still follow explicit multi-subquery ordering", () => {
+    // First subquery (with its two collection lists) keeps 2x; the second stays 1x.
+    const meta: RankedListMeta[] = [
+      { source: "fts", queryType: "lex", query: "first", searchIndex: 0 },
+      { source: "fts", queryType: "lex", query: "first", searchIndex: 0 },
+      { source: "fts", queryType: "lex", query: "second", searchIndex: 1 },
+      { source: "fts", queryType: "lex", query: "second", searchIndex: 1 },
+    ];
+    expect(getStructuredRrfWeights(meta)).toEqual([2.0, 2.0, 1.0, 1.0]);
+
+    // When the first subquery yields no list, the first producing subquery takes the boost.
+    const offset: RankedListMeta[] = [
+      { source: "fts", queryType: "lex", query: "second", searchIndex: 1 },
+      { source: "fts", queryType: "lex", query: "second", searchIndex: 1 },
+      { source: "vec", queryType: "vec", query: "third", searchIndex: 2 },
+    ];
+    expect(getStructuredRrfWeights(offset)).toEqual([2.0, 2.0, 1.0]);
+  });
+
   test("a relaxed first lex list no longer outranks the vector list's top hit", () => {
     // The ko-vault miss: a decoy sharing a few of the question's words led the relaxed lex list
     // and the right note led the vector list (hsh-03, hsh-11 — BASELINE.md 2026-09-27).
@@ -3048,6 +3321,29 @@ describe("Reciprocal Rank Fusion", () => {
     expect(cascadeNeedsSecondBatch([0.9, Number.NaN])).toBe(true);
   });
 
+  test("rerankCascadeMargin treats empty as unset and keeps valid values", () => {
+    const prev = process.env.QMD_RERANK_MARGIN;
+    try {
+      delete process.env.QMD_RERANK_MARGIN;
+      expect(rerankCascadeMargin()).toBe(RERANK_CASCADE_MARGIN);
+      process.env.QMD_RERANK_MARGIN = "";
+      expect(rerankCascadeMargin()).toBe(RERANK_CASCADE_MARGIN);
+      process.env.QMD_RERANK_MARGIN = "   ";
+      expect(rerankCascadeMargin()).toBe(RERANK_CASCADE_MARGIN);
+      process.env.QMD_RERANK_MARGIN = "0";
+      expect(rerankCascadeMargin()).toBe(0);
+      process.env.QMD_RERANK_MARGIN = "0.2";
+      expect(rerankCascadeMargin()).toBe(0.2);
+      process.env.QMD_RERANK_MARGIN = "abc";
+      expect(rerankCascadeMargin()).toBe(RERANK_CASCADE_MARGIN);
+      process.env.QMD_RERANK_MARGIN = "-1";
+      expect(rerankCascadeMargin()).toBe(RERANK_CASCADE_MARGIN);
+    } finally {
+      if (prev === undefined) delete process.env.QMD_RERANK_MARGIN;
+      else process.env.QMD_RERANK_MARGIN = prev;
+    }
+  });
+
   test("rerank cascade scores the tail only when the top is contested", async () => {
     const chunks = Array.from({ length: 20 }, (_, i) => ({ file: `doc${i}.md`, text: `text ${i}` }));
     const scored = new Map<string, number>();
@@ -3077,6 +3373,31 @@ describe("Reciprocal Rank Fusion", () => {
     expect(store2.rerank).toHaveBeenCalledTimes(2);
     expect(out2!.map((r) => r.file).sort()).toEqual(chunks.map((c) => c.file).sort());
     for (const r of out2!) expect(r.score).toBeCloseTo(tight.get(r.file)!, 10);
+  });
+
+  test("cascade tail placeholders are marked unscored; measured rows are not", async () => {
+    const chunks = Array.from({ length: 20 }, (_, i) => ({ file: `doc${i}.md`, text: `text ${i}` }));
+    const wide = new Map(chunks.map((c, i) => [c.file, i === 0 ? 0.95 : 0.5 - i * 0.01]));
+    const store = {
+      rerank: vi.fn(async (_query: string, docs: { file: string; text: string }[]) =>
+        docs.map((d) => ({ file: d.file, score: wide.get(d.file) ?? 0 }))),
+    } as Store; // fake-store stub: only rerank() is exercised below
+    const out = await rerankWithDeadline(store, "q", chunks, undefined, undefined);
+    expect(out).toHaveLength(20);
+    expect(out!.slice(0, 8).every((r) => r.unscored === undefined)).toBe(true);
+    for (const r of out!.slice(8)) {
+      expect(r.score).toBe(0);
+      expect(r.unscored).toBe(true);
+    }
+
+    // Contested top scores everything: no placeholders, no flags.
+    const tight = new Map(chunks.map((c, i) => [c.file, 0.9 - i * 0.001]));
+    const store2 = {
+      rerank: vi.fn(async (_query: string, docs: { file: string; text: string }[]) =>
+        docs.map((d) => ({ file: d.file, score: tight.get(d.file) ?? 0 }))),
+    } as Store; // fake-store stub: only rerank() is exercised below
+    const out2 = await rerankWithDeadline(store2, "q", chunks, undefined, undefined);
+    expect(out2!.every((r) => r.unscored === undefined)).toBe(true);
   });
 
   test("resolveLoadTimeoutMs bounds the model-load wait by default", () => {
@@ -3182,6 +3503,40 @@ describe("Reciprocal Rank Fusion", () => {
     expect(calls[0]).toHaveLength(8);
     expect(calls[1]).toHaveLength(12);
     expect(hooks.onRerankStart).toHaveBeenCalledTimes(1);
+    expect(hooks.onRerankDone).not.toHaveBeenCalled();
+  });
+
+  test("rerank cascade reports a deadline when the budget is exhausted before the second batch", async () => {
+    const chunks = Array.from({ length: 20 }, (_, i) => ({ file: `doc${i}.md`, text: `text ${i}` }));
+    // Contested head (margin 0) wants the second batch, but a slow load spends the
+    // whole deadline first: the compute deadline starts after the load, so the head
+    // still scores, while the wall-clock budget for the tail is already exhausted.
+    const store = {
+      rerank: vi.fn(
+        async (
+          _query: string,
+          docs: { file: string; text: string }[],
+          _model?: string,
+          _intent?: string,
+          options?: { onModelReady?: () => void },
+        ) => {
+          await new Promise((resolve) => setTimeout(resolve, 80));
+          options?.onModelReady?.();
+          return docs.map((d) => ({ file: d.file, score: 0.5 }));
+        },
+      ),
+    } as Store; // fake-store stub: only rerank() is exercised below
+    const hooks: SearchHooks = { onDeadline: vi.fn(), onRerankDone: vi.fn() };
+    const out = await rerankWithDeadline(store, "q", chunks, undefined, {
+      rerankDeadlineMs: 50,
+      hooks,
+    });
+    // Same shape as a timeout: null, so the caller falls back to RRF order, with
+    // the deadline reported (elapsed ms) so the response carries its timeouts mark.
+    expect(out).toBeNull();
+    expect(store.rerank).toHaveBeenCalledTimes(1);
+    expect(hooks.onDeadline).toHaveBeenCalledTimes(1);
+    expect(hooks.onDeadline).toHaveBeenCalledWith("rerank", expect.any(Number));
     expect(hooks.onRerankDone).not.toHaveBeenCalled();
   });
 
@@ -3893,6 +4248,159 @@ describe("Vector Table", () => {
 
     await cleanupTestDb(store);
   });
+
+  // Fault injection at the insert seam: the content_vectors INSERT succeeds,
+  // the vectors_vec INSERT throws — the analogue of a crash between the two
+  // autocommits. `prepare` itself must not throw; only the vec INSERT's `run`.
+  function makeSeamFailingDb(db: Database): Database {
+    return {
+      exec: (sql: string) => db.exec(sql),
+      prepare: (sql: string): Statement => {
+        const stmt = db.prepare(sql);
+        if (!sql.includes("INSERT INTO vectors_vec")) return stmt;
+        return {
+          run: (..._params: Parameters<Statement["run"]>): never => {
+            throw new Error("injected failure at insert seam");
+          },
+          get: (...params: Parameters<Statement["get"]>) => stmt.get(...params),
+          all: (...params: Parameters<Statement["all"]>) => stmt.all(...params),
+          iterate: (...params: Parameters<Statement["iterate"]>) => stmt.iterate(...params),
+        };
+      },
+      transaction: (fn) => db.transaction(fn),
+      loadExtension: (path: string) => db.loadExtension(path),
+      close: () => db.close(),
+    };
+  }
+
+  test("rolls back the content_vectors INSERT when the vectors_vec INSERT fails (no phantom-complete row)", async () => {
+    const store = await createTestStore();
+    try {
+      const collectionName = await createTestCollection();
+      const model = "test-model";
+      const now = new Date().toISOString();
+      store.ensureVecTable(3);
+      await insertTestDocument(store.db, collectionName, { name: "phantom-doc", hash: "phantomhash" });
+
+      // Without atomicity this leaves the content_vectors row committed while
+      // its vector is missing — a phantom-complete row.
+      expect(() =>
+        insertEmbedding(makeSeamFailingDb(store.db), "phantomhash", 0, 0, new Float32Array([1, 2, 3]), model, now, 1)
+      ).toThrow("injected failure at insert seam");
+
+      // INVARIANT: the failed chunk must be entirely absent from both tables...
+      const meta = store.db.prepare(`SELECT COUNT(*) AS c FROM content_vectors WHERE hash = 'phantomhash'`).get() as { c: number };
+      const vec = store.db.prepare(`SELECT COUNT(*) AS c FROM vectors_vec WHERE hash_seq = 'phantomhash_0'`).get() as { c: number };
+      expect(meta.c).toBe(0);
+      expect(vec.c).toBe(0);
+      // ...so pending checks still see the hash and the next embed run re-selects it.
+      expect(store.getHashesNeedingEmbedding(model)).toBe(1);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("fault on the content_vectors INSERT leaves both tables empty (kill before txn body)", async () => {
+    const store = await createTestStore();
+    try {
+      const collectionName = await createTestCollection();
+      const model = "test-model";
+      const now = new Date().toISOString();
+      store.ensureVecTable(3);
+      await insertTestDocument(store.db, collectionName, { name: "prefault-doc", hash: "prefaulthash" });
+
+      const db = store.db;
+      const realPrepare = db.prepare.bind(db);
+      const earlyFailingDb: Database = {
+        exec: (sql: string) => db.exec(sql),
+        prepare: (sql: string): Statement => {
+          const stmt = realPrepare(sql);
+          if (!sql.includes("INSERT OR REPLACE INTO content_vectors")) return stmt;
+          return {
+            run: (..._params: Parameters<Statement["run"]>): never => {
+              throw new Error("injected failure before first write");
+            },
+            get: (...params: Parameters<Statement["get"]>) => stmt.get(...params),
+            all: (...params: Parameters<Statement["all"]>) => stmt.all(...params),
+            iterate: (...params: Parameters<Statement["iterate"]>) => stmt.iterate(...params),
+          };
+        },
+        transaction: (fn) => db.transaction(fn),
+        loadExtension: (path: string) => db.loadExtension(path),
+        close: () => db.close(),
+      };
+
+      expect(() =>
+        insertEmbedding(earlyFailingDb, "prefaulthash", 0, 0, new Float32Array([1, 2, 3]), model, now, 1)
+      ).toThrow("injected failure before first write");
+
+      const meta = db.prepare(`SELECT COUNT(*) AS c FROM content_vectors WHERE hash = 'prefaulthash'`).get() as { c: number };
+      const vec = db.prepare(`SELECT COUNT(*) AS c FROM vectors_vec WHERE hash_seq = 'prefaulthash_0'`).get() as { c: number };
+      expect(meta.c).toBe(0);
+      expect(vec.c).toBe(0);
+      expect(store.getHashesNeedingEmbedding(model)).toBe(1);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("successful insert writes byte-identical rows to both tables", async () => {
+    const store = await createTestStore();
+    try {
+      store.ensureVecTable(3);
+      const model = "test-model";
+      const now = new Date().toISOString();
+      const embedding = new Float32Array([0.5, -0.25, 0.125]);
+
+      insertEmbedding(store.db, "bytehash", 2, 77, embedding, model, now, 3, "fp1");
+
+      expect(
+        store.db.prepare(`SELECT hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at FROM content_vectors WHERE hash = ?`).get("bytehash")
+      ).toEqual({
+        hash: "bytehash",
+        seq: 2,
+        pos: 77,
+        model,
+        embed_fingerprint: "fp1",
+        total_chunks: 3,
+        embedded_at: now,
+      });
+
+      // Vector round-trips through vec0 with float32 fidelity (decode mirrors
+      // decodeStoredEmbedding in src/cli/qmd.ts).
+      const row = store.db.prepare(`SELECT embedding FROM vectors_vec WHERE hash_seq = ?`).get("bytehash_2") as { embedding: Uint8Array };
+      const decoded = new Float32Array(row.embedding.buffer.slice(row.embedding.byteOffset, row.embedding.byteOffset + row.embedding.byteLength));
+      expect(Array.from(decoded)).toEqual(Array.from(embedding));
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("partial hash from a killed batch stays pending and converges on re-embed", async () => {
+    const store = await createTestStore();
+    try {
+      const collectionName = await createTestCollection();
+      const model = "test-model";
+      const now = new Date().toISOString();
+      store.ensureVecTable(3);
+      await insertTestDocument(store.db, collectionName, { name: "partial-doc", hash: "partialhash" });
+
+      // Batch killed after chunk 0 of 2: chunk 0 fully committed (atomic unit).
+      insertEmbedding(store.db, "partialhash", 0, 0, new Float32Array([1, 2, 3]), model, now, 2);
+      expect(store.getHashesNeedingEmbedding(model)).toBe(1);
+
+      // Next run re-embeds the missing chunk; hash converges to complete.
+      insertEmbedding(store.db, "partialhash", 1, 10, new Float32Array([4, 5, 6]), model, now, 2);
+      expect(store.getHashesNeedingEmbedding(model)).toBe(0);
+
+      const meta = store.db.prepare(`SELECT COUNT(*) AS c FROM content_vectors WHERE hash = 'partialhash'`).get() as { c: number };
+      const vec = store.db.prepare(`SELECT COUNT(*) AS c FROM vectors_vec WHERE hash_seq IN ('partialhash_0', 'partialhash_1')`).get() as { c: number };
+      expect(meta.c).toBe(2);
+      expect(vec.c).toBe(2);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
 });
 
 // =============================================================================
@@ -3935,6 +4443,91 @@ describe("Integration", () => {
 
       expect(counts).toEqual({ active: 2, inactive: 3, total: 5 });
       expect(contentCount.count).toBe(5);
+    } finally {
+      await rm(collectionDir, { recursive: true, force: true });
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("reindexCollection deactivates emptied files like removed files", async () => {
+    const store = await createTestStore();
+    const collectionDir = await mkdtemp(join(testDir, "emptied-regression-"));
+    const collectionName = "emptied-regression";
+    const marker = `EMPTIED_BODY_${Date.now()}`;
+    const wsMarker = `WS_BODY_${Date.now()}`;
+
+    try {
+      await writeFile(join(collectionDir, "note.md"), `# Note\n\n${marker}\n`);
+      await writeFile(join(collectionDir, "ws.md"), `# Ws\n\n${wsMarker}\n`);
+      await writeFile(join(collectionDir, "kept.md"), "# Kept\n\nstays here\n");
+
+      await createTestCollection({ pwd: collectionDir, glob: "**/*.md", name: collectionName });
+
+      const initial = await reindexCollection(store, collectionDir, "**/*.md", collectionName);
+      expect(initial.indexed).toBe(3);
+      expect(initial.removed).toBe(0);
+
+      await writeFile(join(collectionDir, "note.md"), "");
+      await writeFile(join(collectionDir, "ws.md"), "  \n\t \n");
+
+      const afterEmpty = await reindexCollection(store, collectionDir, "**/*.md", collectionName);
+      expect(afterEmpty.removed).toBe(2);
+
+      const counts = store.db.prepare(`
+        SELECT
+          SUM(CASE WHEN active = 1 THEN 1 ELSE 0 END) AS active,
+          SUM(CASE WHEN active = 0 THEN 1 ELSE 0 END) AS inactive,
+          COUNT(*) AS total
+        FROM documents
+        WHERE collection = ?
+      `).get(collectionName) as { active: number; inactive: number; total: number };
+      expect(counts).toEqual({ active: 1, inactive: 2, total: 3 });
+
+      const activePaths = store.db.prepare(`
+        SELECT path FROM documents WHERE collection = ? AND active = 1
+      `).all(collectionName) as { path: string }[];
+      expect(activePaths.map(r => r.path)).toEqual(["kept.md"]);
+
+      expect(store.searchFTS(marker, 10, collectionName)).toHaveLength(0);
+      expect(store.searchFTS(wsMarker, 10, collectionName)).toHaveLength(0);
+    } finally {
+      await rm(collectionDir, { recursive: true, force: true });
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("reindexCollection reactivates a refilled file after emptying", async () => {
+    const store = await createTestStore();
+    const collectionDir = await mkdtemp(join(testDir, "refill-regression-"));
+    const collectionName = "refill-regression";
+    const oldMarker = `OLD_BODY_${Date.now()}`;
+    const newMarker = `NEW_BODY_${Date.now()}`;
+
+    try {
+      await writeFile(join(collectionDir, "note.md"), `# Note\n\n${oldMarker}\n`);
+
+      await createTestCollection({ pwd: collectionDir, glob: "**/*.md", name: collectionName });
+
+      await reindexCollection(store, collectionDir, "**/*.md", collectionName);
+
+      await writeFile(join(collectionDir, "note.md"), "");
+      const afterEmpty = await reindexCollection(store, collectionDir, "**/*.md", collectionName);
+      expect(afterEmpty.removed).toBe(1);
+      expect(store.searchFTS(oldMarker, 10, collectionName)).toHaveLength(0);
+
+      await writeFile(join(collectionDir, "note.md"), `# Note\n\n${newMarker}\n`);
+      const afterRefill = await reindexCollection(store, collectionDir, "**/*.md", collectionName);
+      expect(afterRefill.removed).toBe(0);
+
+      const rows = store.db.prepare(`
+        SELECT active FROM documents WHERE collection = ? AND path = ?
+      `).all(collectionName, "note.md") as { active: number }[];
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.active).toBe(1);
+
+      const hits = store.searchFTS(newMarker, 10, collectionName);
+      expect(hits.length).toBe(1);
+      expect(store.searchFTS(oldMarker, 10, collectionName)).toHaveLength(0);
     } finally {
       await rm(collectionDir, { recursive: true, force: true });
       await cleanupTestDb(store);
@@ -4259,8 +4852,10 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
     });
 
     // Create vector table and insert a vector
-    store.ensureVecTable(768);
-    const embedding = Array(768).fill(0).map(() => Math.random());
+    // (1024 = native dim of the default Qwen3-Embedding-0.6B model; embed()
+    // always runs the resolved default model, ignoring the label passed to searchVec)
+    store.ensureVecTable(1024);
+    const embedding = Array(1024).fill(0).map(() => Math.random());
     store.db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, 'test', ?)`).run(hash, new Date().toISOString());
     store.db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash}_0`, new Float32Array(embedding));
 
@@ -4293,10 +4888,10 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
       body: "Content in collection two",
     });
 
-    // Create vectors_vec table with correct dimensions (768 for embeddinggemma)
-    store.ensureVecTable(768);
-    const embedding1 = Array(768).fill(0).map(() => Math.random());
-    const embedding2 = Array(768).fill(0).map(() => Math.random());
+    // Create vectors_vec table with correct dimensions (1024 for Qwen3-Embedding-0.6B)
+    store.ensureVecTable(1024);
+    const embedding1 = Array(1024).fill(0).map(() => Math.random());
+    const embedding2 = Array(1024).fill(0).map(() => Math.random());
     store.db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, 'test', ?)`).run(hash1, new Date().toISOString());
     store.db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, 'test', ?)`).run(hash2, new Date().toISOString());
     store.db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash1}_0`, new Float32Array(embedding1));
@@ -4330,9 +4925,9 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
       displayPath: "regression.md",
     });
 
-    // Create vector table and insert a test vector
-    store.ensureVecTable(768);
-    const embedding = Array(768).fill(0).map(() => Math.random());
+    // Create vector table and insert a test vector (1024 = Qwen3-Embedding-0.6B native dim)
+    store.ensureVecTable(1024);
+    const embedding = Array(1024).fill(0).map(() => Math.random());
     store.db.prepare(`INSERT INTO content_vectors (hash, seq, pos, model, embedded_at) VALUES (?, 0, 0, 'test', ?)`).run(hash, new Date().toISOString());
     store.db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`).run(`${hash}_0`, new Float32Array(embedding));
 
@@ -4737,6 +5332,48 @@ describe("Embedding batching", () => {
     }
   });
 
+  test("generateEmbeddings reports only actually processed docs when the session expires early", async () => {
+    const store = await createTestStore();
+    const db = store.db;
+    // Same seam as the stops-early test: a slow embedder so the short
+    // session cap trips between document batches.
+    const embedBatchCalls: string[][] = [];
+    const slowLlm = {
+      ...createFakeTokenizer(),
+      async embed() { return { embedding: [0.1, 0.2, 0.3], model: "fake-embed" }; },
+      async embedBatch(texts: string[]) {
+        embedBatchCalls.push([...texts]);
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        return texts.map((_text, index) => ({ embedding: [index + 1, index + 2, index + 3], model: "fake-embed" }));
+      },
+    };
+
+    setDefaultLlamaCpp(createFakeTokenizer() as any);
+    store.llm = slowLlm as any;
+
+    try {
+      await insertTestDocument(db, "docs", { name: "one", body: "# One\n\nAlpha" });
+      await insertTestDocument(db, "docs", { name: "two", body: "# Two\n\nBeta" });
+      await insertTestDocument(db, "docs", { name: "three", body: "# Three\n\nGamma" });
+
+      const result = await generateEmbeddings(store, {
+        maxDocsPerBatch: 1,           // one doc per batch, so the cap can stop between docs
+        maxBatchBytes: 1024 * 1024,
+        maxDurationMs: 10,            // trips ~10ms in, well before the 80ms batches finish
+      });
+
+      // Only the batches that actually ran may be reported — never the full
+      // pending snapshot when the session expired mid-run.
+      expect(embedBatchCalls.length).toBeGreaterThanOrEqual(1);
+      expect(embedBatchCalls.length).toBeLessThan(3);
+      expect(result.docsProcessed).toBe(embedBatchCalls.length);
+      expect(result.docsProcessed).toBeLessThan(3);
+    } finally {
+      setDefaultLlamaCpp(null);
+      await cleanupTestDb(store);
+    }
+  });
+
   test("generateEmbeddings flushes batches when maxBatchBytes is reached", async () => {
     const store = await createTestStore();
     const db = store.db;
@@ -4941,6 +5578,61 @@ describe("Embedding batching", () => {
       expect(db.prepare(`SELECT COUNT(*) as count FROM content_vectors`).get()).toEqual({ count: result.chunksEmbedded });
       expect(store.getHashesNeedingEmbedding()).toBe(0);
     } finally {
+      setDefaultLlamaCpp(null);
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("generateEmbeddings stops all batches after the 80% error-rate abort (no retry of aborted chunks)", async () => {
+    const store = await createTestStore();
+    const db = store.db;
+    const embedBatchCalls: string[][] = [];
+    let embedCalls = 0;
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fakeLlm = {
+      ...createFakeTokenizer(),
+      async embed(_text: string, _options?: { model?: string }) {
+        embedCalls++;
+        // First call is the dimension probe; everything else fails.
+        return embedCalls === 1
+          ? { embedding: [0.1, 0.2, 0.3], model: "fake-embed" }
+          : null;
+      },
+      async embedBatch(texts: string[], _options?: { model?: string }) {
+        embedBatchCalls.push([...texts]);
+        return texts.map(() => null);
+      },
+    };
+
+    setDefaultLlamaCpp(createFakeTokenizer() as any);
+    store.llm = fakeLlm as any;
+
+    try {
+      // Each doc is ~180KB so it chunks into well over 32 chunks; two docs in
+      // separate doc-batches so the outer loop has somewhere to (wrongly) go.
+      const bigBody = (tag: string) =>
+        `# ${tag}\n\n` + `sentence of ${tag} with filler words to pad out the chunk bytes. `.repeat(3000);
+      await insertTestDocument(db, "docs", { name: "abort-one", body: bigBody("one") });
+      await insertTestDocument(db, "docs", { name: "abort-two", body: bigBody("two") });
+
+      const result = await generateEmbeddings(store, {
+        maxDocsPerBatch: 1,
+        maxBatchBytes: 1024 * 1024,
+      });
+
+      // The 80%-abort fired exactly once...
+      const abortWarns = warnSpy.mock.calls.filter((call) => String(call[0]).includes("Error rate too high"));
+      expect(abortWarns).toHaveLength(1);
+      // ...and stopped the whole run: only the first document batch ran —
+      // no second abort for the next doc-batch, no new embed batches.
+      expect(embedBatchCalls).toHaveLength(1);
+      expect(embedBatchCalls[0]).toHaveLength(32);
+      // No force-retry of the aborted chunks: single-embed ran only the probe.
+      expect(embedCalls).toBe(1);
+      expect(result.chunksEmbedded).toBe(0);
+      expect(result.errors).toBeGreaterThan(0);
+    } finally {
+      warnSpy.mockRestore();
       setDefaultLlamaCpp(null);
       await cleanupTestDb(store);
     }
@@ -5178,6 +5870,104 @@ describe("Embedding batching", () => {
     }
   });
 
+  test("hybridQuery clamps a negative candidateLimit to 1", async () => {
+    const store = await createTestStore();
+    const collectionName = await createTestCollection();
+    for (let i = 0; i < 3; i++) {
+      await insertTestDocument(store.db, collectionName, {
+        name: `neg-doc-${i}`,
+        title: `NEG ${i}`,
+        body: `zebraqx anchor document number ${i} with plenty of shared content words`,
+        displayPath: `test/neg-${i}.md`,
+      });
+    }
+
+    store.expandQuery = vi.fn(async () => [{ type: "lex", query: "zebraqx" }]) as any;
+    store.searchVec = (async () => []) as any;
+    store.rerank = (async (_query: string, docs: { file: string; text: string }[]) => {
+      return docs.map((d) => ({ file: d.file, score: 0.9 }));
+    }) as any;
+
+    try {
+      const fmt = (rs: { file: string; score: number }[]) =>
+        rs.map((r) => ({ file: r.file, score: r.score }));
+      const neg = await hybridQuery(store, "zebraqx", {
+        limit: 5, minScore: 0, candidateLimit: -5,
+      });
+      const one = await hybridQuery(store, "zebraqx", {
+        limit: 5, minScore: 0, candidateLimit: 1,
+      });
+
+      // Negative must behave exactly like the 1-candidate floor, not like
+      // slice(0, -5) (which drops trailing candidates) with an inverted
+      // position score (1-(rank-1)/negative grows with rank).
+      expect(fmt(neg)).toEqual(fmt(one));
+      expect(neg).toHaveLength(1);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("structuredSearch clamps a negative candidateLimit to 1", async () => {
+    const store = await createTestStore();
+    const collectionName = await createTestCollection();
+    for (let i = 0; i < 3; i++) {
+      await insertTestDocument(store.db, collectionName, {
+        name: `neg-doc-${i}`,
+        title: `NEG ${i}`,
+        body: `zebraqx anchor document number ${i} with plenty of shared content words`,
+        displayPath: `test/neg-${i}.md`,
+      });
+    }
+
+    store.rerank = (async (_query: string, docs: { file: string; text: string }[]) => {
+      return docs.map((d) => ({ file: d.file, score: 0.9 }));
+    }) as any;
+
+    try {
+      const fmt = (rs: { file: string; score: number }[]) =>
+        rs.map((r) => ({ file: r.file, score: r.score }));
+      const neg = await structuredSearch(store, [{ type: "lex", query: "zebraqx" }], {
+        limit: 5, minScore: 0, candidateLimit: -5,
+      });
+      const one = await structuredSearch(store, [{ type: "lex", query: "zebraqx" }], {
+        limit: 5, minScore: 0, candidateLimit: 1,
+      });
+
+      expect(fmt(neg)).toEqual(fmt(one));
+      expect(neg).toHaveLength(1);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("structuredSearch grows per-list breadth with candidateLimit above the default", async () => {
+    const store = await createTestStore();
+    const collectionName = await createTestCollection();
+    for (let i = 0; i < 60; i++) {
+      await insertTestDocument(store.db, collectionName, {
+        name: `breadth-${i}`, title: `Breadth ${i}`,
+        body: `breadthknob uniqueword${i} filler text about search breadth ${"lorem ipsum dolor sit amet ".repeat(3)}`,
+        displayPath: `test/breadth-${String(i).padStart(3, "0")}.md`,
+      });
+    }
+
+    try {
+      const query = [{ type: "lex", query: "breadthknob" }] as any;
+      const atDefault = await structuredSearch(store, query, { limit: 200, minScore: 0, skipRerank: true, candidateLimit: 40 });
+      const wide = await structuredSearch(store, query, { limit: 200, minScore: 0, skipRerank: true, candidateLimit: 100 });
+
+      // The old hardcoded breadth of 20 capped the fusion pool at 20 rows;
+      // -C 100 must now fill the pool instead of changing nothing.
+      expect(atDefault.length).toBe(20);
+      expect(wide.length).toBe(60);
+      // Widening only extends the pool — the default head order is untouched.
+      expect(wide.slice(0, 20).map((r) => r.file)).toEqual(atDefault.map((r) => r.file));
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
   test("structuredSearch answers in RRF order when the reranker misses its deadline", async () => {
     const store = await createTestStore();
     const collectionName = await createTestCollection();
@@ -5236,6 +6026,64 @@ describe("Embedding batching", () => {
       expect(rerank).toHaveBeenCalledTimes(2);
     } finally {
       await cleanupTestDb(store);
+    }
+  });
+
+  test("cascade tail survives minScore; measured zeros are still dropped", async () => {
+    const seed = async (store: Store, collectionName: string) => {
+      for (let i = 0; i < 12; i++) {
+        await insertTestDocument(store.db, collectionName, {
+          name: `doc${i}`, title: `Doc ${i}`,
+          body: `zebraqx content number ${i}`,
+          displayPath: `test/doc${i}.md`,
+        });
+      }
+    };
+    // Decisive head: the tail keeps unscored placeholders. A 0.1 threshold
+    // would cut every placeholder blend (rank 9 best is 0.08), so without the
+    // exemption only the 8 scored head rows come back.
+    {
+      const store = await createTestStore();
+      const collectionName = await createTestCollection();
+      await seed(store, collectionName);
+      store.rerank = vi.fn(async (_q: string, docs: { file: string; text: string }[]) =>
+        docs.map((d, i) => ({ file: d.file, score: i === 0 ? 0.95 : 0.5 })));
+      try {
+        const results = await structuredSearch(store, [{ type: "lex", query: "zebraqx" }], {
+          limit: 20, minScore: 0.1,
+        });
+        expect(store.rerank).toHaveBeenCalledTimes(1); // tail skipped: decisive
+        expect(results).toHaveLength(12);
+        expect(results.every((r) => !("unscored" in r))).toBe(true);
+        // Default path is unchanged: minScore 0 keeps the same rows.
+        const unfiltered = await structuredSearch(store, [{ type: "lex", query: "zebraqx" }], {
+          limit: 20, minScore: 0,
+        });
+        expect(unfiltered).toHaveLength(12);
+      } finally {
+        await cleanupTestDb(store);
+      }
+    }
+    // Contested head: everything is measured, so genuine 0 scores stay filtered.
+    {
+      const store = await createTestStore();
+      const collectionName = await createTestCollection();
+      await seed(store, collectionName);
+      let calls = 0;
+      store.rerank = vi.fn(async (_q: string, docs: { file: string; text: string }[]) => {
+        calls++;
+        if (calls === 1) return docs.map((d, i) => ({ file: d.file, score: i === 0 ? 0.9 : 0.895 }));
+        return docs.map((d) => ({ file: d.file, score: 0 }));
+      });
+      try {
+        const results = await structuredSearch(store, [{ type: "lex", query: "zebraqx" }], {
+          limit: 20, minScore: 0.1,
+        });
+        expect(store.rerank).toHaveBeenCalledTimes(2); // tail measured: contested
+        expect(results).toHaveLength(8);
+      } finally {
+        await cleanupTestDb(store);
+      }
     }
   });
 
@@ -5346,6 +6194,35 @@ describe("Embedding batching", () => {
       expect(searchVecSpy.mock.calls[0]?.[0]).toBe("structured query");
       expect(searchVecSpy.mock.calls[0]?.[1]).toBe(model);
       expect(searchVecSpy.mock.calls[0]?.[5]).toEqual([1, 2, 3]);
+    } finally {
+      await cleanupTestDb(store);
+    }
+  });
+
+  test("structuredSearch is invariant to collection order for same-subquery fan-out", async () => {
+    // -c alpha -c beta and -c beta -c alpha must fuse identically: one merged list per
+    // subquery, so collection position is never RRF weight.
+    const store = await createTestStore();
+    const alpha = await createTestCollection({ name: "alpha-order", pwd: "/test/alpha-order" });
+    const beta = await createTestCollection({ name: "beta-order", pwd: "/test/beta-order" });
+    await insertTestDocument(store.db, alpha, {
+      name: "a", title: "A", body: "zebraqx lighthouse keeper", displayPath: "a.md",
+    });
+    await insertTestDocument(store.db, beta, {
+      name: "b", title: "B", body: "zebraqx harbor ferry", displayPath: "b.md",
+    });
+
+    try {
+      const queries: ExpandedQuery[] = [{ type: "lex", query: "zebraqx" }];
+      const ab = await structuredSearch(store, queries, {
+        collections: [alpha, beta], limit: 5, minScore: 0, skipRerank: true,
+      });
+      const ba = await structuredSearch(store, queries, {
+        collections: [beta, alpha], limit: 5, minScore: 0, skipRerank: true,
+      });
+      expect(ab.map(r => r.file)).toEqual(ba.map(r => r.file));
+      expect(ab.map(r => r.score)).toEqual(ba.map(r => r.score));
+      expect(ab).toHaveLength(2);
     } finally {
       await cleanupTestDb(store);
     }

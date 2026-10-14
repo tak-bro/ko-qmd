@@ -78,7 +78,7 @@ Search with pre-expanded queries.
     { "type": "hyde", "query": "hypothetical answer passage..." }
   ],
   "limit": 10,
-  "collection": "optional",
+  "collections": ["optional"],
   "minScore": 0.0
 }
 ```
@@ -91,13 +91,14 @@ Search with pre-expanded queries.
 
 ### get
 
-Retrieve document by path or `#docid`.
+Retrieve document by file path or `#docid`.
 
 | Param | Type | Description |
 |-------|------|-------------|
-| `path` | string | File path or `#docid` |
-| `full` | bool? | Return full content |
-| `lineNumbers` | bool? | Add line numbers |
+| `file` | string | File path or `#docid` (supports `:line` / `:line:count` suffix) |
+| `fromLine` | number? | Start from this line number (1-indexed) |
+| `maxLines` | number? | Maximum number of lines to return |
+| `lineNumbers` | bool? | Add line numbers (default true) |
 
 ### multi_get
 
@@ -106,7 +107,9 @@ Retrieve multiple documents.
 | Param | Type | Description |
 |-------|------|-------------|
 | `pattern` | string | Glob or comma-separated list |
+| `maxLines` | number? | Maximum lines per file |
 | `maxBytes` | number? | Skip large files (default 64KB) |
+| `lineNumbers` | bool? | Add line numbers (default true) |
 
 ### status
 

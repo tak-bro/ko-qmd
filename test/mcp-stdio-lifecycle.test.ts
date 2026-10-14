@@ -9,7 +9,7 @@
 
 import { describe, test, expect } from "vitest";
 import { EventEmitter } from "node:events";
-import { spawn } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -352,6 +352,100 @@ describe("qmd mcp stdio process lifecycle", () => {
       // platform, so the bun child is not asserted on.
       if (!process.versions.bun) {
         expect(existsSync(join(workDir, "lifecycle.sqlite-wal"))).toBe(false);
+      }
+    } finally {
+      if (child && child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+      }
+      await rm(workDir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test("SIGTERM shuts down gracefully with breadcrumb, clean exit, and closed store", async () => {
+    // SIGTERM is stdio's only stop mechanism (no pidfile/stop command), so it
+    // must run the same drain/close/store.close sequence as the EOF path
+    // instead of dying via the CLI's top-level cursor.show + exit(143).
+    const workDir = await mkdtemp(join(tmpdir(), "qmd-stdio-sigterm-"));
+    let child: ReturnType<typeof spawn> | undefined;
+    try {
+      await writeFile(join(workDir, "index.yml"), "collections: {}\n");
+
+      const runtimeArgs = process.versions.bun
+        ? [cliPath, "mcp"]
+        : ["--import", "tsx", cliPath, "mcp"];
+
+      child = spawn(process.execPath, runtimeArgs, {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          INDEX_PATH: join(workDir, "sigterm.sqlite"),
+          QMD_CONFIG_DIR: workDir,
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+
+      const stderrChunks: string[] = [];
+      child.stderr.on("data", (chunk) => stderrChunks.push(String(chunk)));
+
+      // Complete one request/response round-trip so SIGTERM arrives on a live,
+      // already-connected server rather than during startup.
+      const response = await new Promise<string>((resolve, reject) => {
+        let buffer = "";
+        const onData = (chunk: Buffer) => {
+          buffer += String(chunk);
+          if (buffer.includes("\n")) {
+            child.stdout.off("data", onData);
+            resolve(buffer);
+          }
+        };
+        child.stdout.on("data", onData);
+        child.once("error", reject);
+        child.once("exit", (code) =>
+          reject(new Error(`server exited before responding (code ${code}): ${stderrChunks.join("")}`))
+        );
+        child.stdin.write(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "initialize",
+            params: {
+              protocolVersion: "2025-06-18",
+              capabilities: {},
+              clientInfo: { name: "sigterm-test", version: "1.0.0" },
+            },
+          }) + "\n"
+        );
+      });
+      expect(response).toContain('"jsonrpc":"2.0"');
+
+      // Guard: only signal our own child — verify its command line first.
+      const cmdline = execSync(`ps -o command= -p ${child.pid}`, { encoding: "utf-8" });
+      expect(cmdline).toContain("qmd");
+
+      // Stop via SIGTERM (stdin stays open) and require a clean, prompt exit.
+      const exitCode = await new Promise<number | null>((resolve, reject) => {
+        child.removeAllListeners("exit");
+        const timer = setTimeout(() => {
+          child.kill("SIGKILL");
+          reject(new Error(`server did not exit after SIGTERM: ${stderrChunks.join("")}`));
+        }, 30_000);
+        child.once("exit", (code) => {
+          clearTimeout(timer);
+          resolve(code);
+        });
+        child.kill("SIGTERM");
+      });
+
+      expect(exitCode).toBe(0);
+
+      // The exit must have come from the graceful SIGTERM path, not the old
+      // abrupt cursor.show + exit(143) death (which wrote no breadcrumb).
+      expect(stderrChunks.join("")).toContain("Shutting down (SIGTERM)");
+
+      // store.close() ran, so no WAL sidecar survives on the node child
+      // (same assertion as the EOF test; bun:sqlite may retain it).
+      if (!process.versions.bun) {
+        expect(existsSync(join(workDir, "sigterm.sqlite-wal"))).toBe(false);
       }
     } finally {
       if (child && child.exitCode === null && child.signalCode === null) {

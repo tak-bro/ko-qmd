@@ -8,12 +8,7 @@
 import { execSync } from "child_process";
 
 // Test queries with expected documents and difficulty
-const evalQueries: {
-  query: string;
-  expectedDoc: string;  // Partial match on filename
-  difficulty: "easy" | "medium" | "hard" | "fusion";
-  description: string;
-}[] = [
+export const evalQueries: EvalQuery[] = [
   // EASY: Exact keyword matches
   {
     query: "API versioning",
@@ -215,54 +210,105 @@ const evalQueries: {
   },
 ];
 
-interface SearchResult {
+export interface SearchResult {
   file: string;
   score: number;
   title: string;
 }
 
-function runSearch(query: string): SearchResult[] {
-  try {
-    const output = execSync(
-      `bun src/cli/qmd.ts search "${query.replace(/"/g, '\\"')}" --json -n 5 2>/dev/null`,
-      { encoding: "utf-8", timeout: 30000 }
-    );
-    return JSON.parse(output);
-  } catch (e) {
-    return [];
-  }
+export interface EvalQuery {
+  query: string;
+  expectedDoc: string;
+  difficulty: "easy" | "medium" | "hard" | "fusion";
+  description: string;
 }
 
-function runQuery(query: string): SearchResult[] {
-  try {
-    const output = execSync(
-      `bun src/cli/qmd.ts query "${query.replace(/"/g, '\\"')}" --json -n 5 2>/dev/null`,
-      { encoding: "utf-8", timeout: 60000 }
-    );
-    return JSON.parse(output);
-  } catch (e) {
-    return [];
-  }
+export type SearchRunner = (query: string) => SearchResult[];
+
+export interface DifficultyCounts {
+  total: number;
+  hit1: number;
+  hit3: number;
+  hit5: number;
 }
 
-function evaluate(mode: "search" | "query") {
-  const runFn = mode === "search" ? runSearch : runQuery;
-  const results = {
+export interface EvalScores {
+  easy: DifficultyCounts;
+  medium: DifficultyCounts;
+  hard: DifficultyCounts;
+  fusion: DifficultyCounts;
+}
+
+export function escapeQuery(query: string): string {
+  return query.replace(/"/g, '\\"');
+}
+
+export function findFirstHitRank(results: SearchResult[], expectedDoc: string): number {
+  for (let i = 0; i < results.length; i++) {
+    const entry = results[i];
+    if (entry === undefined) continue;
+    if (entry.file.toLowerCase().includes(expectedDoc)) {
+      return i + 1;
+    }
+  }
+  return -1;
+}
+
+export function emptyScores(): EvalScores {
+  return {
     easy: { total: 0, hit1: 0, hit3: 0, hit5: 0 },
     medium: { total: 0, hit1: 0, hit3: 0, hit5: 0 },
     hard: { total: 0, hit1: 0, hit3: 0, hit5: 0 },
     fusion: { total: 0, hit1: 0, hit3: 0, hit5: 0 },
   };
+}
+
+export function scoreQueries(queries: EvalQuery[], runFn: SearchRunner): EvalScores {
+  const results = emptyScores();
+  for (const item of queries) {
+    const searchResults = runFn(item.query);
+    const firstHit = findFirstHitRank(searchResults, item.expectedDoc);
+    results[item.difficulty].total++;
+    if (firstHit === 1) results[item.difficulty].hit1++;
+    if (firstHit >= 1 && firstHit <= 3) results[item.difficulty].hit3++;
+    if (firstHit >= 1 && firstHit <= 5) results[item.difficulty].hit5++;
+  }
+  return results;
+}
+
+export function runSearch(query: string, execFn: typeof execSync = execSync): SearchResult[] {
+  try {
+    const output = execFn(
+      `bun src/cli/qmd.ts search "${escapeQuery(query)}" --json -n 5 2>/dev/null`,
+      { encoding: "utf-8", timeout: 30000 }
+    );
+    return JSON.parse(output as string) as SearchResult[];
+  } catch {
+    return [];
+  }
+}
+
+export function runQuery(query: string, execFn: typeof execSync = execSync): SearchResult[] {
+  try {
+    const output = execFn(
+      `bun src/cli/qmd.ts query "${escapeQuery(query)}" --json -n 5 2>/dev/null`,
+      { encoding: "utf-8", timeout: 60000 }
+    );
+    return JSON.parse(output as string) as SearchResult[];
+  } catch {
+    return [];
+  }
+}
+
+export function evaluate(mode: "search" | "query"): void {
+  const runFn = mode === "search" ? runSearch : runQuery;
+  const results: EvalScores = emptyScores();
 
   console.log(`\n=== Evaluating ${mode.toUpperCase()} mode ===\n`);
 
   for (const { query, expectedDoc, difficulty, description } of evalQueries) {
     const searchResults = runFn(query);
-    const ranks = searchResults
-      .map((r, i) => ({ rank: i + 1, matches: r.file.toLowerCase().includes(expectedDoc) }))
-      .filter(r => r.matches);
-
-    const firstHit = ranks.length > 0 ? ranks[0]!.rank : -1;
+    const firstHit = findFirstHitRank(searchResults, expectedDoc);
 
     results[difficulty].total++;
     if (firstHit === 1) results[difficulty].hit1++;
@@ -287,24 +333,27 @@ function evaluate(mode: "search" | "query") {
   console.log(`\nOverall: Hit@1=${((totalHit1/total)*100).toFixed(0)}% Hit@3=${((totalHit3/total)*100).toFixed(0)}%`);
 }
 
-// Main
-console.log("QMD Evaluation Harness");
-console.log("=".repeat(50));
-console.log(`Testing ${evalQueries.length} queries across 8 documents`);
+// Main — only runs when executed directly (`bun test/eval-harness.ts`).
+// Importing this module for tests must not spawn searches.
+if (import.meta.main) {
+  console.log("QMD Evaluation Harness");
+  console.log("=".repeat(50));
+  console.log(`Testing ${evalQueries.length} queries across 8 documents`);
 
-// Check if eval-docs collection exists
-try {
-  const status = execSync("bun src/cli/qmd.ts status --json 2>/dev/null", { encoding: "utf-8" });
-  if (!status.includes("eval-docs")) {
-    console.log("\n⚠️  eval-docs collection not found. Run:");
-    console.log("   qmd collection add test/eval-docs --name eval-docs");
-    console.log("   qmd embed");
-    process.exit(1);
+  // Check if eval-docs collection exists
+  try {
+    const status = execSync("bun src/cli/qmd.ts status --json 2>/dev/null", { encoding: "utf-8" });
+    if (!status.includes("eval-docs")) {
+      console.log("\n⚠️  eval-docs collection not found. Run:");
+      console.log("   qmd collection add test/eval-docs --name eval-docs");
+      console.log("   qmd embed");
+      process.exit(1);
+    }
+  } catch {
+    console.log("\n⚠️  Could not check status. Make sure qmd is working.");
   }
-} catch {
-  console.log("\n⚠️  Could not check status. Make sure qmd is working.");
-}
 
-// Run evaluations
-evaluate("search");
-evaluate("query");
+  // Run evaluations
+  evaluate("search");
+  evaluate("query");
+}

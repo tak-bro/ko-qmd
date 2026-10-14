@@ -213,6 +213,8 @@ import {
   getDocumentBody,
   findDocuments,
   getStatus,
+  upsertStoreCollection,
+  deleteStoreCollection,
   DEFAULT_EMBED_MODEL,
   getEmbeddingFingerprint,
   DEFAULT_QUERY_MODEL,
@@ -220,6 +222,7 @@ import {
   DEFAULT_MULTI_GET_MAX_BYTES,
   createStore,
 } from "../src/store";
+import { formatStatusCollectionLine } from "../src/mcp/server";
 import type { RankedResult } from "../src/store";
 // Note: searchResultsToMcpCsv no longer used in MCP - using structuredContent instead
 
@@ -610,6 +613,38 @@ describe("MCP Server", () => {
       const status = getStatus(testDb);
       // large-file.md doesn't have embeddings
       expect(status.needsEmbedding).toBe(1);
+    });
+
+    test("orphan collection renders (removed) instead of literal null", () => {
+      // removeCollection drops the store_collections row but leaves documents
+      // active (src/index.ts removeCollection); status must not print "null".
+      const now = new Date().toISOString();
+      upsertStoreCollection(testDb, "status-orphan-probec", { path: "/tmp/probec-docs" });
+      testDb.prepare(`INSERT OR IGNORE INTO content (hash, doc, created_at) VALUES (?, ?, ?)`)
+        .run("status-orphan-hash", "# Zxq Probe\n\nUnmatched body text.\n", now);
+      testDb.prepare(`INSERT INTO documents (collection, path, title, hash, created_at, modified_at, active) VALUES ('status-orphan-probec', 'probe.md', 'Probe', 'status-orphan-hash', ?, ?, 1)`)
+        .run(now, now);
+      try {
+        expect(deleteStoreCollection(testDb, "status-orphan-probec")).toBe(true);
+        const status = getStatus(testDb);
+        const orphan = status.collections.find(c => c.name === "status-orphan-probec");
+        expect(orphan).toBeDefined();
+        // structuredContent keeps the null exactly as-is
+        expect(orphan!.path).toBeNull();
+        expect(orphan!.documents).toBe(1);
+        // text renders a human token, never the literal "null"
+        const line = formatStatusCollectionLine(orphan!);
+        expect(line).toBe("    - status-orphan-probec: (removed) (1 docs)");
+        expect(line).not.toContain(": null (");
+      } finally {
+        testDb.prepare(`DELETE FROM documents WHERE collection = 'status-orphan-probec'`).run();
+        testDb.prepare(`DELETE FROM store_collections WHERE name = 'status-orphan-probec'`).run();
+      }
+    });
+
+    test("status line keeps real paths unchanged", () => {
+      expect(formatStatusCollectionLine({ name: "docs", path: "/test/docs", documents: 5 }))
+        .toBe("    - docs: /test/docs (5 docs)");
     });
   });
 
@@ -1030,6 +1065,28 @@ describe.skipIf(!!process.env.CI)("MCP HTTP Transport", () => {
   test("GET /other returns 404", async () => {
     const res = await fetch(`${baseUrl}/other`);
     expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect((await res.json()).error).toBe("Not Found");
+  });
+
+  test("unknown REST routes return JSON {error} envelope, not plain text", async () => {
+    const cases: Array<[string, string, string?]> = [
+      ["POST", "/health", JSON.stringify({})],
+      ["GET", "/query"],
+      ["PUT", "/query", JSON.stringify({})],
+      ["GET", "/search"],
+      ["DELETE", "/query"],
+    ];
+    for (const [method, path, body] of cases) {
+      const res = await fetch(`${baseUrl}${path}`, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        ...(body !== undefined ? { body } : {}),
+      });
+      expect(res.status).toBe(404);
+      expect(res.headers.get("content-type")).toContain("application/json");
+      expect(await res.json()).toEqual({ error: "Not Found" });
+    }
   });
 
   test("POST /query rejects malformed and non-object JSON with 400", async () => {
@@ -1315,6 +1372,46 @@ describe("MCP HTTP Transport — 2026-07-28 protocol", () => {
     expect(serverInfo?.name).toBe("qmd");
   });
 
+  test("multi_get SKIPPED message names a registered tool, not a stale qmd_* name", async () => {
+    // Derive the expected tool name from tools/list instead of hardcoding it
+    // twice: the SKIPPED retry hint must reference a tool that actually exists.
+    const { json: listJson } = await postMcp(
+      { jsonrpc: "2.0", id: 9, method: "tools/list", params: { _meta: mcp2026Meta } },
+      { "MCP-Protocol-Version": MCP_2026, "Mcp-Method": "tools/list" },
+    );
+    const toolNames = (listJson.result.tools as { name: string }[]).map((t) => t.name);
+
+    // large-file.md (~24KB) exceeds maxBytes: 100, forcing a SKIPPED entry.
+    const { status, json } = await postMcp(
+      {
+        jsonrpc: "2.0",
+        id: 10,
+        method: "tools/call",
+        params: {
+          name: "multi_get",
+          arguments: { pattern: "large-file.md", maxBytes: 100 },
+          _meta: mcp2026Meta,
+        },
+      },
+      {
+        "MCP-Protocol-Version": MCP_2026,
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": "multi_get",
+      },
+    );
+    expect(status).toBe(200);
+    expect(json.error).toBeUndefined();
+    const texts = (json.result.content as { type: string; text?: string }[])
+      .filter((c) => c.type === "text")
+      .map((c) => c.text ?? "");
+    const skipped = texts.find((t) => t.includes("SKIPPED"));
+    expect(skipped).toBeDefined();
+    const match = skipped!.match(/Use '(\S+?)' with/);
+    expect(match).not.toBeNull();
+    expect(toolNames).toContain(match![1]);
+    expect(skipped).not.toContain("qmd_get");
+  });
+
   test("the query tool tells callers that a Korean query is not expanded", async () => {
     const { json } = await postMcp(
       { jsonrpc: "2.0", id: 2, method: "tools/list", params: { _meta: mcp2026Meta } },
@@ -1391,6 +1488,251 @@ describe("MCP HTTP Transport — 2026-07-28 protocol", () => {
     const res = await fetch(`${baseUrl}/mcp`, { method: "GET" });
     expect(res.status).toBe(405);
     expect(res.headers.get("mcp-session-id")).toBeNull();
+  });
+
+  async function callMultiGet(args: Record<string, unknown>, id: number): Promise<any> {
+    const { json } = await postMcp(
+      {
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name: "multi_get", arguments: args, _meta: mcp2026Meta },
+      },
+      {
+        "MCP-Protocol-Version": MCP_2026,
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": "multi_get",
+      },
+    );
+    expect(json.error).toBeUndefined();
+    return json.result;
+  }
+
+  test("tools/call multi_get rejects negative maxLines", async () => {
+    const result = await callMultiGet({ pattern: "readme.md", maxLines: -1 }, 101);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("maxLines must be a positive integer");
+  });
+
+  test("tools/call multi_get rejects maxLines 0", async () => {
+    const result = await callMultiGet({ pattern: "readme.md", maxLines: 0 }, 102);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("maxLines must be a positive integer");
+  });
+
+  test("tools/call multi_get rejects negative maxBytes", async () => {
+    const result = await callMultiGet({ pattern: "readme.md", maxBytes: -5 }, 103);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("maxBytes must be a positive integer");
+  });
+
+  test("tools/call multi_get honors valid maxLines", async () => {
+    const result = await callMultiGet({ pattern: "readme.md", maxLines: 2 }, 104);
+    expect(result.isError).toBeFalsy();
+    const resource = result.content.find((c: any) => c.type === "resource");
+    expect(resource).toBeDefined();
+    expect(resource.resource.text).toContain("[... truncated 3 more lines]");
+  });
+});
+
+
+// =============================================================================
+// get / multi_get tool envelope pins (T2 #2)
+// =============================================================================
+//
+// findDocument/findDocuments return raw store results; the tool handlers in
+// src/mcp/server.ts re-wrap them (isError flag, "No files matched pattern:"
+// vs "Errors:" prefixes, "[SKIPPED: …]" shape, "<!-- Context: -->" prefix,
+// resource mimeType). Nothing pinned that re-wrap at tool level before — the
+// suites above either call store helpers directly or assert content.length
+// only. These tests call the tools over HTTP (same tools/call style as the
+// suites above, temp DB + temp config fixtures) and pin the CURRENT contract.
+// get/multi_get touch neither embeddings nor the LLM, so they stay green in CI.
+
+describe("MCP get/multi_get tool envelope", () => {
+  let handle: HttpServerHandle | undefined;
+  let baseUrl: string;
+  let dbPath: string;
+  let configDir: string | undefined;
+  const origIndexPath = process.env.INDEX_PATH;
+  const origConfigDir = process.env.QMD_CONFIG_DIR;
+
+  beforeAll(async () => {
+    dbPath = `/tmp/qmd-mcp-tool-envelope-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`;
+    const db = openDatabase(dbPath);
+    initTestDatabase(db);
+    seedTestData(db);
+    const testConfig: CollectionConfig = {
+      collections: {
+        docs: {
+          path: "/test/docs",
+          pattern: "**/*.md",
+          context: { "/meetings": "Meeting notes and transcripts" },
+        },
+      },
+    };
+    syncConfigToDb(db, testConfig);
+    db.close();
+
+    const configPrefix = join(tmpdir(), `qmd-mcp-tool-envelope-config-${Date.now()}-`);
+    configDir = await mkdtemp(configPrefix);
+    await writeFile(join(configDir, "index.yml"), YAML.stringify(testConfig));
+
+    process.env.INDEX_PATH = dbPath;
+    process.env.QMD_CONFIG_DIR = configDir;
+    handle = await startMcpHttpServer(0, { quiet: true, dbPath });
+    baseUrl = `http://localhost:${handle.port}`;
+  });
+
+  afterAll(async () => {
+    if (handle) await handle.stop();
+    _resetProductionModeForTesting();
+    if (origIndexPath !== undefined) process.env.INDEX_PATH = origIndexPath;
+    else delete process.env.INDEX_PATH;
+    if (origConfigDir !== undefined) process.env.QMD_CONFIG_DIR = origConfigDir;
+    else delete process.env.QMD_CONFIG_DIR;
+    try { unlinkSync(dbPath); } catch {}
+    if (configDir) {
+      try {
+        const files = await readdir(configDir);
+        for (const f of files) await unlink(join(configDir, f));
+        await rmdir(configDir);
+      } catch {}
+    }
+  });
+
+  type ToolBlock =
+    | { type: "text"; text: string }
+    | { type: "resource"; resource: { uri: string; name: string; title?: string; mimeType: string; text: string } };
+  type ToolResult = { content: ToolBlock[]; isError?: boolean };
+
+  const callTool = async (name: string, args: Record<string, unknown>): Promise<{ status: number; result: ToolResult }> => {
+    const res = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": MCP_2026,
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": name,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name, arguments: args, _meta: mcp2026Meta },
+      }),
+    });
+    const json = await res.json() as { result: ToolResult };
+    return { status: res.status, result: json.result };
+  };
+
+  const resourcesOf = (result: ToolResult) =>
+    result.content.filter((b): b is Extract<ToolBlock, { type: "resource" }> => b.type === "resource");
+
+  test("get hit returns a text/markdown resource envelope without isError", async () => {
+    const { status, result } = await callTool("get", { file: "readme.md" });
+    expect(status).toBe(200);
+    expect(result.isError).toBeFalsy();
+    expect(result.content.length).toBe(1);
+    const [block] = result.content;
+    expect(block!.type).toBe("resource");
+    const [resource] = resourcesOf(result);
+    expect(resource!.resource.uri).toBe("qmd://docs/readme.md");
+    // The handler builds name/title (server.ts get tool), but the MCP SDK
+    // transport drops them — the wire block is {uri, mimeType, text} only.
+    expect(resource!.resource.name).toBeUndefined();
+    expect(resource!.resource.title).toBeUndefined();
+    expect(resource!.resource.mimeType).toBe("text/markdown");
+    // Line numbers are on by default ("N: content").
+    expect(resource!.resource.text).toContain("1: # Project README");
+  });
+
+  test("get miss returns isError with a 'Document not found:' prefix", async () => {
+    const { status, result } = await callTool("get", { file: "no-such-doc-xyz.md" });
+    expect(status).toBe(200);
+    expect(result.isError).toBe(true);
+    expect(result.content.length).toBe(1);
+    expect(result.content[0]!.type).toBe("text");
+    expect((result.content[0] as Extract<ToolBlock, { type: "text" }>).text)
+      .toMatch(/^Document not found: no-such-doc-xyz\.md/);
+  });
+
+  test("get near-miss appends Did-you-mean suggestions", async () => {
+    const { result } = await callTool("get", { file: "readm.md" });
+    expect(result.isError).toBe(true);
+    const text = (result.content[0] as Extract<ToolBlock, { type: "text" }>).text;
+    expect(text).toMatch(/^Document not found: readm\.md/);
+    expect(text).toContain("Did you mean one of these?");
+    expect(text).toContain("readme.md");
+  });
+
+  test("get prefixes '<!-- Context: -->' for docs under a context path", async () => {
+    const { result } = await callTool("get", { file: "meetings/meeting-2024-01.md" });
+    expect(result.isError).toBeFalsy();
+    const [resource] = resourcesOf(result);
+    expect(resource!.resource.mimeType).toBe("text/markdown");
+    expect(resource!.resource.text.startsWith("<!-- Context: Meeting notes and transcripts -->\n\n")).toBe(true);
+  });
+
+  test("multi_get glob hit returns one text/markdown resource per doc without isError", async () => {
+    const { status, result } = await callTool("multi_get", { pattern: "meetings/*.md" });
+    expect(status).toBe(200);
+    expect(result.isError).toBeFalsy();
+    const resources = resourcesOf(result);
+    expect(resources.length).toBe(2);
+    for (const r of resources) expect(r.resource.mimeType).toBe("text/markdown");
+    expect(resources.map((r) => r.resource.uri).sort()).toEqual([
+      "qmd://docs/meetings/meeting-2024-01.md",
+      "qmd://docs/meetings/meeting-2024-02.md",
+    ]);
+  });
+
+  test("multi_get glob miss wraps the store error in an 'Errors:' block with isError", async () => {
+    const pattern = "zzz-no-such-dir/*.md";
+    const { status, result } = await callTool("multi_get", { pattern });
+    expect(status).toBe(200);
+    expect(result.isError).toBe(true);
+    expect(result.content).toEqual([{ type: "text", text: `Errors:\nNo files matched pattern: ${pattern}` }]);
+  });
+
+  test("multi_get comma-list miss reports 'Errors:' yet still returns hits", async () => {
+    const { result } = await callTool("multi_get", { pattern: "readme.md, no-such-doc-xyz.md" });
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0]).toEqual({ type: "text", text: "Errors:\nFile not found: no-such-doc-xyz.md" });
+    const resources = resourcesOf(result);
+    expect(resources.length).toBe(1);
+    expect(resources[0]!.resource.uri).toBe("qmd://docs/readme.md");
+    expect(resources[0]!.resource.mimeType).toBe("text/markdown");
+  });
+
+  test("multi_get emits '[SKIPPED: …]' for files over maxBytes", async () => {
+    const { result } = await callTool("multi_get", { pattern: "*.md", maxBytes: 1000 });
+    expect(result.isError).toBeFalsy();
+    const texts = result.content
+      .filter((b): b is Extract<ToolBlock, { type: "text" }> => b.type === "text")
+      .map((b) => b.text);
+    const skipped = texts.find((t) => t.startsWith("[SKIPPED: docs/large-file.md"));
+    expect(skipped).toBeDefined();
+    expect(skipped).toMatch(/^\[SKIPPED: docs\/large-file\.md - File too large \(.+\)\. Use 'get' with file="docs\/large-file\.md" to retrieve\.\]$/);
+  });
+
+  test("multi_get prefixes '<!-- Context: -->' for docs under a context path", async () => {
+    const { result } = await callTool("multi_get", { pattern: "meetings/meeting-2024-01.md" });
+    expect(result.isError).toBeFalsy();
+    const resources = resourcesOf(result);
+    expect(resources.length).toBe(1);
+    expect(resources[0]!.resource.text.startsWith("<!-- Context: Meeting notes and transcripts -->\n\n")).toBe(true);
+  });
+
+  test("multi_get returns bare 'No files matched pattern:' with isError when the store yields no docs and no errors", async () => {
+    // The store only reaches zero-docs-zero-errors for degenerate input (a
+    // comma list that filters down to zero names); every other miss carries
+    // an error string and takes the 'Errors:' branch above.
+    const { status, result } = await callTool("multi_get", { pattern: "," });
+    expect(status).toBe(200);
+    expect(result.isError).toBe(true);
+    expect(result.content).toEqual([{ type: "text", text: "No files matched pattern: ," }]);
   });
 });
 
@@ -1844,6 +2186,7 @@ describe("REST /query, MCP query and the query log", () => {
 
 import { mkdirSync, utimesSync } from "node:fs";
 import { createStore as createSdkStore } from "../src/index.js";
+import * as storeModule from "../src/store.js";
 
 describe("REST /query refreshes the text index first", () => {
   let handle: HttpServerHandle | undefined;
@@ -2044,10 +2387,66 @@ describe("REST /query takes path and time filters", () => {
     expect(result.content[0]!.text).toMatch(/No results in the 1 of 251 documents/);
   });
 
+  test("an explainer failure still returns the empty success, without sqlite text", async () => {
+    // Damaged-DB shape: the search itself already succeeded with [], and only the
+    // empty-filter explainer (countFilteredDocuments) throws, as it does when the
+    // documents table is gone (SqliteError: no such table). The caller must get the
+    // already-computed empty result, never a -32603 with raw sqlite text.
+    const countSpy = vi.spyOn(storeModule, "countFilteredDocuments").mockImplementation(() => {
+      throw new Error("no such table: documents");
+    });
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const result = await callQuery({ path: ["docs/nowhere/**"] });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent!.results).toEqual([]);
+      expect(result.content[0]!.text).not.toMatch(/no such table/);
+      expect(result.content[0]!.text).toMatch(/No results found/);
+      expect(errSpy).toHaveBeenCalledWith(expect.stringMatching(/empty-result description failed/));
+    } finally {
+      countSpy.mockRestore();
+      errSpy.mockRestore();
+    }
+  });
+
   test("an unparseable span is a tool error, not an unfiltered search", async () => {
     const result = await callQuery({ since: "7dd" });
     expect(result.isError).toBe(true);
     expect(result.content[0]!.text).toMatch(/not a time/);
+  });
+
+  test("a negative limit is a tool error, not an over-return", async () => {
+    const result = await callQuery({ limit: -1 });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toMatch(/limit must be a positive integer/);
+  });
+
+  test("a zero limit is a tool error, not an empty result", async () => {
+    const result = await callQuery({ limit: 0 });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toMatch(/limit must be a positive integer/);
+  });
+
+  test("a valid limit still caps the results", async () => {
+    const result = await callQuery({ limit: 5 });
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent!.results).toHaveLength(5);
+  });
+
+  test("a typo'd collection is a tool error naming the bad name, not a silent empty", async () => {
+    // Without validation the SQL IN filter matches 0 rows and the agent reads
+    // "No results" as "the corpus has nothing on the topic".
+    const result = await callQuery({ searches: [{ type: "lex", query: "zanzibar" }], collections: ["docz"], limit: 10, rerank: false });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toMatch(/unknown collection: docz/);
+    expect(result.content[0]!.text).toMatch(/Known collections: docs/);
+  });
+
+  test("a mixed known/unknown collection list names only the bad name", async () => {
+    const result = await callQuery({ searches: [{ type: "lex", query: "zanzibar" }], collections: ["docs", "docz"], limit: 10, rerank: false });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toMatch(/docz/);
+    expect(result.content[0]!.text).not.toMatch(/docs, /);
   });
 
   // ---------------------------------------------------------------------------
@@ -2151,10 +2550,127 @@ describe("REST /query takes path and time filters", () => {
     const result = await callGrep({ pattern: "zanzibar.once", fixedString: true });
     expect(result.structuredContent!.files).toEqual([]);
   });
+
+  test("a typo'd collection is a tool error naming the bad name, not a silent empty", async () => {
+    // Without validation the SQL filter matches 0 rows and the agent reads
+    // "No lines match" as "the corpus has nothing on the topic".
+    const result = await callGrep({ pattern: "zanzibar", collections: ["docz"] });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toMatch(/unknown collection: docz/);
+    expect(result.content[0]!.text).toMatch(/Known collections: docs/);
+  });
+
+  test("a mixed known/unknown collection list names only the bad name", async () => {
+    const result = await callGrep({ pattern: "zanzibar", collections: ["docs", "docz"] });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toMatch(/docz/);
+    expect(result.content[0]!.text).not.toMatch(/docs, /);
+  });
 });
 
-describe("REST /query rerankMaxDocTokens validation", () => {
-  test("a positive integer passes through", () => {
+// =============================================================================
+// multi_get total-miss envelope — a total miss is a tool error (mirrors get-miss)
+// =============================================================================
+
+describe("multi_get total-miss is a tool error", () => {
+  let handle: HttpServerHandle | undefined;
+  let baseUrl: string;
+  let root: string;
+  const origIndexPath = process.env.INDEX_PATH;
+  const origConfigDir = process.env.QMD_CONFIG_DIR;
+
+  beforeAll(async () => {
+    root = mkdtempSync(join(tmpdir(), "qmd-mcp-multiget-"));
+    const docsDir = join(root, "docs");
+    mkdirSync(docsDir, { recursive: true });
+    writeFileSyncNode(join(docsDir, "a.md"), "# A\n\nhello world\n");
+    const dbPath = join(root, "index.sqlite");
+    const config: CollectionConfig = { collections: { docs: { path: docsDir, pattern: "**/*.md" } } };
+    const configDir = join(root, "config");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSyncNode(join(configDir, "index.yml"), YAML.stringify(config));
+    process.env.INDEX_PATH = dbPath;
+    process.env.QMD_CONFIG_DIR = configDir;
+    const seed = await createSdkStore({ dbPath, config });
+    await seed.update();
+    await seed.close();
+    handle = await startMcpHttpServer(0, { quiet: true, dbPath });
+    baseUrl = `http://localhost:${handle.port}`;
+  });
+
+  afterAll(async () => {
+    if (handle) await handle.stop();
+    _resetProductionModeForTesting();
+    if (origIndexPath !== undefined) process.env.INDEX_PATH = origIndexPath;
+    else delete process.env.INDEX_PATH;
+    if (origConfigDir !== undefined) process.env.QMD_CONFIG_DIR = origConfigDir;
+    else delete process.env.QMD_CONFIG_DIR;
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const VERSION = "2026-07-28";
+  type MultiGetToolResult = { isError?: boolean; content: { type: string; text?: string }[] };
+  const callMultiGet = async (pattern: string): Promise<MultiGetToolResult> => {
+    const res = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": VERSION,
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": "multi_get",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "multi_get",
+          arguments: { pattern },
+          _meta: {
+            "io.modelcontextprotocol/protocolVersion": VERSION,
+            "io.modelcontextprotocol/clientInfo": { name: "test-client", version: "1.0.0" },
+            "io.modelcontextprotocol/clientCapabilities": {},
+          },
+        },
+      }),
+    });
+    const json = await res.json() as { result?: MultiGetToolResult };
+    return json.result!;
+  };
+
+  test("a total-miss glob is a tool error, keeping the Errors: text", async () => {
+    const result = await callMultiGet("nonexistent-zzz/*.md");
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("Errors:");
+    expect(result.content[0]!.text).toContain("No files matched pattern: nonexistent-zzz/*.md");
+  });
+
+  test("a total-miss single file is a tool error, like get-miss", async () => {
+    const result = await callMultiGet("nope.md");
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("Errors:");
+  });
+
+  test("a hit still answers without isError", async () => {
+    const result = await callMultiGet("a.md");
+    expect(result.isError).toBeUndefined();
+  });
+
+  test("a partial miss still answers without isError", async () => {
+    const result = await callMultiGet("a.md, nope.md");
+    expect(result.isError).toBeUndefined();
+    expect(JSON.stringify(result.content)).toContain("Errors:");
+  });
+
+  test("the degenerate ',' pattern keeps its No-files-matched error", async () => {
+    const result = await callMultiGet(",");
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toContain("No files matched pattern: ,");
+  });
+});
+
+describe("REST /query rerankMaxDocTokens validation", () => {  test("a positive integer passes through", () => {
     expect(normalizeRerankMaxDocTokens(128)).toBe(128);
   });
 
@@ -2171,5 +2687,13 @@ describe("search deadlines", () => {
     expect(resolveDeadlineMs("-5", 10_000)).toBe(10_000);
     expect(resolveDeadlineMs("0", 10_000)).toBe(0);
     expect(resolveDeadlineMs("2500", 10_000)).toBe(2_500);
+  });
+
+  test("giant values fall back instead of waiting forever (mirrors daemon-health MAX_TIMER_MS)", () => {
+    const MAX_TIMER_MS = 2 ** 31 - 1;
+    expect(resolveDeadlineMs(String(MAX_TIMER_MS), 10_000)).toBe(MAX_TIMER_MS);
+    expect(resolveDeadlineMs(String(MAX_TIMER_MS + 1), 10_000)).toBe(10_000);
+    expect(resolveDeadlineMs("99999999999", 10_000)).toBe(10_000);
+    expect(resolveDeadlineMs("99999999999", 5_000)).toBe(5_000);
   });
 });

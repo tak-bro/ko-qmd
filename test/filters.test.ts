@@ -86,6 +86,19 @@ describe("compilePathMatcher", () => {
     expect(match("archive/a.md")).toBe(false);
   });
 
+  test("a trailing slash means the directory prefix", () => {
+    const match = compilePathMatcher(["foo/"]);
+    expect(match("foo/bar.md")).toBe(true);
+    expect(match("foo")).toBe(true);
+    expect(match("other/bar.md")).toBe(false);
+  });
+
+  test("a trailing-slash exclude vetoes the whole subtree", () => {
+    const match = compilePathMatcher(["kb/", "!kb/secret/"]);
+    expect(match("kb/a.md")).toBe(true);
+    expect(match("kb/secret/a.md")).toBe(false);
+  });
+
   test("matches dotted paths, which a vault is full of", () => {
     expect(compilePathMatcher(["kb/**"])("kb/.obsidian/config.md")).toBe(true);
   });
