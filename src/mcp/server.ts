@@ -40,6 +40,19 @@ import { buildDocumentFilter, describeFilter, type DocumentFilter } from "../fil
 import { countFilteredDocuments, type SearchHooks } from "../store.js";
 import { normalizeRerankMaxDocTokens } from "../llm.js";
 import { compileGrepPattern, grepDocuments } from "../grep.js";
+import { writeFile, appendFile, readFile } from "node:fs/promises";
+import {
+  MEMORY_COLLECTION,
+  validateMemoryStoreInput,
+  buildMemoryFilename,
+  renderMemoryDoc,
+  renderSupersededFooter,
+  resolveInCollection,
+  isMemDoc,
+  buildStoreReceipt,
+  type MemoryStoreInput,
+} from "../memory.js";
+import { extractDocumentMetadata } from "../metadata.js";
 
 // =============================================================================
 // Types for structured content
@@ -696,6 +709,251 @@ Intent-aware lex (C++ performance, not sports):
         structuredContent: { results: filtered, ...timeoutField(timer.timeouts) },
       };
     })
+  );
+
+  // ---------------------------------------------------------------------------
+  // Memory tools (shared second brain). One claim per file under the `mem`
+  // collection; kb/docs is never a write target (eval-corpus + staging guard).
+  // ---------------------------------------------------------------------------
+
+  /** Resolve the mem collection dir, or a caller-facing error. */
+  async function resolveMemDir(
+    store: QMDStore,
+  ): Promise<{ dir: string } | { error: string }> {
+    const known = await store.listCollections();
+    const mem = known.find(c => c.name === MEMORY_COLLECTION);
+    if (!mem || !mem.pwd) {
+      const names = known.map(c => c.name).join(", ") || "(none)";
+      return { error: `unknown collection: ${MEMORY_COLLECTION}. Known collections: ${names}. Register a mem collection first.` };
+    }
+    return { dir: mem.pwd };
+  }
+
+  const memError = (text: string) => ({
+    content: [{ type: "text" as const, text }],
+    isError: true as const,
+  });
+
+  server.registerTool(
+    "memory_store",
+    {
+      title: "Store Memory",
+      description: "Store one claim (fact | opinion | decision) with provenance (actor, source) into the shared mem collection. Facts and decisions require source. Never stores secrets. Returns vectors_stale:true until `qmd embed -c mem` runs.",
+      inputSchema: {
+        text: z.string().describe("The claim, one idea per call."),
+        actor: z.string().describe("Who says it: user | agent:<harness|lane>."),
+        type: z.enum(["fact", "opinion", "decision"]).describe("Opinions need no source; facts and decisions do."),
+        source: z.string().optional().describe("Where it came from: file:line, URL, or session ref. Required for fact/decision."),
+        project: z.string().optional().describe("Project tag for narrowing recall."),
+        confidence: z.number().min(0).max(1).optional().describe("0..1 when known."),
+      },
+    },
+    track(async ({ text, actor, type, source, project, confidence }: {
+      text: string;
+      actor: string;
+      type: "fact" | "opinion" | "decision";
+      source?: string;
+      project?: string;
+      confidence?: number;
+    }) => {
+      const input: MemoryStoreInput = { text, actor, type, source, project, confidence };
+      const validation = validateMemoryStoreInput(input);
+      if (!validation.ok) {
+        return memError(`Error [${validation.rule}]: ${validation.error}`);
+      }
+      const resolved = await resolveMemDir(store);
+      if ("error" in resolved) return memError(`Error: ${resolved.error}`);
+      const filename = buildMemoryFilename(new Date(), text);
+      await writeFile(`${resolved.dir}/${filename}`, renderMemoryDoc(input), "utf-8");
+      await refreshBeforeQuery(store, [MEMORY_COLLECTION]);
+      const payload = buildStoreReceipt(filename);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(payload) }],
+        structuredContent: payload,
+      };
+    }),
+  );
+
+  server.registerTool(
+    "memory_recall",
+    {
+      title: "Recall Memory",
+      description: "Recall shared memory across the mem + kb collections (existing docs need no migration), with actor/project narrowing and provenance in every hit. kb-only when the mem collection is absent.",
+      inputSchema: {
+        query: z.string().optional().describe("Plain-text query, auto-expanded unless it has Hangul."),
+        searches: z.array(z.object({
+          type: z.enum(["lex", "vec", "hyde"]),
+          query: z.string(),
+        })).optional().describe("Typed sub-queries; mutually exclusive with 'query'."),
+        actor: z.string().optional().describe("Narrow to who said it."),
+        project: z.string().optional().describe("Narrow to a project tag."),
+        limit: z.number().int().default(5).describe("Max hits, positive integer."),
+        collections: z.array(z.string()).optional().describe("Override search scope; default [mem, kb] ∩ known."),
+        filter: z.any().optional().describe("Extra metadata filter (JSON AST), AND-combined with actor/project."),
+        rerank: z.boolean().optional().describe("Rerank with the LLM; omit for the fast path."),
+      },
+    },
+    track(async ({ query, searches, actor, project, limit, collections, filter, rerank }: {
+      query?: string;
+      searches?: { type: "lex" | "vec" | "hyde"; query: string }[];
+      actor?: string;
+      project?: string;
+      limit: number;
+      collections?: string[];
+      filter?: unknown;
+      rerank?: boolean;
+    }) => {
+      if (!Number.isInteger(limit) || (limit as number) < 1) {
+        return memError("Error: limit must be a positive integer");
+      }
+      if (!query && (!searches || searches.length === 0)) {
+        return memError("Error: provide either 'query' or 'searches'");
+      }
+      if (query && searches && searches.length > 0) {
+        return memError("Error: 'query' and 'searches' are mutually exclusive; provide only one");
+      }
+      const filterValidation = validateFilterArgument(filter);
+      if (filterValidation.error) {
+        return memError(`Error: ${filterValidation.error}`);
+      }
+      const narrowing: { key: string; operator: "eq"; value: string }[] = [];
+      if (actor !== undefined) narrowing.push({ key: "actor", operator: "eq", value: actor });
+      if (project !== undefined) narrowing.push({ key: "project", operator: "eq", value: project });
+      const parts: unknown[] = [...narrowing];
+      if (filterValidation.filter !== undefined) parts.push(filterValidation.filter);
+      let combined: unknown = undefined;
+      if (parts.length === 1) combined = parts[0];
+      else if (parts.length > 1) combined = { operator: "and", operands: parts };
+      const combinedValidation = validateFilterArgument(combined);
+      if (combinedValidation.error) {
+        return memError(`Error: ${combinedValidation.error}`);
+      }
+
+      const knownNames = (await store.listCollections()).map(c => c.name);
+      const known = new Set(knownNames);
+      let effective: string[];
+      const notices: string[] = [];
+      if (collections !== undefined) {
+        const unknown = collections.filter(c => !known.has(c));
+        if (unknown.length > 0) {
+          return memError(`Error: unknown collection${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}. Known collections: ${knownNames.join(", ") || "(none)"}`);
+        }
+        effective = collections;
+      } else {
+        effective = [MEMORY_COLLECTION, "kb"].filter(c => known.has(c));
+        if (!known.has(MEMORY_COLLECTION)) {
+          notices.push("mem collection not configured — kb only");
+        }
+        if (effective.length === 0) {
+          return memError(`Error: no searchable collections. Known collections: ${knownNames.join(", ") || "(none)"}`);
+        }
+      }
+
+      await refreshBeforeQuery(store, effective);
+      const searchOptions = query
+        ? { query }
+        : { queries: (searches ?? []).map(s => ({ type: s.type, query: s.query })) };
+      const results = await store.search({
+        ...searchOptions,
+        collections: effective,
+        filter: combinedValidation.filter,
+        limit,
+        rerank,
+        explain: rerank === false,
+        ...searchDeadlines(),
+      });
+      const primaryQuery = query
+        || searches?.find(s => s.type === 'lex')?.query
+        || searches?.find(s => s.type === 'vec')?.query
+        || searches?.[0]?.query
+        || "";
+      const hits = results.map(r => {
+        const { line, snippet } = extractSnippet(r.body, primaryQuery, 300, r.bestChunkPos, r.bestChunk.length);
+        return {
+          file: r.displayPath,
+          title: r.title,
+          score: roundScore(r.score),
+          ...rawBackendScores(r.explain),
+          ...(Object.keys(r.metadata).length > 0 ? { metadata: r.metadata } : {}),
+          line,
+          snippet,
+        };
+      });
+      const payload = {
+        ok: true,
+        collections_searched: effective,
+        ...(notices.length > 0 ? { notices } : {}),
+        vectors_stale_note: "mem hits before `qmd embed -c mem` are lex-only",
+        results: hits,
+      };
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }],
+        structuredContent: payload,
+      };
+    }),
+  );
+
+  server.registerTool(
+    "memory_correct",
+    {
+      title: "Correct Memory",
+      description: "Append-only correction: writes the new claim as a new mem file carrying supersedes, and appends a superseded_by footer to the old file. History is never erased. Only mem files can be corrected.",
+      inputSchema: {
+        file: z.string().describe("Mem filename to correct (e.g. 20261014-210000-abcdef12.md)."),
+        text: z.string().describe("The corrected claim."),
+        reason: z.string().describe("Why the old claim was wrong."),
+        actor: z.string().describe("Who corrects it: user | agent:<harness|lane>."),
+        type: z.enum(["fact", "opinion", "decision"]).optional().describe("Defaults to the old claim's type."),
+        source: z.string().optional().describe("Defaults to the old claim's source."),
+        project: z.string().optional().describe("Defaults to the old claim's project."),
+      },
+    },
+    track(async ({ file, text, reason, actor, type, source, project }: {
+      file: string;
+      text: string;
+      reason: string;
+      actor: string;
+      type?: "fact" | "opinion" | "decision";
+      source?: string;
+      project?: string;
+    }) => {
+      if (typeof reason !== "string" || reason.trim().length === 0) {
+        return memError("Error: reason is required");
+      }
+      const resolved = await resolveMemDir(store);
+      if ("error" in resolved) return memError(`Error: ${resolved.error}`);
+      const abs = resolveInCollection(resolved.dir, file);
+      if (abs === null || !isMemDoc(`${MEMORY_COLLECTION}/${file}`)) {
+        return memError("Error: file must be a flat .md filename inside the mem collection");
+      }
+      let oldBody: string;
+      try {
+        oldBody = await readFile(abs, "utf-8");
+      } catch {
+        return memError(`Error: no such mem file: ${file}`);
+      }
+      const oldMeta = extractDocumentMetadata(oldBody, file).metadata;
+      const merged: MemoryStoreInput = {
+        text,
+        actor,
+        type: type ?? (oldMeta["type"] === "fact" || oldMeta["type"] === "opinion" || oldMeta["type"] === "decision" ? oldMeta["type"] : "opinion"),
+        source: source ?? (typeof oldMeta["source"] === "string" ? oldMeta["source"] : undefined),
+        project: project ?? (typeof oldMeta["project"] === "string" ? oldMeta["project"] : undefined),
+      };
+      const validation = validateMemoryStoreInput(merged);
+      if (!validation.ok) {
+        return memError(`Error [${validation.rule}]: ${validation.error}`);
+      }
+      const filename = buildMemoryFilename(new Date(), text);
+      await writeFile(`${resolved.dir}/${filename}`, renderMemoryDoc(merged, { supersedes: file }), "utf-8");
+      await appendFile(abs, renderSupersededFooter(filename, reason), "utf-8");
+      await refreshBeforeQuery(store, [MEMORY_COLLECTION]);
+      const payload = buildStoreReceipt(filename, file);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(payload) }],
+        structuredContent: payload,
+      };
+    }),
   );
 
   // ---------------------------------------------------------------------------
