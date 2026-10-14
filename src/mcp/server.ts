@@ -958,7 +958,7 @@ Intent-aware lex (C++ performance, not sports):
         reason: z.string().describe("Why the old claim was wrong."),
         actor: z.string().describe("Who corrects it: user | agent:<harness|lane>."),
         type: z.enum(["fact", "opinion", "decision"]).nullable().optional().describe("Defaults to the old claim's type."),
-        source: z.string().nullable().optional().describe("Defaults to the old claim's source."),
+        source: z.string().nullable().optional().describe("Evidence for the correction — never inherited. Required when the type is fact/decision."),
         project: z.string().nullable().optional().describe("Defaults to the old claim's project."),
       },
     },
@@ -997,7 +997,7 @@ Intent-aware lex (C++ performance, not sports):
           text,
           actor,
           type: type ?? (oldMeta["type"] === "fact" || oldMeta["type"] === "opinion" || oldMeta["type"] === "decision" ? oldMeta["type"] : "opinion"),
-          source: source ?? (typeof oldMeta["source"] === "string" ? oldMeta["source"] : undefined),
+          source: source ?? undefined,
           project: project ?? (typeof oldMeta["project"] === "string" ? oldMeta["project"] : undefined),
         };
         const validation = validateMemoryStoreInput(merged);

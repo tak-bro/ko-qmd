@@ -2778,8 +2778,15 @@ describe("memory tools round trip", () => {
     expect(first.results[0].superseded_by).toBeUndefined();
     expect(typeof first.vectors_stale).toBe("boolean");
 
+    const unsourced = await callTool("memory_correct", {
+      file: oldFile, text: "zqxjcap rerank cap is 64 tokens", reason: "remeasured on M3", actor: "user",
+    });
+    expect(unsourced.isError).toBe(true);
+    expect(unsourced.content[0]!.text).toContain("R2");
+
     const corrected = await callTool("memory_correct", {
       file: oldFile, text: "zqxjcap rerank cap is 64 tokens", reason: "remeasured on M3", actor: "user",
+      source: "ko-qmd/.claude/20261014/bench.md:12",
     });
     expect(corrected.isError).toBeFalsy();
     const newFile: string = corrected.structuredContent.file.replace(/^mem\//, "");
@@ -2789,7 +2796,7 @@ describe("memory tools round trip", () => {
     const byFile = new Map(second.results.map((r: any) => [r.file, r]));
     expect(byFile.size).toBe(2);
     expect((byFile.get(`mem/${oldFile}`) as any).superseded_by).toBe(`mem/${newFile}`);
-    expect((byFile.get(`mem/${newFile}`) as any).metadata).toMatchObject({ supersedes: oldFile, actor: "user" });
+    expect((byFile.get(`mem/${newFile}`) as any).metadata).toMatchObject({ supersedes: oldFile, actor: "user", source: "ko-qmd/.claude/20261014/bench.md:12" });
     expect((byFile.get(`mem/${newFile}`) as any).superseded_by).toBeUndefined();
 
     const again = await callTool("memory_correct", { file: oldFile, text: "fork", reason: "fork", actor: "user" });
