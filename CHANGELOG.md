@@ -22,6 +22,9 @@ Claude Code, opencode and pi share one store through the same daemon.
 - `memory_correct` path checks use the platform separator, so the
   stay-inside-the-collection check no longer rejects every correction on
   Windows.
+- Build: minification calls the esbuild JS API instead of spawning
+  `node_modules/.bin/esbuild.exe`, which npm never creates on Windows
+  (only `.cmd`/`.ps1` shims), so `npm install` fails there no more.
 
 - `qmd mcp --http --port` now validates the port: non-numeric or outside
   1–65535 exits 1 with an error instead of silently falling back to 8181

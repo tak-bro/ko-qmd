@@ -56,9 +56,13 @@ run(process.execPath, [join(root, "node_modules", "typescript", "bin", "tsc"), "
 }
 
 // Minify emitted JS (dist/**/*.js only). esbuild comes from the dev
-// toolchain (tsx dependency, invoked via node_modules/.bin); keepNames keeps
+// toolchain (tsx dependency) through its JS API: node_modules/.bin holds a
+// native binary on POSIX but only .cmd/.ps1 shims on Windows, which
+// spawnSync cannot run without a shell (#681). keepNames keeps
 // top-level/function names readable in stack traces.
 {
+  const { createRequire } = await import("node:module");
+  const esbuild = createRequire(import.meta.url)(join(root, "node_modules", "esbuild"));
   const { readdirSync } = await import("node:fs");
   const jsFiles = [];
   const walk = (dir) => {
@@ -69,12 +73,11 @@ run(process.execPath, [join(root, "node_modules", "typescript", "bin", "tsc"), "
     }
   };
   walk(join(root, "dist"));
-  const esbuildBin = join(root, "node_modules", ".bin", process.platform === "win32" ? "esbuild.exe" : "esbuild");
   for (const f of jsFiles) {
-    run(esbuildBin, [
-      f, "--minify", "--keep-names", "--format=esm", "--target=esnext",
-      "--legal-comments=none", `--outfile=${f}.min-tmp`,
-    ]);
+    esbuild.buildSync({
+      entryPoints: [f], outfile: `${f}.min-tmp`, minify: true, keepNames: true,
+      format: "esm", target: "esnext", legalComments: "none", logLevel: "warning",
+    });
     renameSync(`${f}.min-tmp`, f);
   }
   console.log(`build: minified ${jsFiles.length} JS files`);
