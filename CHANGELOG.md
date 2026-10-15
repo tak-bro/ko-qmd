@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+ko-qmd 2.8.3-ko.10 adds a shared working memory for agents: three MCP tools
+write provenance-tagged claims into a `mem` collection and read them back, so
+Claude Code, opencode and pi share one store through the same daemon.
+
+- MCP: `memory_store`, `memory_recall` and `memory_correct` over a collection
+  named `mem`. Every claim carries `actor`, `type` (fact · opinion · decision),
+  optional `source` and `project` frontmatter. A claim-lint gate (R1–R6) rejects
+  missing fields, facts or decisions without a locatable source, oversize
+  fields, out-of-range confidence and anything that looks like a secret before
+  a file is written. Corrections are append-only: `memory_correct`
+  writes a new file that `supersedes` the old one and stamps the old file with a
+  `superseded_by` footer. `memory_recall` searches `mem` and `kb` together,
+  narrows by actor or project, and marks a replaced claim with `superseded_by`.
+  Writes are lex-searchable at once; vectors follow on the next
+  `qmd embed -c mem`.
+- `memory_correct` path checks use the platform separator, so the
+  stay-inside-the-collection check no longer rejects every correction on
+  Windows.
+
 - `qmd mcp --http --port` now validates the port: non-numeric or outside
   1–65535 exits 1 with an error instead of silently falling back to 8181
   (`--port 0`/`abc`) or crashing downstream on bind (`--port -1`).
