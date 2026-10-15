@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.8.3-ko.10] - 2026-10-15
+
 ko-qmd 2.8.3-ko.10 adds a shared working memory for agents: three MCP tools
 write provenance-tagged claims into a `mem` collection and read them back, so
 Claude Code, opencode and pi share one store through the same daemon.
