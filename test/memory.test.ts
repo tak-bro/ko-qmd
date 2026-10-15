@@ -6,6 +6,7 @@
  * Pure functions only; the HTTP round trip lives in mcp.test.ts "memory tools round trip".
  */
 
+import { join } from "node:path";
 import { describe, test, expect } from "vitest";
 import {
   MEMORY_COLLECTION,
@@ -175,10 +176,10 @@ describe("resolveInCollection", () => {
 
   test("accepts tool-written filenames inside the dir", () => {
     expect(resolveInCollection(memDir, "20261014-210000-abcdef12.md")).toBe(
-      `${memDir}/20261014-210000-abcdef12.md`,
+      join(memDir, "20261014-210000-abcdef12.md"),
     );
     expect(resolveInCollection(memDir, "20261014-210000-1a2b-abcdef12.md")).toBe(
-      `${memDir}/20261014-210000-1a2b-abcdef12.md`,
+      join(memDir, "20261014-210000-1a2b-abcdef12.md"),
     );
   });
 

@@ -10,7 +10,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, sep } from "node:path";
 import { fileURLToPath } from "url";
 import { createMcpHandler, McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
@@ -770,7 +770,7 @@ Intent-aware lex (C++ performance, not sports):
     for (let attempt = 0; ; attempt++) {
       const filename = buildMemoryFilename(new Date(), text);
       try {
-        await writeFile(`${dir}/${filename}`, doc, { encoding: "utf-8", flag: "wx" });
+        await writeFile(join(dir, filename), doc, { encoding: "utf-8", flag: "wx" });
         return filename;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST" || attempt >= 4) throw error;
@@ -985,7 +985,7 @@ Intent-aware lex (C++ performance, not sports):
           const st = await lstat(abs);
           if (!st.isFile()) return memError(`Error: not a regular mem file: ${file}`);
           const [realDir, realFile] = await Promise.all([realpath(resolved.dir), realpath(abs)]);
-          if (!realFile.startsWith(`${realDir}/`)) return memError(`Error: ${file} resolves outside the mem collection`);
+          if (!realFile.startsWith(realDir + sep)) return memError(`Error: ${file} resolves outside the mem collection`);
           oldBody = await readFile(abs, "utf-8");
         } catch {
           return memError(`Error: no such mem file: ${file}`);
@@ -1012,7 +1012,7 @@ Intent-aware lex (C++ performance, not sports):
         try {
           await appendFile(abs, renderSupersededFooter(filename, reason), "utf-8");
         } catch (error) {
-          await unlink(`${resolved.dir}/${filename}`).catch(() => {});
+          await unlink(join(resolved.dir, filename)).catch(() => {});
           return memError(`Error: could not mark ${file} superseded (${error instanceof Error ? error.message : String(error)}); nothing written`);
         }
         await refreshAfterWrite(store, MEMORY_COLLECTION);

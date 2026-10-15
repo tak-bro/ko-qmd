@@ -12,6 +12,7 @@
  * a new file carries `supersedes`, the old file keeps a footer.
  */
 
+import { join } from "node:path";
 import YAML from "yaml";
 
 export const MEMORY_COLLECTION = "mem";
@@ -197,7 +198,7 @@ export function renderSupersededFooter(newFile: string, reason: string): string 
  */
 export function resolveInCollection(memDir: string, ref: string): string | null {
   if (typeof ref !== "string" || !MEMORY_FILENAME_RE.test(ref)) return null;
-  return `${memDir.replace(/\/+$/, "")}/${ref}`;
+  return join(memDir, ref);
 }
 
 export const VECTORS_STALE_NOTICE = "lex-searchable now; vectors need `qmd embed -c mem`";
