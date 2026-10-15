@@ -45,7 +45,16 @@ When the user triggers `/release <version>`:
    minor series rollup via `scripts/extract-changelog.sh <version>`.
    Ask the user to confirm before pushing.
 
-7. **Push** — after explicit confirmation, run `git push origin main --tags`.
+7. **Push** — after explicit confirmation, push the branch, wait for its CI,
+   then push only the release tag:
+   ```
+   git push origin main
+   git push origin v<version>
+   ```
+   Never `--tags`: this fork fetches upstream qmd's tags, so `--tags` also
+   pushes upstream tags (`v0.9.0`, …) that the pre-push hook rejects against
+   `package.json`, and would leak them into origin. The hook also blocks the
+   tag until CI on the tagged commit has finished green.
 
 8. **Watch CI** — after the push, start a background dispatch to watch the
    publish workflow. Use `interactive_shell` in dispatch mode with:
