@@ -10,7 +10,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, sep } from "node:path";
 import { fileURLToPath } from "url";
 import { createMcpHandler, McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
@@ -37,9 +37,24 @@ import { entryFromMcp, entryFromRest, isoWithOffset, logQuery, queryLogStatus, t
 import { formatDaemonHealthLine, resolveHealthLogIntervalMs } from "./daemon-health.js";
 import { createStoreIndexRefresher, type IndexRefresher } from "../refresh.js";
 import { buildDocumentFilter, describeFilter, type DocumentFilter } from "../filters.js";
-import { countFilteredDocuments, type SearchHooks } from "../store.js";
+import { countFilteredDocuments, getHashesNeedingEmbedding, DEFAULT_EMBED_MODEL, type SearchHooks } from "../store.js";
 import { normalizeRerankMaxDocTokens } from "../llm.js";
 import { compileGrepPattern, grepDocuments } from "../grep.js";
+import { writeFile, appendFile, readFile, lstat, realpath, unlink } from "node:fs/promises";
+import {
+  MEMORY_COLLECTION,
+  validateMemoryStoreInput,
+  validateCorrection,
+  parseSupersededBy,
+  buildMemoryFilename,
+  renderMemoryDoc,
+  renderSupersededFooter,
+  resolveInCollection,
+  buildStoreReceipt,
+  VECTORS_STALE_NOTICE,
+  type MemoryStoreInput,
+} from "../memory.js";
+import { extractDocumentMetadata } from "../metadata.js";
 
 // =============================================================================
 // Types for structured content
@@ -159,6 +174,21 @@ function getPackageVersion(): string {
 const refreshers = new WeakMap<QMDStore, IndexRefresher>();
 
 /**
+ * memory_correct is read → validate → write → append; two calls on one file would both pass
+ * the "not yet superseded" check and fork the chain. Module-level because stateless HTTP
+ * builds a fresh McpServer per request. Serialises within this process only.
+ */
+const correctLocks = new Map<string, Promise<unknown>>();
+function withFileLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = correctLocks.get(key) ?? Promise.resolve();
+  const run = prev.then(fn, fn);
+  const settled = run.catch(() => {});
+  correctLocks.set(key, settled);
+  void settled.then(() => { if (correctLocks.get(key) === settled) correctLocks.delete(key); });
+  return run;
+}
+
+/**
  * ko-qmd: per-stage milliseconds for the query log. The hooks fill `stages` as
  * the search runs; the caller adds `refresh` and `serialize` around it. A stage
  * past its deadline lands in `timeouts`, with the ms it was waited on.
@@ -228,6 +258,27 @@ function describeTimeouts(timeouts: QueryLogTimeout[]): string {
  * throws — a failed refresh is logged and the query runs against the index as it was.
  */
 async function refreshBeforeQuery(store: QMDStore, collections: readonly string[]): Promise<void> {
+  const refresher = refresherFor(store);
+  try {
+    const targets = collections.length > 0
+      ? collections
+      : (await store.listCollections()).map(c => c.name);
+    await refresher.refreshIfStale(targets);
+  } catch (error) {
+    console.error(`qmd: index refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/** After a tool wrote into a collection: skip the cooldown so the next recall sees the file. */
+async function refreshAfterWrite(store: QMDStore, collection: string): Promise<void> {
+  try {
+    await refresherFor(store).refreshNow([collection]);
+  } catch (error) {
+    console.error(`qmd: index refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function refresherFor(store: QMDStore): IndexRefresher {
   let refresher = refreshers.get(store);
   if (!refresher) {
     refresher = createStoreIndexRefresher(store, {
@@ -238,14 +289,7 @@ async function refreshBeforeQuery(store: QMDStore, collections: readonly string[
     });
     refreshers.set(store, refresher);
   }
-  try {
-    const targets = collections.length > 0
-      ? collections
-      : (await store.listCollections()).map(c => c.name);
-    await refresher.refreshIfStale(targets);
-  } catch (error) {
-    console.error(`qmd: index refresh failed: ${error instanceof Error ? error.message : String(error)}`);
-  }
+  return refresher;
 }
 
 /**
@@ -696,6 +740,289 @@ Intent-aware lex (C++ performance, not sports):
         structuredContent: { results: filtered, ...timeoutField(timer.timeouts) },
       };
     })
+  );
+
+  // ---------------------------------------------------------------------------
+  // Memory tools (shared second brain). One claim per file under the `mem`
+  // collection; kb/docs is never a write target (eval-corpus + staging guard).
+  // ---------------------------------------------------------------------------
+
+  /** Resolve the mem collection dir, or a caller-facing error. */
+  async function resolveMemDir(
+    store: QMDStore,
+  ): Promise<{ dir: string } | { error: string }> {
+    const known = await store.listCollections();
+    const mem = known.find(c => c.name === MEMORY_COLLECTION);
+    if (!mem || !mem.pwd) {
+      const names = known.map(c => c.name).join(", ") || "(none)";
+      return { error: `unknown collection: ${MEMORY_COLLECTION}. Known collections: ${names}. Register a mem collection first.` };
+    }
+    return { dir: mem.pwd };
+  }
+
+  const memError = (text: string) => ({
+    content: [{ type: "text" as const, text }],
+    isError: true as const,
+  });
+
+  /** Create-only write (append-only store): a name clash retries with a fresh name, never overwrites. */
+  async function writeNewMemory(dir: string, text: string, doc: string): Promise<string> {
+    for (let attempt = 0; ; attempt++) {
+      const filename = buildMemoryFilename(new Date(), text);
+      try {
+        await writeFile(join(dir, filename), doc, { encoding: "utf-8", flag: "wx" });
+        return filename;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST" || attempt >= 4) throw error;
+      }
+    }
+  }
+
+  /** null when the count itself failed (e.g. SQLITE_BUSY from `qmd update`) — the recall still answers. */
+  function memVectorsStale(): boolean | null {
+    try {
+      const model = store.internal.llm?.embedModelName ?? DEFAULT_EMBED_MODEL;
+      return getHashesNeedingEmbedding(store.internal.db, MEMORY_COLLECTION, model) > 0;
+    } catch {
+      return null;
+    }
+  }
+
+
+  server.registerTool(
+    "memory_store",
+    {
+      title: "Store Memory",
+      description: "Store one claim (fact | opinion | decision) with provenance (actor, source) into the shared mem collection. Facts and decisions require source. Never stores secrets. Returns vectors_stale:true until `qmd embed -c mem` runs.",
+      inputSchema: {
+        text: z.string().describe("The claim, one idea per call."),
+        actor: z.string().describe("Who says it: user | agent:<harness|lane>."),
+        type: z.enum(["fact", "opinion", "decision"]).describe("Opinions need no source; facts and decisions do."),
+        source: z.string().nullable().optional().describe("Where it came from: file:line, URL, or session ref. Required for fact/decision."),
+        project: z.string().nullable().optional().describe("Project tag for narrowing recall."),
+        confidence: z.number().min(0).max(1).nullable().optional().describe("0..1 when known."),
+      },
+    },
+    track(async ({ text, actor, type, source, project, confidence }: {
+      text: string;
+      actor: string;
+      type: "fact" | "opinion" | "decision";
+      source?: string | null;
+      project?: string | null;
+      confidence?: number | null;
+    }) => {
+      const input: MemoryStoreInput = { text, actor, type, source: source ?? undefined, project: project ?? undefined, confidence: confidence ?? undefined };
+      const validation = validateMemoryStoreInput(input);
+      if (!validation.ok) {
+        return memError(`Error [${validation.rule}]: ${validation.error}`);
+      }
+      const resolved = await resolveMemDir(store);
+      if ("error" in resolved) return memError(`Error: ${resolved.error}`);
+      const filename = await writeNewMemory(resolved.dir, text, renderMemoryDoc(input));
+      await refreshAfterWrite(store, MEMORY_COLLECTION);
+      const payload = buildStoreReceipt(filename);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(payload) }],
+        structuredContent: payload,
+      };
+    }),
+  );
+
+  server.registerTool(
+    "memory_recall",
+    {
+      title: "Recall Memory",
+      description: "Recall shared memory across the mem + kb collections (existing docs need no migration), with actor/project narrowing. Hits carry qmd.metadata provenance (actor/type/source) when the doc has it, and superseded_by when a newer correction exists. kb-only when the mem collection is absent.",
+      inputSchema: {
+        query: z.string().optional().describe("Plain-text query, auto-expanded unless it has Hangul."),
+        searches: z.array(z.object({
+          type: z.enum(["lex", "vec", "hyde"]),
+          query: z.string(),
+        })).optional().describe("Typed sub-queries; mutually exclusive with 'query'."),
+        actor: z.string().nullable().optional().describe("Narrow to who said it."),
+        project: z.string().nullable().optional().describe("Narrow to a project tag."),
+        limit: z.number().int().max(50).default(5).describe("Max hits, 1..50."),
+        collections: z.array(z.string()).optional().describe("Override search scope; default [mem, kb] ∩ known."),
+        filter: z.any().optional().describe("Extra metadata filter (JSON AST), AND-combined with actor/project."),
+        rerank: z.boolean().optional().describe("true = rerank with the LLM (slower); omitted/false = fused RRF fast path."),
+      },
+    },
+    track(async ({ query, searches, actor, project, limit, collections, filter, rerank }: {
+      query?: string;
+      searches?: { type: "lex" | "vec" | "hyde"; query: string }[];
+      actor?: string | null;
+      project?: string | null;
+      limit: number;
+      collections?: string[];
+      filter?: unknown;
+      rerank?: boolean;
+    }) => {
+      if (!Number.isInteger(limit) || (limit as number) < 1) {
+        return memError("Error: limit must be a positive integer");
+      }
+      if (!query && (!searches || searches.length === 0)) {
+        return memError("Error: provide either 'query' or 'searches'");
+      }
+      if (query && searches && searches.length > 0) {
+        return memError("Error: 'query' and 'searches' are mutually exclusive; provide only one");
+      }
+      const filterValidation = validateFilterArgument(filter);
+      if (filterValidation.error) {
+        return memError(`Error: ${filterValidation.error}`);
+      }
+      const narrowing: { key: string; operator: "eq"; value: string }[] = [];
+      if (actor != null) narrowing.push({ key: "actor", operator: "eq", value: actor });
+      if (project != null) narrowing.push({ key: "project", operator: "eq", value: project });
+      const parts: unknown[] = [...narrowing];
+      if (filterValidation.filter !== undefined) parts.push(filterValidation.filter);
+      // Already-validated parts combined by construction — no re-parse.
+      const combinedFilter = (parts.length === 0 ? undefined : parts.length === 1 ? parts[0] : { operator: "and", operands: parts }) as MetadataFilter | undefined;
+
+      const knownNames = (await store.listCollections()).map(c => c.name);
+      const known = new Set(knownNames);
+      let effective: string[];
+      const notices: string[] = [];
+      if (collections !== undefined) {
+        const unknown = collections.filter(c => !known.has(c));
+        if (unknown.length > 0) {
+          return memError(`Error: unknown collection${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}. Known collections: ${knownNames.join(", ") || "(none)"}`);
+        }
+        effective = collections;
+      } else {
+        effective = [MEMORY_COLLECTION, "kb"].filter(c => known.has(c));
+        if (!known.has(MEMORY_COLLECTION)) {
+          notices.push("mem collection not configured — kb only");
+        }
+        if (effective.length === 0) {
+          return memError(`Error: no searchable collections. Known collections: ${knownNames.join(", ") || "(none)"}`);
+        }
+      }
+
+      await refreshBeforeQuery(store, effective);
+      const fused = rerank !== true;
+      const searchOptions = query
+        ? { query }
+        : { queries: (searches ?? []).map(s => ({ type: s.type, query: s.query })) };
+      const results = await store.search({
+        ...searchOptions,
+        collections: effective,
+        filter: combinedFilter,
+        limit,
+        // The SDK reranks unless told not to; recall's default is the fused fast path.
+        // explain (raw fts/vec scores) is tied to the same switch so the default stays observable.
+        rerank: !fused,
+        explain: fused,
+        ...searchDeadlines(),
+      });
+      const primaryQuery = query
+        || searches?.find(s => s.type === 'lex')?.query
+        || searches?.find(s => s.type === 'vec')?.query
+        || searches?.[0]?.query
+        || "";
+      const hits = results.map(r => {
+        const { line, snippet } = extractSnippet(r.body, primaryQuery, 300, r.bestChunkPos, r.bestChunk.length);
+        const supersededBy = r.displayPath.startsWith(`${MEMORY_COLLECTION}/`) ? parseSupersededBy(r.body) : undefined;
+        return {
+          file: r.displayPath,
+          title: r.title,
+          score: roundScore(r.score),
+          ...rawBackendScores(r.explain),
+          ...(Object.keys(r.metadata).length > 0 ? { metadata: r.metadata } : {}),
+          ...(supersededBy !== undefined ? { superseded_by: `${MEMORY_COLLECTION}/${supersededBy}` } : {}),
+          line,
+          snippet,
+        };
+      });
+      const vectorsStale = effective.includes(MEMORY_COLLECTION) ? memVectorsStale() : false;
+      const payload = {
+        ok: true,
+        collections_searched: effective,
+        ...(notices.length > 0 ? { notices } : {}),
+        vectors_stale: vectorsStale,
+        ...(vectorsStale !== false ? { vectors_stale_note: VECTORS_STALE_NOTICE } : {}),
+        results: hits,
+      };
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }],
+        structuredContent: payload,
+      };
+    }),
+  );
+
+  server.registerTool(
+    "memory_correct",
+    {
+      title: "Correct Memory",
+      description: "Append-only correction: writes the new claim as a new mem file carrying supersedes, and appends a superseded_by footer to the old file. History is never erased. Only mem files can be corrected.",
+      inputSchema: {
+        file: z.string().describe("Mem filename to correct (e.g. 20261014-210000-abcdef12.md)."),
+        text: z.string().describe("The corrected claim."),
+        reason: z.string().describe("Why the old claim was wrong."),
+        actor: z.string().describe("Who corrects it: user | agent:<harness|lane>."),
+        type: z.enum(["fact", "opinion", "decision"]).nullable().optional().describe("Defaults to the old claim's type."),
+        source: z.string().nullable().optional().describe("Evidence for the correction — never inherited. Required when the type is fact/decision."),
+        project: z.string().nullable().optional().describe("Defaults to the old claim's project."),
+      },
+    },
+    track(async ({ file, text, reason, actor, type, source, project }: {
+      file: string;
+      text: string;
+      reason: string;
+      actor: string;
+      type?: "fact" | "opinion" | "decision" | null;
+      source?: string | null;
+      project?: string | null;
+    }) => {
+      const resolved = await resolveMemDir(store);
+      if ("error" in resolved) return memError(`Error: ${resolved.error}`);
+      const abs = resolveInCollection(resolved.dir, file);
+      if (abs === null) {
+        return memError("Error: file must be a tool-written mem filename (YYYYMMDD-HHMMSS-xxxx-xxxxxxxx.md)");
+      }
+      return withFileLock(abs, async () => {
+        let oldBody: string;
+        try {
+          const st = await lstat(abs);
+          if (!st.isFile()) return memError(`Error: not a regular mem file: ${file}`);
+          const [realDir, realFile] = await Promise.all([realpath(resolved.dir), realpath(abs)]);
+          if (!realFile.startsWith(realDir + sep)) return memError(`Error: ${file} resolves outside the mem collection`);
+          oldBody = await readFile(abs, "utf-8");
+        } catch {
+          return memError(`Error: no such mem file: ${file}`);
+        }
+        const correction = validateCorrection(oldBody, reason);
+        if (!correction.ok) {
+          return memError(`Error [${correction.rule}]: ${correction.error}`);
+        }
+        const oldMeta = extractDocumentMetadata(oldBody, file).metadata;
+        const merged: MemoryStoreInput = {
+          text,
+          actor,
+          type: type ?? (oldMeta["type"] === "fact" || oldMeta["type"] === "opinion" || oldMeta["type"] === "decision" ? oldMeta["type"] : "opinion"),
+          source: source ?? undefined,
+          project: project ?? (typeof oldMeta["project"] === "string" ? oldMeta["project"] : undefined),
+        };
+        const validation = validateMemoryStoreInput(merged);
+        if (!validation.ok) {
+          return memError(`Error [${validation.rule}]: ${validation.error}`);
+        }
+        // New file first, footer second: a failed append rolls the new file back,
+        // so the chain never has a dangling half.
+        const filename = await writeNewMemory(resolved.dir, text, renderMemoryDoc(merged, { supersedes: file }));
+        try {
+          await appendFile(abs, renderSupersededFooter(filename, reason), "utf-8");
+        } catch (error) {
+          await unlink(join(resolved.dir, filename)).catch(() => {});
+          return memError(`Error: could not mark ${file} superseded (${error instanceof Error ? error.message : String(error)}); nothing written`);
+        }
+        await refreshAfterWrite(store, MEMORY_COLLECTION);
+        const payload = buildStoreReceipt(filename, file);
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(payload) }],
+          structuredContent: payload,
+        };
+      });
+    }),
   );
 
   // ---------------------------------------------------------------------------

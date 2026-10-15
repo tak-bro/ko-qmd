@@ -10,7 +10,7 @@ import { openDatabase, loadSqliteVec } from "../src/db.js";
 import type { Database } from "../src/db.js";
 import { getDefaultLlamaCpp, disposeDefaultLlamaCpp, LlamaCpp } from "../src/llm";
 import { unlinkSync } from "node:fs";
-import { mkdtemp, writeFile, readdir, unlink, rmdir } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readdir, unlink, rmdir, readFile, symlink, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import YAML from "yaml";
@@ -1189,7 +1189,7 @@ describe.skipIf(!!process.env.CI)("MCP HTTP Transport", () => {
     expect(headers.get("mcp-session-id")).toBeNull();
 
     const toolNames = json.result.tools.map((t: any) => t.name);
-    expect(toolNames).toEqual(["query", "get", "multi_get", "grep", "status"]);
+    expect(toolNames).toEqual(["query", "memory_store", "memory_recall", "memory_correct", "get", "multi_get", "grep", "status"]);
   });
 
   test("POST /mcp tools/call query returns results", async () => {
@@ -1367,7 +1367,7 @@ describe("MCP HTTP Transport — 2026-07-28 protocol", () => {
     expect(json.result.ttlMs).toBe(60_000);
     expect(json.result.cacheScope).toBe("private");
     const toolNames = json.result.tools.map((t: { name: string }) => t.name);
-    expect(toolNames).toEqual(["query", "get", "multi_get", "grep", "status"]);
+    expect(toolNames).toEqual(["query", "memory_store", "memory_recall", "memory_correct", "get", "multi_get", "grep", "status"]);
     const serverInfo = json.result._meta?.["io.modelcontextprotocol/serverInfo"];
     expect(serverInfo?.name).toBe("qmd");
   });
@@ -2695,5 +2695,146 @@ describe("search deadlines", () => {
     expect(resolveDeadlineMs(String(MAX_TIMER_MS + 1), 10_000)).toBe(10_000);
     expect(resolveDeadlineMs("99999999999", 10_000)).toBe(10_000);
     expect(resolveDeadlineMs("99999999999", 5_000)).toBe(5_000);
+  });
+});
+
+// =============================================================================
+// memory_* tools over HTTP: store → recall → correct → recall on a real mem dir.
+// Lex-only recall, so no model loads; the write path has to be visible to the
+// very next recall (no 30 s refresh cooldown) and corrections stay append-only.
+// =============================================================================
+
+describe("memory tools round trip", () => {
+  let handle: HttpServerHandle | undefined;
+  let baseUrl: string;
+  let dbPath: string;
+  let root: string;
+  let memDir: string;
+  const origIndexPath = process.env.INDEX_PATH;
+  const origConfigDir = process.env.QMD_CONFIG_DIR;
+
+  beforeAll(async () => {
+    root = await mkdtemp(join(tmpdir(), "qmd-memory-mcp-"));
+    memDir = join(root, "mem");
+    await mkdir(memDir);
+    await writeFile(join(memDir, "README.md"), "# mem schema\n");
+    dbPath = join(root, "index.sqlite");
+    const db = openDatabase(dbPath);
+    initTestDatabase(db);
+    const config: CollectionConfig = { collections: { mem: { path: memDir, pattern: "**/*.md" } } };
+    syncConfigToDb(db, config);
+    db.close();
+    const configDir = join(root, "config");
+    await mkdir(configDir);
+    await writeFile(join(configDir, "index.yml"), YAML.stringify(config));
+    process.env.INDEX_PATH = dbPath;
+    process.env.QMD_CONFIG_DIR = configDir;
+    handle = await startMcpHttpServer(0, { quiet: true, dbPath });
+    baseUrl = `http://localhost:${handle.port}`;
+  });
+
+  afterAll(async () => {
+    if (handle) await handle.stop();
+    _resetProductionModeForTesting();
+    if (origIndexPath !== undefined) process.env.INDEX_PATH = origIndexPath;
+    else delete process.env.INDEX_PATH;
+    if (origConfigDir !== undefined) process.env.QMD_CONFIG_DIR = origConfigDir;
+    else delete process.env.QMD_CONFIG_DIR;
+    await rm(root, { recursive: true, force: true });
+  });
+
+  type ToolResult = { content: { type: string; text: string }[]; isError?: boolean; structuredContent?: any };
+  const callTool = async (name: string, args: Record<string, unknown>): Promise<ToolResult> => {
+    const res = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": MCP_2026,
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": name,
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args, _meta: mcp2026Meta } }),
+    });
+    return ((await res.json()) as { result: ToolResult }).result;
+  };
+  const recall = async (q: string) =>
+    JSON.parse((await callTool("memory_recall", { searches: [{ type: "lex", query: q }] })).content[0]!.text);
+
+  test("store is recallable immediately, correct is append-only, recall flags the superseded claim", async () => {
+    const stored = await callTool("memory_store", {
+      text: "zqxjcap rerank cap is 128 tokens",
+      actor: "agent:claude-code",
+      type: "fact",
+      source: "ko-qmd/src/rerank-input.ts:40",
+      project: "ko-qmd",
+    });
+    expect(stored.isError).toBeFalsy();
+    const oldFile: string = stored.structuredContent.file.replace(/^mem\//, "");
+
+    const first = await recall("zqxjcap");
+    expect(first.results.map((r: any) => r.file)).toEqual([`mem/${oldFile}`]);
+    expect(first.results[0].metadata).toMatchObject({ actor: "agent:claude-code", type: "fact", source: "ko-qmd/src/rerank-input.ts:40" });
+    expect(first.results[0].superseded_by).toBeUndefined();
+    expect(typeof first.vectors_stale).toBe("boolean");
+    // Omitting rerank takes the fused fast path; fts_score comes from explain, which only that path enables.
+    expect(first.results[0].fts_score).toEqual(expect.any(Number));
+
+    const unsourced = await callTool("memory_correct", {
+      file: oldFile, text: "zqxjcap rerank cap is 64 tokens", reason: "remeasured on M3", actor: "user",
+    });
+    expect(unsourced.isError).toBe(true);
+    expect(unsourced.content[0]!.text).toContain("R2");
+
+    const corrected = await callTool("memory_correct", {
+      file: oldFile, text: "zqxjcap rerank cap is 64 tokens", reason: "remeasured on M3", actor: "user",
+      source: "ko-qmd/.claude/20261014/bench.md:12",
+    });
+    expect(corrected.isError).toBeFalsy();
+    const newFile: string = corrected.structuredContent.file.replace(/^mem\//, "");
+    expect(await readFile(join(memDir, oldFile), "utf-8")).toContain("128 tokens");
+
+    const second = await recall("zqxjcap");
+    const byFile = new Map(second.results.map((r: any) => [r.file, r]));
+    expect(byFile.size).toBe(2);
+    expect((byFile.get(`mem/${oldFile}`) as any).superseded_by).toBe(`mem/${newFile}`);
+    expect((byFile.get(`mem/${newFile}`) as any).metadata).toMatchObject({ supersedes: oldFile, actor: "user", source: "ko-qmd/.claude/20261014/bench.md:12" });
+    expect((byFile.get(`mem/${newFile}`) as any).superseded_by).toBeUndefined();
+
+    const again = await callTool("memory_correct", { file: oldFile, text: "fork", reason: "fork", actor: "user" });
+    expect(again.isError).toBe(true);
+    expect(again.content[0]!.text).toContain("R6");
+  });
+
+  test("correct refuses README, traversal, and a symlink out of the collection", async () => {
+    const outside = join(root, "outside.md");
+    await writeFile(outside, "---\nqmd:\n  metadata:\n    actor: user\n    type: opinion\n---\n# x\n");
+    const link = "20261014-000000-abcd-00000000.md";
+    await symlink(outside, join(memDir, link));
+    for (const file of ["README.md", "../outside.md", link]) {
+      const res = await callTool("memory_correct", { file, text: "t", reason: "r", actor: "user" });
+      expect(res.isError, file).toBe(true);
+    }
+    expect(await readFile(outside, "utf-8")).not.toContain("superseded_by");
+  });
+
+  test("two concurrent corrections of one file: exactly one wins, the chain stays linear", async () => {
+    const stored = await callTool("memory_store", { text: "zqxjrace original", actor: "user", type: "opinion" });
+    const file: string = stored.structuredContent.file.replace(/^mem\//, "");
+    const results = await Promise.all([
+      callTool("memory_correct", { file, text: "zqxjrace fix A", reason: "a", actor: "user" }),
+      callTool("memory_correct", { file, text: "zqxjrace fix B", reason: "b", actor: "user" }),
+    ]);
+    expect(results.filter(r => !r.isError)).toHaveLength(1);
+    const footers = (await readFile(join(memDir, file), "utf-8")).match(/^> superseded_by:/gm) ?? [];
+    expect(footers).toHaveLength(1);
+  });
+
+  test("store rejects lint failures before touching disk", async () => {
+    const before = (await readdir(memDir)).length;
+    const res = await callTool("memory_store", { text: "알렉스는 사이월드를 좋아한다", actor: "agent:pi", type: "fact", source: "trust me" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("R2");
+    expect((await readdir(memDir)).length).toBe(before);
   });
 });
