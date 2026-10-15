@@ -30,9 +30,13 @@ export function formatDaemonHealthLine(
 /** Node clamps a longer setInterval delay to 1 ms, which would flood the log. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
-/** QMD_HEALTH_LOG_INTERVAL_MS: 0 = off, a positive integer up to 2^31-1 = that many ms, anything else = one hour. */
+/** Intervals below a second would flood the log of a resident daemon. */
+const MIN_INTERVAL_MS = 1_000;
+
+/** QMD_HEALTH_LOG_INTERVAL_MS: 0 = off, an integer in [1000, 2^31-1] = that many ms, anything else = one hour. */
 export function resolveHealthLogIntervalMs(envValue = process.env.QMD_HEALTH_LOG_INTERVAL_MS): number {
   if (envValue === undefined || !/^\d+$/.test(envValue)) return DEFAULT_INTERVAL_MS;
   const ms = Number(envValue);
+  if (ms !== 0 && ms < MIN_INTERVAL_MS) return DEFAULT_INTERVAL_MS;
   return ms <= MAX_TIMER_MS ? ms : DEFAULT_INTERVAL_MS;
 }

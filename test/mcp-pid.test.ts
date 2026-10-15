@@ -3,7 +3,13 @@
  */
 
 import { describe, test, expect } from "vitest";
-import { looksLikeQmdMcpCommand, isQmdMcpPid, mcpDaemonStateFiles } from "../src/cli/mcp-pid.ts";
+import { spawnSync } from "node:child_process";
+import {
+  looksLikeQmdMcpCommand,
+  isQmdMcpPid,
+  mcpDaemonStateFiles,
+  readProcessCmdline,
+} from "../src/cli/mcp-pid.ts";
 
 describe("looksLikeQmdMcpCommand", () => {
   test("matches bare qmd and common CLI script paths", () => {
@@ -42,6 +48,31 @@ describe("mcpDaemonStateFiles", () => {
       pidFile: "mcp-hsm-public-repro.pid",
       logFile: "mcp-hsm-public-repro.log",
     });
+  });
+});
+
+describe("readProcessCmdline", () => {
+  test("returns a non-empty string for the current process", () => {
+    const cmdline = readProcessCmdline(process.pid);
+    expect(typeof cmdline).toBe("string");
+    expect((cmdline as string).length).toBeGreaterThan(0);
+  });
+
+  test("returns null for invalid pids", () => {
+    expect(readProcessCmdline(0)).toBeNull();
+    expect(readProcessCmdline(-1)).toBeNull();
+    expect(readProcessCmdline(1.5)).toBeNull();
+    expect(readProcessCmdline(NaN)).toBeNull();
+  });
+
+  test("returns null for a reaped child pid", () => {
+    const child = spawnSync("true");
+    expect(typeof child.pid).toBe("number");
+    expect(readProcessCmdline(child.pid as number)).toBeNull();
+  });
+
+  test("returns null for a certainly-dead pid", () => {
+    expect(readProcessCmdline(999999999)).toBeNull();
   });
 });
 

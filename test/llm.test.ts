@@ -8,7 +8,7 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll, vi } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -34,6 +34,7 @@ import {
   pullModels,
   parseExpansionLines,
   withLLMSession,
+  withLLMSessionForLlm,
   canUnloadLLM,
   SessionReleasedError,
   inspectGgufFile,
@@ -110,6 +111,136 @@ describe("inspectGgufFile", () => {
     // Nothing was read, so it must not claim to know the header.
     expect(result.magic).toBeUndefined();
     expect(result.details).toContain("cannot read model file");
+  });
+});
+
+// validateGgufFile is not exported, so its delete+throw branches are pinned
+// through the nearest exported caller (pullModels) with resolveModelFile
+// fakes. Every fixture is a temp-dir copy; validateGgufFile's unlink only ever
+// touches those copies. Current behavior pinned here:
+// - html / invalid content  -> file is deleted, pullModels throws
+// - unreadable (read failed) -> file is left in place, pullModels throws
+// - valid / missing          -> no throw from validation
+describe("validateGgufFile via pullModels", () => {
+  function mockResolveModelFile(resolvedPath: string) {
+    setNodeLlamaCppModuleForTest({
+      LlamaLogLevel: { error: "error" },
+      resolveModelFile: vi.fn(async () => resolvedPath),
+      LlamaChatSession: vi.fn() as any,
+      getLlama: vi.fn(),
+    });
+  }
+
+  test("html content is deleted and throws the proxy/firewall message", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-validate-html-"));
+    const fixture = join(cacheDir, "fixture-html.gguf");
+    writeFileSync(fixture, "<!DOCTYPE html><html><body>502 Bad Gateway</body></html>");
+    mockResolveModelFile(fixture);
+    try {
+      await expect(pullModels(["probe-html-model.gguf"], { cacheDir })).rejects.toThrow(
+        /HTML page, not a GGUF model/,
+      );
+      expect(existsSync(fixture)).toBe(false);
+    } finally {
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  test("invalid magic is deleted and throws the not-valid-GGUF message", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-validate-invalid-"));
+    const fixture = join(cacheDir, "fixture-invalid.gguf");
+    writeFileSync(fixture, Buffer.from([0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]));
+    mockResolveModelFile(fixture);
+    try {
+      await expect(pullModels(["probe-invalid-model.gguf"], { cacheDir })).rejects.toThrow(
+        /not valid GGUF/,
+      );
+      expect(existsSync(fixture)).toBe(false);
+    } finally {
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  test("invalid magic throw reports the removed file so the next run re-downloads", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-validate-removed-"));
+    const fixture = join(cacheDir, "fixture-removed.gguf");
+    writeFileSync(fixture, Buffer.from([0xde, 0xad, 0xbe, 0xef]));
+    mockResolveModelFile(fixture);
+    try {
+      await expect(pullModels(["probe-removed-model.gguf"], { cacheDir })).rejects.toThrow(
+        /has been removed/,
+      );
+      expect(existsSync(fixture)).toBe(false);
+    } finally {
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  test("unreadable file is left in place and throws the could-not-be-read message", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-validate-unreadable-"));
+    const dirAsFile = join(cacheDir, "actually-a-directory.gguf");
+    mkdirSync(dirAsFile);
+    mockResolveModelFile(dirAsFile);
+    try {
+      await expect(pullModels(["probe-unreadable-model.gguf"], { cacheDir })).rejects.toThrow(
+        /could not be read/,
+      );
+      expect(existsSync(dirAsFile)).toBe(true);
+    } finally {
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  test("unreadable throw says the file was left in place", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-validate-left-"));
+    const dirAsFile = join(cacheDir, "actually-a-directory.gguf");
+    mkdirSync(dirAsFile);
+    mockResolveModelFile(dirAsFile);
+    try {
+      await expect(pullModels(["probe-left-model.gguf"], { cacheDir })).rejects.toThrow(
+        /left in place/,
+      );
+      expect(existsSync(dirAsFile)).toBe(true);
+    } finally {
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  test("valid GGUF passes validation and the file is kept", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-validate-valid-"));
+    const fixture = join(cacheDir, "fixture-valid.gguf");
+    const header = Buffer.alloc(16);
+    header.write("GGUF", 0, "ascii");
+    writeFileSync(fixture, header);
+    mockResolveModelFile(fixture);
+    try {
+      const results = await pullModels(["probe-valid-model.gguf"], { cacheDir });
+      expect(results).toHaveLength(1);
+      expect(results[0]?.path).toBe(fixture);
+      expect(existsSync(fixture)).toBe(true);
+    } finally {
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  test("missing file is not a validation failure (downstream handles it)", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-validate-missing-"));
+    const missing = join(cacheDir, "does-not-exist.gguf");
+    mockResolveModelFile(missing);
+    try {
+      const results = await pullModels(["probe-missing-model.gguf"], { cacheDir });
+      expect(results).toHaveLength(1);
+      expect(results[0]?.sizeBytes).toBe(0);
+    } finally {
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -238,6 +369,195 @@ describe("model download progress (#776)", () => {
         { directory: cacheDir, cli: false },
       );
     } finally {
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("pullModels offline cache safety", () => {
+  const originalFetch = globalThis.fetch;
+
+  function writeWarmCache(cacheDir: string): { ggufPath: string; etagPath: string } {
+    const ggufPath = join(cacheDir, "model.gguf");
+    const header = Buffer.alloc(16);
+    header.write("GGUF", 0, "ascii");
+    writeFileSync(ggufPath, header);
+    const etagPath = join(cacheDir, "model.gguf.etag");
+    writeFileSync(etagPath, "old-etag\n");
+    return { ggufPath, etagPath };
+  }
+
+  function mockLlamaDownload(landingPath: string): void {
+    setNodeLlamaCppModuleForTest({
+      LlamaLogLevel: { error: "error" },
+      resolveModelFile: (async () => {
+        const header = Buffer.alloc(16);
+        header.write("GGUF", 0, "ascii");
+        writeFileSync(landingPath, header);
+        return landingPath;
+      }) as any,
+      LlamaChatSession: (() => {}) as any,
+      getLlama: (async () => {}) as any,
+    } as any);
+  }
+
+  test("offline (null remote etag) keeps warm cache and warns", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-pull-offline-"));
+    const { ggufPath, etagPath } = writeWarmCache(cacheDir);
+    globalThis.fetch = (async () => { throw new Error("offline (mock)"); }) as any;
+    mockLlamaDownload(ggufPath);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const results = await pullModels(["hf:org/repo/model.gguf"], { cacheDir });
+      expect(existsSync(ggufPath)).toBe(true);
+      expect(existsSync(etagPath)).toBe(true);
+      expect(results[0]?.refreshed).toBe(false);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("Keeping the cached model"));
+    } finally {
+      warn.mockRestore();
+      globalThis.fetch = originalFetch;
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  test("proven-newer remote etag replaces cache", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-pull-newer-"));
+    const { ggufPath, etagPath } = writeWarmCache(cacheDir);
+    globalThis.fetch = (async () => ({
+      ok: true,
+      headers: { get: () => '"new-etag"' },
+    })) as any;
+    const landingPath = join(cacheDir, "hf_org_model.gguf");
+    mockLlamaDownload(landingPath);
+    try {
+      const results = await pullModels(["hf:org/repo/model.gguf"], { cacheDir });
+      expect(existsSync(ggufPath)).toBe(false);
+      expect(existsSync(landingPath)).toBe(true);
+      expect(results[0]?.refreshed).toBe(true);
+      expect(readFileSync(etagPath, "utf-8").trim()).toBe('"new-etag"');
+    } finally {
+      globalThis.fetch = originalFetch;
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  test("explicit --refresh replaces cache even when remote is unreachable", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-pull-refresh-"));
+    const { ggufPath } = writeWarmCache(cacheDir);
+    globalThis.fetch = (async () => { throw new Error("offline (mock)"); }) as any;
+    const landingPath = join(cacheDir, "hf_org_model.gguf");
+    mockLlamaDownload(landingPath);
+    try {
+      const results = await pullModels(["hf:org/repo/model.gguf"], { cacheDir, refresh: true });
+      expect(existsSync(ggufPath)).toBe(false);
+      expect(existsSync(landingPath)).toBe(true);
+      expect(results[0]?.refreshed).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("pullModels hf etag/refresh", () => {
+  const originalFetch = globalThis.fetch;
+
+  function writeGguf(path: string): void {
+    const header = Buffer.alloc(16);
+    header.write("GGUF", 0, "ascii");
+    writeFileSync(path, header);
+  }
+
+  function mockFetchEtag(etag: string): void {
+    globalThis.fetch = (async () => ({
+      ok: true,
+      headers: { get: () => etag },
+    })) as any;
+  }
+
+  function mockResolveTo(landingPath: string) {
+    return vi.fn(async () => {
+      writeGguf(landingPath);
+      return landingPath;
+    });
+  }
+
+  function mockLlama(resolveModelFile: unknown): void {
+    setNodeLlamaCppModuleForTest({
+      LlamaLogLevel: { error: "error" },
+      resolveModelFile,
+      LlamaChatSession: vi.fn() as any,
+      getLlama: vi.fn(),
+    } as any);
+  }
+
+  test("etag match keeps cache, refreshed:false", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-pull-etag-match-"));
+    const cachedPath = join(cacheDir, "model.gguf");
+    const etagPath = join(cacheDir, "model.gguf.etag");
+    writeGguf(cachedPath);
+    writeFileSync(etagPath, '"etag-v1"\n');
+    mockFetchEtag('"etag-v1"');
+    const resolveModelFile = vi.fn(async () => cachedPath);
+    mockLlama(resolveModelFile);
+    try {
+      const results = await pullModels(["hf:org/repo/model.gguf"], { cacheDir });
+      expect(resolveModelFile).toHaveBeenCalledWith(
+        "hf:org/repo/model.gguf",
+        { directory: cacheDir, cli: false },
+      );
+      expect(existsSync(cachedPath)).toBe(true);
+      expect(readFileSync(etagPath, "utf-8").trim()).toBe('"etag-v1"');
+      expect(results[0]?.refreshed).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  test("etag mismatch deletes cache, redownloads, re-records etag, refreshed:true", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-pull-etag-mismatch-"));
+    const cachedPath = join(cacheDir, "model.gguf");
+    const etagPath = join(cacheDir, "model.gguf.etag");
+    writeGguf(cachedPath);
+    writeFileSync(etagPath, '"etag-v1"\n');
+    mockFetchEtag('"etag-v2"');
+    const landingPath = join(cacheDir, "downloaded.gguf");
+    mockLlama(mockResolveTo(landingPath));
+    try {
+      const results = await pullModels(["hf:org/repo/model.gguf"], { cacheDir });
+      expect(existsSync(cachedPath)).toBe(false);
+      expect(existsSync(landingPath)).toBe(true);
+      expect(readFileSync(etagPath, "utf-8").trim()).toBe('"etag-v2"');
+      expect(results[0]?.refreshed).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  test("explicit --refresh forces redownload even on etag match", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-pull-etag-refresh-"));
+    const cachedPath = join(cacheDir, "model.gguf");
+    const etagPath = join(cacheDir, "model.gguf.etag");
+    writeGguf(cachedPath);
+    writeFileSync(etagPath, '"etag-v1"\n');
+    mockFetchEtag('"etag-v1"');
+    const landingPath = join(cacheDir, "downloaded.gguf");
+    mockLlama(mockResolveTo(landingPath));
+    try {
+      const results = await pullModels(["hf:org/repo/model.gguf"], { cacheDir, refresh: true });
+      expect(existsSync(cachedPath)).toBe(false);
+      expect(existsSync(landingPath)).toBe(true);
+      expect(results[0]?.refreshed).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
       setNodeLlamaCppModuleForTest(null);
       rmSync(cacheDir, { recursive: true, force: true });
     }
@@ -1673,6 +1993,47 @@ describe.skipIf(!!process.env.CI)("LLM Session Management", () => {
         })
       ).rejects.toThrow("Custom test error");
     });
+  });
+});
+
+// =============================================================================
+// Idle unload guard visibility (unit, no models).
+// withLLMSessionForLlm used to create an unregistered manager per call, so a
+// live store session was invisible to the guard (premature dispose) while a
+// default session vetoed every instance's unload (VRAM pin). These run on CI.
+// =============================================================================
+
+describe("LLM idle unload guard visibility", () => {
+  test("forLlm session vetoes its own instance unload", async () => {
+    const llm = new LlamaCpp();
+    await withLLMSessionForLlm(llm, async (session) => {
+      expect(session.isValid).toBe(true);
+      expect(canUnloadLLM(llm)).toBe(false);
+    });
+    // Released sessions must not pin the unload (no leak pinning).
+    expect(canUnloadLLM(llm)).toBe(true);
+    await llm.dispose();
+  });
+
+  test("session on one instance does not pin another instance", async () => {
+    const busy = new LlamaCpp();
+    const idle = new LlamaCpp();
+    await withLLMSessionForLlm(busy, async (session) => {
+      expect(session.isValid).toBe(true);
+      expect(canUnloadLLM(busy)).toBe(false);
+      expect(canUnloadLLM(idle)).toBe(true);
+    });
+    expect(canUnloadLLM(busy)).toBe(true);
+    await busy.dispose();
+    await idle.dispose();
+  });
+
+  test("legacy default-path guard behavior is unchanged", async () => {
+    await withLLMSession(async (session) => {
+      expect(session.isValid).toBe(true);
+      expect(canUnloadLLM()).toBe(false);
+    });
+    expect(canUnloadLLM()).toBe(true);
   });
 });
 

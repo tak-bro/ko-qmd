@@ -15,6 +15,8 @@
 
 import type { Database } from "./db.js";
 import { isNarrowing, matchesPaths, type DocumentFilter } from "./filters.js";
+import { compileMetadataFilter, type MetadataFilter } from "./metadata-filter.js";
+import { METADATA_EXTRACTION_VERSION } from "./metadata.js";
 
 export type GrepLine = {
   /** 1-indexed line number within the document body, as `qmd get path:N:count` takes it. */
@@ -45,6 +47,8 @@ export type GrepOptions = {
   readonly fixedString?: boolean;
   readonly filter?: DocumentFilter;
   readonly collections?: readonly string[];
+  /** Metadata filter (`--filter` JSON AST); same semantics as searchFTS. */
+  readonly metadataFilter?: MetadataFilter;
 };
 
 export type GrepResult = {
@@ -145,14 +149,37 @@ export const grepDocuments = (
   pattern: RegExp,
   options: GrepOptions = {},
 ): GrepResult => {
-  const limit = options.limit ?? DEFAULT_LIMIT;
-  const maxLinesPerFile = options.maxLinesPerFile ?? DEFAULT_MAX_LINES_PER_FILE;
+  // Bounds are enforced here, not at each caller: the CLI clamps only its own
+  // `--max-lines` flag and MCP passes `limit`/`maxLinesPerFile` straight from
+  // the tool schema, so a 0/negative value used to return 1 file with
+  // `truncated:true` (limit) or empty `lines` with `matchCount > 0`
+  // (maxLinesPerFile). Clamping (rather than rejecting with isError) matches
+  // the CLI's existing `Math.max(1, …)` behavior — least surprise across callers.
+  const clampCount = (value: number | undefined, fallback: number): number =>
+    value === undefined || !Number.isFinite(value) ? fallback : Math.max(1, Math.floor(value));
+  const limit = clampCount(options.limit, DEFAULT_LIMIT);
+  const maxLinesPerFile = clampCount(options.maxLinesPerFile, DEFAULT_MAX_LINES_PER_FILE);
   const filter = options.filter;
   const filtering = isNarrowing(filter);
   const collections = options.collections;
+  const metadataFilter = options.metadataFilter;
 
   const conditions: string[] = ["d.active = 1", "d.id > ?"];
-  const scopeParams: string[] = [];
+  const scopeParams: (string | number)[] = [];
+  let joinMetadata = "";
+  if (metadataFilter) {
+    // Same semantics as searchFTS: only documents with current, error-free
+    // extraction can match — an unprocessed document must not accidentally
+    // satisfy `exists: false`.
+    const compiled = compileMetadataFilter(metadataFilter, "d");
+    joinMetadata = " LEFT JOIN document_metadata dm ON dm.document_id = d.id";
+    conditions.push(
+      `dm.extraction_version = ${METADATA_EXTRACTION_VERSION}`,
+      "dm.extraction_error IS NULL",
+      compiled.sql,
+    );
+    scopeParams.push(...compiled.params);
+  }
   if (collections && collections.length > 0) {
     conditions.push(`d.collection IN (${collections.map(() => "?").join(",")})`);
     scopeParams.push(...collections.map(String));
@@ -169,7 +196,7 @@ export const grepDocuments = (
   const selectBatch = db.prepare(`
     SELECT d.id, d.collection, d.path, d.title, d.hash, d.modified_at, content.doc as body
     FROM documents d
-    JOIN content ON content.hash = d.hash
+    JOIN content ON content.hash = d.hash${joinMetadata}
     WHERE ${conditions.join(" AND ")}
     ORDER BY d.id
     LIMIT ?

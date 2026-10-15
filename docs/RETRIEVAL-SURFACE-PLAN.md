@@ -4,7 +4,7 @@ What ko-qmd is missing that a reader of [zvec-grep](https://github.com/zvec-ai/z
 would expect, which of those gaps we decided to close, and in what order. Decisions were
 settled in a design interview on 2026-09-18; this file is the record, not a proposal.
 
-Nothing here is implemented yet.
+Items 1, 2, 3, and 5 are implemented; item 4 remains deferred.
 
 ## Why zvec-grep is the comparison
 
@@ -225,7 +225,7 @@ plan can reintroduce. Their tests are required, not optional.
 | Path | Fails as | Seen by the user as |
 | --- | --- | --- |
 | Filter + vector | Post-filter starvation | Fewer results than asked for, no error — the reason (1) reports filtered corpus size |
-| grep pattern | Catastrophic backtracking | Daemon stops answering every session — contained by the worker thread |
+| grep pattern | Catastrophic backtracking | Daemon stops answering every session — bounded by per-line input bounds (4KB slices) and a 1000-char pattern cap, no worker thread |
 | Refresh | Write during read | Query error under concurrency — covered by the existing concurrency boundary |
 | Refresh | mtime walk on a network vault | Every query pays the walk — bounded by the cooldown |
 | Backend switch | Dimension mismatch | `Expected 768 dimensions but received 1024`, today's test failure, shown to users |

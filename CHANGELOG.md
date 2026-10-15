@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+- `qmd mcp --http --port` now validates the port: non-numeric or outside
+  1–65535 exits 1 with an error instead of silently falling back to 8181
+  (`--port 0`/`abc`) or crashing downstream on bind (`--port -1`).
+- SDK `addCollection` write-through no longer drops `ignore` (and preserves
+  `includeByDefault`/`update`/`context`): the YAML/inline entry is merged
+  instead of replaced, so `ignore` survives a close/reopen round-trip instead
+  of being nulled in the DB on resync.
+- Idle-unload guard now sees `withLLMSessionForLlm` sessions: per-instance
+  session managers are shared through a WeakMap and `canUnloadLLM(llm)` scopes
+  the verdict to that instance, so a live store session vetoes its own unload
+  (no more idle-timer dispose of a working context) while an unrelated
+  instance's session no longer pins it. No-arg `canUnloadLLM()` behavior on the
+  default path is unchanged.
+- `qmd update` no longer claims "✓ All collections updated." when trust-gated
+  collections were skipped: it prints `Updated N of M collection(s), skipped K`
+  and exits 1 so unattended runs can detect the partial update. No skips keeps
+  the success line and exit 0.
+
+- Reindex no longer aborts the whole `qmd update` when a file vanishes
+  between read and stat (ENOENT mid-pass, e.g. an update hook mutating the
+  tree): the `statSync` pair is guarded exactly like the #460 read guard —
+  skip + report via `skippedFiles`, rest of the pass completes.
+- `generateEmbeddings`: the 80%-error-rate abort now stops the whole run
+  instead of just the current 32-chunk window. Previously the outer
+  doc-batch loop kept going (re-warning per batch) and the post-batch
+  `retryFailedChunks(true)` immediately re-embedded the just-aborted
+  chunks, neutralizing the circuit breaker. The abort flag now breaks the
+  outer loop and skips the force-retry pass.
 - Rerank cascade head batch 15 → 8 (`RERANK_CASCADE_FIRST_BATCH`; `QMD_RERANK_FIRST_BATCH` /
   `QMD_RERANK_MARGIN` overrides added for tuning). Cold hard-44 probe at
   `candidateLimit` 40: rerank p50 2492 → 1267 ms, p90 2570 → 1352 ms, top-1

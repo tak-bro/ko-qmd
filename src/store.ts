@@ -880,7 +880,7 @@ const FTS_CJK_NORMALIZED_VERSION = "2"; // ko-qmd: "2" adds Hangul bigrams
 
 // Bump when any FTS sync trigger body in applyFtsSyncTriggers changes, so the
 // new definition is reapplied to existing databases on next open.
-const STORE_SCHEMA_VERSION = 1;
+const STORE_SCHEMA_VERSION = 2;
 
 /**
  * FTS5's unicode61 tokenizer does not segment CJK text into searchable words.
@@ -955,8 +955,14 @@ function installFtsSyncTriggers(db: Database): void {
   `);
 
   db.exec(`DROP TRIGGER IF EXISTS documents_au`);
+  // Scoped to the FTS-visible columns EXCEPT title. Title-only writes
+  // (updateDocumentTitle) sync the FTS title explicitly and must not pay for
+  // a full raw row rewrite here; every title mutator (updateDocumentTitle,
+  // updateDocument, insertDocument's upsert) handles FTS itself. Touches to
+  // title-unrelated columns (e.g. modified_at) correctly skip FTS work since
+  // the FTS row holds no such columns.
   db.exec(`
-    CREATE TRIGGER documents_au AFTER UPDATE ON documents
+    CREATE TRIGGER documents_au AFTER UPDATE OF collection, path, hash, active ON documents
     BEGIN
       -- Delete from FTS if no longer active
       DELETE FROM documents_fts WHERE rowid = old.id AND new.active = 0;
@@ -1554,7 +1560,7 @@ export type Store = {
   toVirtualPath: (absolutePath: string) => string | null;
 
   // Search
-  searchFTS: (query: string, limit?: number, collectionName?: string | readonly string[], filter?: MetadataFilter, scope?: DocumentFilter) => SearchResult[];
+  searchFTS: (query: string, limit?: number, collectionName?: string | readonly string[], filter?: MetadataFilter, scope?: DocumentFilter, onScanCapped?: () => void) => SearchResult[];
   searchVec: (query: string, model: string, limit?: number, collectionName?: string | readonly string[], session?: ILLMSession, precomputedEmbedding?: number[], filter?: MetadataFilter, scope?: DocumentFilter) => Promise<SearchResult[]>;
 
   // Query expansion & reranking
@@ -1712,6 +1718,11 @@ export async function reindexCollection(
     }
 
     if (!content.trim()) {
+      // An emptied file has no indexable content: unmark it seen so the
+      // not-seen pass below deactivates it exactly like a removed file.
+      // (Unreadable files above stay seen — a transient read error must not
+      // wipe the row; empty content is a confirmed state, not an error.)
+      seenPaths.delete(path);
       processed++;
       continue;
     }
@@ -1736,18 +1747,40 @@ export async function reindexCollection(
         }
       } else {
         insertContent(db, hash, content, now);
-        const stat = statSync(filepath);
+        let stat: ReturnType<typeof statSync> | undefined;
+        try {
+          stat = statSync(filepath);
+        } catch (err) {
+          // Skip files that vanish between read and stat (ENOENT when an
+          // update hook mutates the tree mid-pass) instead of aborting the
+          // rest of the collection — same as the read guard above (#460).
+          processed++;
+          skippedFiles.push({ file: relativeFile, code: fsErrorCode(err) });
+          options?.onProgress?.({ file: relativeFile, current: processed, total });
+          continue;
+        }
         updateDocument(db, existing.id, title, hash,
           stat ? new Date(stat.mtime).toISOString() : now);
         updated++;
       }
     } else {
-      indexed++;
       insertContent(db, hash, content, now);
-      const stat = statSync(filepath);
+      let stat: ReturnType<typeof statSync> | undefined;
+      try {
+        stat = statSync(filepath);
+      } catch (err) {
+        // Skip files that vanish between read and stat (ENOENT when an
+        // update hook mutates the tree mid-pass) instead of aborting the
+        // rest of the collection — same as the read guard above (#460).
+        processed++;
+        skippedFiles.push({ file: relativeFile, code: fsErrorCode(err) });
+        options?.onProgress?.({ file: relativeFile, current: processed, total });
+        continue;
+      }
       documentId = insertDocument(db, collectionName, path, title, hash,
         stat ? new Date(stat.birthtime).toISOString() : now,
         stat ? new Date(stat.mtime).toISOString() : now);
+      indexed++;
     }
 
     // Unchanged content still backfills missing or stale extraction state.
@@ -2031,7 +2064,6 @@ export async function generateEmbeddings(
     return { docsProcessed: 0, chunksEmbedded: 0, errors: 0, durationMs: 0 };
   }
   const totalBytes = docsToEmbed.reduce((sum, doc) => sum + Math.max(0, doc.bytes), 0);
-  const totalDocs = docsToEmbed.length;
   const startTime = Date.now();
 
   // Use store's LlamaCpp or global singleton, wrapped in a session
@@ -2042,6 +2074,7 @@ export async function generateEmbeddings(
     let chunksEmbedded = 0;
     let bytesProcessed = 0;
     let totalChunks = 0;
+    let docsProcessed = 0;
     let vectorTableInitialized = false;
     const BATCH_SIZE = 32;
     const RETRY_AFTER_SUCCESSFUL_CHUNKS = 64;
@@ -2049,6 +2082,10 @@ export async function generateEmbeddings(
     const failures = new Map<string, EmbedFailure>();
     const retryQueue = new Map<string, ChunkItem>();
     let successesSinceRetry = 0;
+    // Set when the 80%-error-rate abort trips: it stops the whole run, not
+    // just the current 32-chunk window, and suppresses the force-retry that
+    // would otherwise re-embed the just-aborted chunks.
+    let errorRateAborted = false;
 
     const failureList = () => [...failures.values()];
     const activeErrorCount = () => failures.size;
@@ -2123,6 +2160,11 @@ export async function generateEmbeddings(
         console.warn(`⚠ Session expired — skipping remaining document batches`);
         break;
       }
+      // The 80%-error-rate abort below stops the whole run: the remaining
+      // doc-batches would fail the same way, so don't start them.
+      if (errorRateAborted) {
+        break;
+      }
 
       const batchDocs = getEmbeddingDocsForBatch(db, batchMeta);
       const batchChunks: ChunkItem[] = [];
@@ -2185,6 +2227,7 @@ export async function generateEmbeddings(
 
       const totalBatchChunkBytes = batchChunks.reduce((sum, chunk) => sum + chunk.bytes, 0);
       let batchChunkBytesProcessed = 0;
+      let batchCompleted = true;
 
       for (let batchStart = 0; batchStart < batchChunks.length; batchStart += BATCH_SIZE) {
         // Abort early if session has been invalidated (e.g. max duration exceeded)
@@ -2192,6 +2235,7 @@ export async function generateEmbeddings(
           const remainingChunks = batchChunks.slice(batchStart);
           for (const chunk of remainingChunks) recordFailure(chunk, "LLM session expired before embedding chunk");
           console.warn(`⚠ Session expired — skipping ${remainingChunks.length} remaining chunks`);
+          batchCompleted = false;
           break;
         }
 
@@ -2201,6 +2245,8 @@ export async function generateEmbeddings(
           const remainingChunks = batchChunks.slice(batchStart);
           for (const chunk of remainingChunks) recordFailure(chunk, "embedding aborted because error rate was too high");
           console.warn(`⚠ Error rate too high (${activeErrorCount()}/${processed}) — aborting embedding`);
+          batchCompleted = false;
+          errorRateAborted = true;
           break;
         }
 
@@ -2254,22 +2300,33 @@ export async function generateEmbeddings(
         });
       }
 
-      await retryFailedChunks(true);
+      // After an 80%-error-rate abort the failures are systemic, not
+      // transient: retrying them (here or in later batches) just burns
+      // embedding calls, so skip the force-retry pass entirely.
+      if (!errorRateAborted) {
+        await retryFailedChunks(true);
+      }
 
       const removedPartialChunks = removeIncompleteEmbeddings(db, expectedChunksByHash, model);
       if (removedPartialChunks > 0) {
         chunksEmbedded = Math.max(0, chunksEmbedded - removedPartialChunks);
+      }
+      // Only batches that ran to completion count toward docsProcessed, so an
+      // early session-expiry (or error-rate abort) break reports the docs
+      // actually embedded instead of the full pending snapshot.
+      if (batchCompleted) {
+        docsProcessed += expectedChunksByHash.size;
       }
 
       bytesProcessed += batchBytes;
       options?.onProgress?.({ chunksEmbedded, totalChunks, bytesProcessed, totalBytes, errors: activeErrorCount(), failures: failureList() });
     }
 
-    return { chunksEmbedded, errors: activeErrorCount(), failures: failureList() };
+    return { chunksEmbedded, docsProcessed, errors: activeErrorCount(), failures: failureList() };
   }, { maxDuration: options?.maxDurationMs ?? DEFAULT_EMBED_MAX_DURATION_MS, name: 'generateEmbeddings' });
 
   return {
-    docsProcessed: totalDocs,
+    docsProcessed: result.docsProcessed,
     chunksEmbedded: result.chunksEmbedded,
     errors: result.errors,
     failures: result.failures,
@@ -2332,7 +2389,7 @@ export function createStore(dbPath?: string): Store {
     toVirtualPath: (absolutePath: string) => toVirtualPath(db, absolutePath),
 
     // Search
-    searchFTS: (query: string, limit?: number, collectionName?: string | readonly string[], filter?: MetadataFilter, scope?: DocumentFilter) => searchFTS(db, query, limit, collectionName, filter, scope),
+    searchFTS: (query: string, limit?: number, collectionName?: string | readonly string[], filter?: MetadataFilter, scope?: DocumentFilter, onScanCapped?: () => void) => searchFTS(db, query, limit, collectionName, filter, scope, onScanCapped),
     searchVec: (query: string, model: string, limit?: number, collectionName?: string | readonly string[], session?: ILLMSession, precomputedEmbedding?: number[], filter?: MetadataFilter, scope?: DocumentFilter) => searchVec(db, query, model, limit, collectionName, session, precomputedEmbedding, getLlm(store), filter, scope),
 
     // Query expansion & reranking
@@ -2836,24 +2893,34 @@ export function countOrphanedVectors(db: Database): number {
 }
 
 /**
+ * Single gate shared by the orphan-vector preview and the run path, so
+ * `previewCleanup` only promises removals `cleanupOrphanedVectors` can
+ * deliver (#768 follow-up: dry-run promised N chunks while the run removed 0
+ * with rows intact).
+ *
+ * Both callers probe the `vectors_vec` virtual table instead of the
+ * module-global vec0 flag. The probe throws "no such module: vec0" when the
+ * schema entry exists but sqlite-vec is unavailable (e.g. Bun's bun:sqlite
+ * lacks loadExtension, #380), and "no such table" when embeddings never ran —
+ * in both states cleanup degrades gracefully to 0. Probing also keeps both
+ * states reachable with a mocked db, so the dry/run agreement is unit-testable
+ * without loading the vec0 module.
+ */
+function isVectorCleanupActionable(db: Database): boolean {
+  try {
+    db.prepare(`SELECT 1 FROM vectors_vec LIMIT 0`).get();
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+/**
  * Remove orphaned vector embeddings that are not referenced by any active document.
  * Returns the number of orphaned embedding chunks deleted.
  */
 export function cleanupOrphanedVectors(db: Database): number {
-  // sqlite-vec may not be loaded (e.g. Bun's bun:sqlite lacks loadExtension).
-  // The vectors_vec virtual table can appear in sqlite_master from a prior
-  // session, but querying it without the vec0 module loaded will crash (#380).
-  if (!isSqliteVecAvailable()) {
-    return 0;
-  }
-
-  // The schema entry can exist even when sqlite-vec itself is unavailable
-  // (for example when reopening a DB without vec0 loaded). In that case,
-  // touching the virtual table throws "no such module: vec0" and cleanup
-  // should degrade gracefully like the rest of the vector features.
-  try {
-    db.prepare(`SELECT 1 FROM vectors_vec LIMIT 0`).get();
-  } catch {
+  if (!isVectorCleanupActionable(db)) {
     return 0;
   }
 
@@ -2936,7 +3003,10 @@ export type CleanupStats = {
 /** Counts what `runCleanup` would remove, including content only held by inactive docs. */
 export function previewCleanup(db: Database): CleanupStats {
   const cacheCount = (db.prepare(`SELECT COUNT(*) as c FROM llm_cache`).get() as { c: number }).c;
-  const orphanedVectors = countOrphanedVectors(db);
+  // Gated on the same probe as cleanupOrphanedVectors: without an actionable
+  // vec table the run removes 0, so the preview promises 0 too (#768).
+  // Diagnostic counts (status, update hints) still use countOrphanedVectors.
+  const orphanedVectors = isVectorCleanupActionable(db) ? countOrphanedVectors(db) : 0;
   const inactiveDocs = (db.prepare(`SELECT COUNT(*) as c FROM documents WHERE active = 0`).get() as { c: number }).c;
   const orphanedContent = countOrphanedContent(db);
   return { cacheCount, orphanedVectors, inactiveDocs, orphanedContent };
@@ -3158,6 +3228,15 @@ export function findOrMigrateLegacyDocument(
 
 /**
  * Update the title and modified_at timestamp for a document.
+ *
+ * Title-only fast path: callers invoke this only when the content hash is
+ * unchanged, so the body needs no re-tokenization. The documents_au sync
+ * trigger is scoped to (collection, path, hash, active) and does not fire
+ * for this write, so a single FTS title UPDATE preserves the existing
+ * normalized filepath/body — skipping both the body re-normalization and
+ * the redundant raw DELETE+INSERT rewrite (~5ms per 105KB document).
+ * When no FTS row exists, fall back to a full rebuild so the title is still
+ * indexed (and any orphan row is cleaned up, as before).
  */
 export function updateDocumentTitle(
   db: Database,
@@ -3167,7 +3246,11 @@ export function updateDocumentTitle(
 ): void {
   db.prepare(`UPDATE documents SET title = ?, modified_at = ? WHERE id = ?`)
     .run(title, modifiedAt, documentId);
-  rebuildDocumentFTS(db, documentId);
+  const updated = db.prepare(`UPDATE documents_fts SET title = ? WHERE rowid = ?`)
+    .run(normalizeCjkForFTS(title), documentId);
+  if (updated.changes === 0) {
+    rebuildDocumentFTS(db, documentId);
+  }
 }
 
 /**
@@ -3563,7 +3646,7 @@ export function matchFilesByGlob(db: Database, pattern: string): { filepath: str
   const allFiles = db.prepare(`
     SELECT
       'qmd://' || d.collection || '/' || d.path as virtual_path,
-      LENGTH(content.doc) as body_length,
+      octet_length(content.doc) as body_length,
       d.path,
       d.collection
     FROM documents d
@@ -3837,21 +3920,28 @@ export function listCollections(db: Database): { name: string; pwd: string; glob
  * Uses collections.ts to remove from YAML config and cleans up database.
  */
 export function removeCollection(db: Database, collectionName: string): { deletedDocs: number; cleanedHashes: number } {
-  // Delete documents from database
-  const docResult = db.prepare(`DELETE FROM documents WHERE collection = ?`).run(collectionName);
+  // Statement.changes counts FTS trigger/shadow writes as well as the row
+  // itself, so it cannot report document rows. Count them instead.
+  const docsBefore = (db.prepare(`SELECT COUNT(*) as c FROM documents WHERE collection = ?`).get(collectionName) as { c: number }).c;
 
-  // Clean up orphaned content hashes
-  const cleanupResult = db.prepare(`
-    DELETE FROM content
-    WHERE hash NOT IN (SELECT DISTINCT hash FROM documents WHERE active = 1)
-  `).run();
+  // Delete documents from database
+  db.prepare(`DELETE FROM documents WHERE collection = ?`).run(collectionName);
+
+  // Clean up orphaned content hashes with the same conservative predicate as
+  // cleanupOrphanedContent(): only hashes with no remaining document rows —
+  // including inactive tombstones — are removed. The old active-only filter
+  // dropped content still pinned by other collections' tombstones, and the
+  // content→documents FK CASCADE then hard-deleted those tombstone rows.
+  const cleanedHashes = cleanupOrphanedContent(db);
 
   // Remove from store_collections
   deleteStoreCollection(db, collectionName);
 
+  const docsAfter = (db.prepare(`SELECT COUNT(*) as c FROM documents WHERE collection = ?`).get(collectionName) as { c: number }).c;
+
   return {
-    deletedDocs: docResult.changes,
-    cleanedHashes: cleanupResult.changes
+    deletedDocs: docsBefore - docsAfter,
+    cleanedHashes
   };
 }
 
@@ -3886,73 +3976,6 @@ export function insertContext(db: Database, collectionName: string, pathPrefix: 
   }
 
   updateStoreContext(db, coll.name, pathPrefix, context);
-}
-
-/**
- * Delete a context for a specific collection and path prefix.
- * Returns the number of contexts deleted.
- */
-export function deleteContext(db: Database, collectionName: string, pathPrefix: string): number {
-  // Remove context from store_collections
-  const success = removeStoreContext(db, collectionName, pathPrefix);
-  return success ? 1 : 0;
-}
-
-/**
- * Delete all global contexts (contexts with empty path_prefix).
- * Returns the number of contexts deleted.
- */
-export function deleteGlobalContexts(db: Database): number {
-  let deletedCount = 0;
-
-  // Remove global context
-  setStoreGlobalContext(db, undefined);
-  deletedCount++;
-
-  // Remove root context (empty string) from all collections
-  const collections = getStoreCollections(db);
-  for (const coll of collections) {
-    const success = removeStoreContext(db, coll.name, '');
-    if (success) {
-      deletedCount++;
-    }
-  }
-
-  return deletedCount;
-}
-
-/**
- * List all contexts, grouped by collection.
- * Returns contexts ordered by collection name, then by path prefix length (longest first).
- */
-export function listPathContexts(db: Database): { collection_name: string; path_prefix: string; context: string }[] {
-  const allContexts = getStoreContexts(db);
-
-  // Convert to expected format and sort
-  return allContexts.map(ctx => ({
-    collection_name: ctx.collection,
-    path_prefix: ctx.path,
-    context: ctx.context,
-  })).sort((a, b) => {
-    // Sort by collection name first
-    if (a.collection_name !== b.collection_name) {
-      return a.collection_name.localeCompare(b.collection_name);
-    }
-    // Then by path prefix length (longest first)
-    if (a.path_prefix.length !== b.path_prefix.length) {
-      return b.path_prefix.length - a.path_prefix.length;
-    }
-    // Then alphabetically
-    return a.path_prefix.localeCompare(b.path_prefix);
-  });
-}
-
-/**
- * Get all collections (name only - from YAML config).
- */
-export function getAllCollections(db: Database): { name: string }[] {
-  const collections = getStoreCollections(db);
-  return collections.map(c => ({ name: c.name }));
 }
 
 /**
@@ -4280,8 +4303,13 @@ const MIN_RETRIEVAL_BREADTH = 20;
  * Candidate ceiling for a filtered FTS scan. High enough that a real query's whole match set
  * gets through — which is what stops a narrow filter from starving — and low enough that a
  * query matching most of a large index still terminates.
+ *
+ * A caller asking for more than this (today: `--all` at 100k) with a filter/scope in play
+ * gets at most the cap's worth of candidates, and the excess is dropped before narrowing —
+ * silently, unless the caller passes `onScanCapped` to `searchFTS`. Never raise this to
+ * satisfy `--all`; it is a perf guard, not a result-size knob.
  */
-const FILTERED_FTS_SCAN_MAX = 50_000;
+export const FILTERED_FTS_SCAN_MAX = 50_000;
 
 /** Bound list size when fetching document bodies — SQLite caps bound parameters. */
 const CONTENT_HASH_IN_CHUNK = 400;
@@ -4314,12 +4342,12 @@ export function countFilteredDocuments(
   return { kept, total: rows.length };
 }
 
-export function searchFTS(db: Database, query: string, limit: number = 20, collectionName?: string | readonly string[], filter?: MetadataFilter, scope?: DocumentFilter): SearchResult[] {
+export function searchFTS(db: Database, query: string, limit: number = 20, collectionName?: string | readonly string[], filter?: MetadataFilter, scope?: DocumentFilter, onScanCapped?: () => void): SearchResult[] {
   const names = scopedCollectionNames(collectionName);
   // Search each requested collection before merging/truncating so a large
   // unrelated collection cannot occupy global top-k and starve the rest (#775).
   if (names && names.length > 1) {
-    return mergeSearchResultsByScore(names.map(name => searchFTS(db, query, limit, name, filter, scope)), limit);
+    return mergeSearchResultsByScore(names.map(name => searchFTS(db, query, limit, name, filter, scope, onScanCapped)), limit);
   }
   const collectionFilter = names?.[0];
   const filtered = isNarrowing(scope) || filter !== undefined;
@@ -4407,6 +4435,19 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
     const rows = matchingPaths
       ? candidates.filter(row => matchesPaths(row.display_path, scope)).slice(0, limit)
       : candidates;
+    if (onScanCapped && filtered && limit > FILTERED_FTS_SCAN_MAX && rows.length > 0) {
+      // The CTE above keeps only the top FILTERED_FTS_SCAN_MAX matches *before* the
+      // filter/scope narrows them, so anything past the cap is lost where no caller can
+      // see it. A capped probe (OFFSET cap stops the walk after cap+1 rows) tells the
+      // caller their request outran the guard. Gated on limit > cap so the hot path —
+      // every normal filtered search — pays nothing extra; only --all-scale callers
+      // probe. Probed per actually-executed match (strict, else relaxed), so the signal
+      // describes the results being returned.
+      const overflow = db.prepare(
+        `SELECT 1 AS one FROM documents_fts WHERE documents_fts MATCH ? LIMIT 1 OFFSET ${FILTERED_FTS_SCAN_MAX}`,
+      ).get(match);
+      if (overflow) onScanCapped();
+    }
     if (rows.length === 0) return [];
 
     // Bodies come second, for the winners only. The candidate pass above can be the whole
@@ -4823,8 +4864,21 @@ export function clearAllEmbeddings(db: Database, collection?: string): void {
  * Insert a single embedding into both content_vectors and vectors_vec tables.
  * The hash_seq key is formatted as "hash_seq" for the vectors_vec table.
  *
- * content_vectors is inserted first so that getHashesForEmbedding (which checks
- * only content_vectors) won't re-select the hash on a crash between the two inserts.
+ * The content_vectors INSERT and the vectors_vec DELETE + INSERT run inside
+ * one IMMEDIATE transaction, so a crash or error between them can never leave
+ * a phantom-complete row (content_vectors claiming a chunk whose vector is
+ * missing — pending checks read content_vectors only and would skip the hash
+ * forever). Either both tables show the chunk or neither does; a killed batch
+ * leaves a partial hash that the next embed run re-selects and converges.
+ *
+ * IMMEDIATE (not deferred): the txn writes after reading nothing, but the
+ * reserved lock must be taken up front — upgrading a deferred read snapshot
+ * under a concurrent WAL writer fails with SQLITE_BUSY_SNAPSHOT instead of
+ * honoring busy_timeout. Readers still proceed under WAL; writers queue via
+ * busy_timeout. Never EXCLUSIVE. The migration wrapper stays outside: a
+ * column repair (ALTER TABLE) must not run inside the chunk txn — on a
+ * column-miss the txn body throws, rolls back, the repair runs, and the retry
+ * re-enters a fresh txn.
  *
  * vectors_vec uses DELETE + INSERT instead of INSERT OR REPLACE because sqlite-vec's
  * vec0 virtual tables silently ignore the OR REPLACE conflict clause.
@@ -4843,15 +4897,17 @@ export function insertEmbedding(
   const hashSeq = `${hash}_${seq}`;
 
   withLazyContentVectorMigration(db, () => {
-    // Insert content_vectors first — crash-safe ordering (see getHashesForEmbedding)
-    const insertContentVectorStmt = db.prepare(`INSERT OR REPLACE INTO content_vectors (hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
-    insertContentVectorStmt.run(hash, seq, pos, model, fingerprint, totalChunks, embeddedAt);
+    const writeChunk = db.transaction(() => {
+      const insertContentVectorStmt = db.prepare(`INSERT OR REPLACE INTO content_vectors (hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+      insertContentVectorStmt.run(hash, seq, pos, model, fingerprint, totalChunks, embeddedAt);
 
-    // vec0 virtual tables don't support OR REPLACE — use DELETE + INSERT
-    const deleteVecStmt = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
-    const insertVecStmt = db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`);
-    deleteVecStmt.run(hashSeq);
-    insertVecStmt.run(hashSeq, embedding);
+      // vec0 virtual tables don't support OR REPLACE — use DELETE + INSERT
+      const deleteVecStmt = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
+      const insertVecStmt = db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`);
+      deleteVecStmt.run(hashSeq);
+      insertVecStmt.run(hashSeq, embedding);
+    });
+    writeChunk.immediate();
   });
 }
 
@@ -4908,13 +4964,16 @@ export async function expandQuery(query: string, model: string = DEFAULT_QUERY_M
   if (cached) {
     try {
       const parsed = JSON.parse(cached) as unknown;
-      if (!Array.isArray(parsed)) return [];
-      const rows = parsed as Array<Record<string, unknown>>;
-      // Migrate old cache format: { type, text } → { type, query }
-      if (rows.length > 0 && typeof rows[0]?.query === "string") {
-        return rows.map((r) => ({ type: r.type as ExpandedQuery["type"], query: String(r.query) }));
-      } else if (rows.length > 0 && typeof rows[0]?.text === "string") {
-        return rows.map((r) => ({ type: r.type as ExpandedQuery["type"], query: String(r.text) }));
+      // Non-array valid JSON (poison row) falls through to re-expand like
+      // invalid JSON below, letting the fresh result overwrite it.
+      if (Array.isArray(parsed)) {
+        const rows = parsed as Array<Record<string, unknown>>;
+        // Migrate old cache format: { type, text } → { type, query }
+        if (rows.length > 0 && typeof rows[0]?.query === "string") {
+          return rows.map((r) => ({ type: r.type as ExpandedQuery["type"], query: String(r.query) }));
+        } else if (rows.length > 0 && typeof rows[0]?.text === "string") {
+          return rows.map((r) => ({ type: r.type as ExpandedQuery["type"], query: String(r.text) }));
+        }
       }
     } catch {
       // Old cache format (pre-typed, newline-separated text) — re-expand
@@ -5286,7 +5345,7 @@ function getIgnoredLookupMatch(db: Database, query: string): DocumentExcludedByI
 }
 
 /**
- * Find a document by filename/path, docid (#hash), or with fuzzy matching.
+ * Find a document by filename/path, docid (#hash), or path-boundary suffix.
  * Returns document metadata without body by default.
  *
  * Supports:
@@ -5303,12 +5362,13 @@ export function findDocument(db: Database, filename: string, options: { includeB
   }
 
   // Check if this is a docid lookup (#abc123, abc123, "#abc123", "abc123", etc.)
+  // Docid wins when it hits, but a miss falls through to path resolution:
+  // a real file with an isDocid-shaped bare name (e.g. `ab12cd`) must stay
+  // reachable instead of 404ing here.
   if (isDocid(filepath)) {
     const docidMatch = findDocumentByDocid(db, filepath);
     if (docidMatch) {
       filepath = docidMatch.filepath;
-    } else {
-      return { error: "not_found", query: filename, similarFiles: [] };
     }
   }
 
@@ -5327,7 +5387,7 @@ export function findDocument(db: Database, filename: string, options: { includeB
     d.hash,
     d.collection,
     d.modified_at,
-    LENGTH(content.doc) as body_length
+    octet_length(content.doc) as body_length
     ${bodyCol}
   `;
 
@@ -5339,15 +5399,26 @@ export function findDocument(db: Database, filename: string, options: { includeB
     WHERE 'qmd://' || d.collection || '/' || d.path = ? AND d.active = 1
   `).get(filepath) as DbDocRow | null;
 
-  // Try fuzzy match by virtual path
-  if (!doc) {
-    doc = db.prepare(`
+  // Path-boundary suffix match (mirrors resolveCommaListName tier 3, #759):
+  // only `.../name` matches, so a mid-filename fragment like `NTAX.md`
+  // can no longer silently fetch `SYNTAX.md`. Multiple hits return
+  // not_found with the candidates (instead of an arbitrary LIMIT 1).
+  if (!doc && !filepath.startsWith('qmd://')) {
+    const fuzzy = db.prepare(`
       SELECT ${selectCols}
       FROM documents d
       JOIN content ON content.hash = d.hash
       WHERE 'qmd://' || d.collection || '/' || d.path LIKE ? ESCAPE '#' AND d.active = 1
-      LIMIT 1
-    `).get(`%${escapeLikePattern(filepath)}`) as DbDocRow | null;
+      ORDER BY d.collection, d.path
+    `).all(`%/${escapeLikePattern(filepath)}`) as DbDocRow[];
+    if (fuzzy.length > 1) {
+      return {
+        error: "not_found",
+        query: filename,
+        similarFiles: fuzzy.map((r) => r.virtual_path),
+      };
+    }
+    doc = fuzzy[0] ?? null;
   }
 
   // Try to match by absolute path (requires looking up collection paths from DB)
@@ -5486,7 +5557,7 @@ function commaListSelect(db: Database, whereSql: string, params: string[]): Comm
       d.collection,
       d.path,
       'qmd://' || d.collection || '/' || d.path as virtual_path,
-      LENGTH(content.doc) as body_length
+      octet_length(content.doc) as body_length
     FROM documents d
     JOIN content ON content.hash = d.hash
     WHERE d.active = 1 AND (${whereSql})
@@ -5536,15 +5607,19 @@ export function resolveCommaListName(db: Database, name: string): CommaListResol
     return { ok: false, error: `File not found: ${name}` };
   }
 
+  // Docid wins when it hits; a miss falls through to the path tiers below
+  // so a real file with an isDocid-shaped bare name (e.g. `ab12cd`) stays
+  // reachable instead of 404ing (and suggesting itself) here.
   if (isDocid(trimmed)) {
     const docidMatch = findDocumentByDocid(db, trimmed);
-    if (!docidMatch) return finishCommaListResolve(db, trimmed, []);
-    const rows = commaListSelect(
-      db,
-      `'qmd://' || d.collection || '/' || d.path = ?`,
-      [docidMatch.filepath],
-    );
-    return finishCommaListResolve(db, trimmed, rows);
+    if (docidMatch) {
+      const rows = commaListSelect(
+        db,
+        `'qmd://' || d.collection || '/' || d.path = ?`,
+        [docidMatch.filepath],
+      );
+      return finishCommaListResolve(db, trimmed, rows);
+    }
   }
 
   if (isVirtualPath(trimmed)) {
@@ -5597,7 +5672,7 @@ export function findDocuments(
     d.hash,
     d.collection,
     d.modified_at,
-    LENGTH(content.doc) as body_length
+    octet_length(content.doc) as body_length
     ${bodyCol}
   `;
 
@@ -5785,10 +5860,28 @@ export function extractIntentTerms(intent: string): string[] {
     .filter(t => t.length > 1 && !INTENT_STOP_WORDS.has(t));
 }
 
+/**
+ * Count '\n' chars in `text` before index `end`. Identical to
+ * `text.slice(0, end).split('\n').length - 1` without allocating the array.
+ */
+function countNewlinesBefore(text: string, end: number): number {
+  let count = 0;
+  let idx = text.indexOf('\n');
+  while (idx !== -1 && idx < end) {
+    count++;
+    idx = text.indexOf('\n', idx + 1);
+  }
+  return count;
+}
+
 export function extractSnippet(body: string, query: string, maxLen = 500, chunkPos?: number, chunkLen?: number, intent?: string): SnippetResult {
-  const totalLines = body.split('\n').length;
+  // Single split of the full body, reused as the search lines whenever no
+  // chunk window is active (previously totalLines + lines split it twice).
+  const allLines = body.split('\n');
+  const totalLines = allLines.length;
   let searchBody = body;
   let lineOffset = 0;
+  let lines: string[] = allLines;
 
   if (chunkPos !== undefined && chunkPos >= 0) {
     // Search within the chunk region, with some padding for context
@@ -5798,11 +5891,10 @@ export function extractSnippet(body: string, query: string, maxLen = 500, chunkP
     const contextEnd = Math.min(body.length, chunkPos + searchLen + 100);
     searchBody = body.slice(contextStart, contextEnd);
     if (contextStart > 0) {
-      lineOffset = body.slice(0, contextStart).split('\n').length - 1;
+      lineOffset = countNewlinesBefore(body, contextStart);
     }
+    lines = searchBody.split('\n');
   }
-
-  const lines = searchBody.split('\n');
   const queryTerms = query.toLowerCase().split(/\s+/).filter(t => t.length > 0);
   const intentTerms = intent ? extractIntentTerms(intent) : [];
   let bestLine = 0, bestScore = -1;
@@ -5835,7 +5927,7 @@ export function extractSnippet(body: string, query: string, maxLen = 500, chunkP
     // than disregarding the reranker's pick.
     const contextStart = Math.max(0, chunkPos - 100);
     bestLine = chunkPos > contextStart
-      ? searchBody.slice(0, chunkPos - contextStart).split('\n').length - 1
+      ? countNewlinesBefore(searchBody, chunkPos - contextStart)
       : 0;
   }
 
@@ -5976,6 +6068,10 @@ export type RankedListMeta = {
   queryType: "original" | "lex" | "vec" | "hyde";
   query: string;
   relaxed?: boolean;  // ko-qmd: list came from the relaxed (ORed) FTS retry
+  // ko-qmd: index of the subquery that produced this list. structuredSearch merges each
+  // subquery's per-collection fan-out into one list tagged with its subquery, so positional
+  // weight follows caller-ordered subqueries, not -c order. Absent (older callers) = position.
+  searchIndex?: number;
 };
 
 /**
@@ -6029,20 +6125,25 @@ export function getHybridRrfWeights(rankedListMeta: RankedListMeta[]): number[] 
 }
 
 /**
- * RRF list weights for structuredSearch: the first list gets 2x (the caller ordered by
- * importance), the rest 1x.
+ * RRF list weights for structuredSearch: lists from the first subquery get 2x (the caller
+ * ordered subqueries by importance), the rest 1x. Lists sharing a searchIndex are one
+ * subquery fanned out across collections, so they share its weight — `-c a -c b` and
+ * `-c b -c a` fuse identically. Meta without searchIndex falls back to list position.
  *
  * ko-qmd: a relaxed FTS list counts half here too, as in getHybridRrfWeights. At a flat 2.0 a
  * lex line that only matched some of a question's words outranked the vector list, and a decoy
  * sharing a few of those words took rank 1 (test/fixtures/ko-vault/BASELINE.md 2026-09-27).
- * ko-qmd: a relaxed first list forfeits the positional boost and halves again (0.25) — even
- * halved, its rank 1 still tied a vector rank 1 with a lex rank 4 (hmu-05, 2026-10-09 probe).
+ * ko-qmd: a relaxed first-subquery list forfeits the positional boost and halves again
+ * (0.25) — even halved, its rank 1 still tied a vector rank 1 with a lex rank 4
+ * (hmu-05, 2026-10-09 probe).
  */
 const RELAXED_FIRST_LIST_WEIGHT = 0.25;
 export function getStructuredRrfWeights(rankedListMeta: RankedListMeta[]): number[] {
+  const firstKey = rankedListMeta[0]?.searchIndex ?? 0;
   return rankedListMeta.map((meta, i) => {
-    if (meta.relaxed) return i === 0 ? RELAXED_FIRST_LIST_WEIGHT : RELAXED_LIST_WEIGHT;
-    return i === 0 ? 2.0 : 1.0;
+    const isFirst = (meta.searchIndex ?? i) === firstKey;
+    if (meta.relaxed) return isFirst ? RELAXED_FIRST_LIST_WEIGHT : RELAXED_LIST_WEIGHT;
+    return isFirst ? 2.0 : 1.0;
   });
 }
 
@@ -6213,8 +6314,10 @@ export function rerankCascadeFirstBatch(): number {
 
 /** Tail-skip margin, overridable for tuning via `QMD_RERANK_MARGIN`. */
 export function rerankCascadeMargin(): number {
-  const raw = Number(process.env.QMD_RERANK_MARGIN);
-  return Number.isFinite(raw) && raw >= 0 ? raw : RERANK_CASCADE_MARGIN;
+  const raw = process.env.QMD_RERANK_MARGIN?.trim();
+  if (raw === undefined || raw === "") return RERANK_CASCADE_MARGIN;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : RERANK_CASCADE_MARGIN;
 }
 
 /**
@@ -6248,7 +6351,7 @@ export async function rerankWithDeadline(
   chunks: { file: string; text: string }[],
   intent: string | undefined,
   options: { rerankMaxDocTokens?: number; rerankDeadlineMs?: number; hooks?: SearchHooks } | undefined,
-): Promise<{ file: string; score: number }[] | null> {
+): Promise<{ file: string; score: number; unscored?: boolean }[] | null> {
   const hooks = options?.hooks;
   hooks?.onRerankStart?.(chunks.length);
   const start = Date.now();
@@ -6261,6 +6364,8 @@ export async function rerankWithDeadline(
   // Cascade: score the RRF head first. On a decisive top margin the tail keeps
   // score 0 (RRF position tiebreak only) instead of paying for 25 more
   // cross-encoder pairs; a contested top scores everything, as before.
+  // Tail placeholders are marked unscored: the minScore filter exempts them,
+  // since a 0 placeholder was never measured and must not read as "scored 0".
   if (isRerankCascadeEnabled() && chunks.length > rerankCascadeFirstBatch()) {
     const first = chunks.slice(0, rerankCascadeFirstBatch());
     const rest = chunks.slice(rerankCascadeFirstBatch());
@@ -6269,7 +6374,7 @@ export async function rerankWithDeadline(
     const headroom = [...firstScored].sort((a, b) => b.score - a.score).map((r) => r.score);
     if (!cascadeNeedsSecondBatch(headroom)) {
       hooks?.onRerankDone?.(Date.now() - start);
-      return [...firstScored, ...rest.map((d) => ({ file: d.file, score: 0 }))];
+      return [...firstScored, ...rest.map((d) => ({ file: d.file, score: 0, unscored: true as const }))];
     }
     // The second batch shares the caller's deadline: it gets only the remaining
     // budget, so the worst case stays one deadline, not two. An exhausted budget
@@ -6277,7 +6382,10 @@ export async function rerankWithDeadline(
     // Same "no deadline" rule as runWithDeadline: unset or <= 0 waits unbounded.
     const deadlineMs = options?.rerankDeadlineMs;
     const remaining = deadlineMs && deadlineMs > 0 ? deadlineMs - (Date.now() - start) : undefined;
-    if (remaining !== undefined && remaining <= 0) return null;
+    if (remaining !== undefined && remaining <= 0) {
+      hooks?.onDeadline?.("rerank", Date.now() - start);
+      return null;
+    }
     const restScored = await scoreBatch(rest, remaining);
     if (restScored === TIMED_OUT) return null;
     hooks?.onRerankDone?.(Date.now() - start);
@@ -6353,7 +6461,10 @@ export async function hybridQuery(
   const query = stripHangulNegation(rawQuery);
   const limit = options?.limit ?? 10;
   const minScore = options?.minScore ?? 0;
-  const candidateLimit = options?.candidateLimit ?? RERANK_CANDIDATE_LIMIT;
+  // Floor at 1: a zero/negative limit inverts the position score
+  // (1-(rank-1)/candidateLimit grows with rank) and makes slice(0, limit)
+  // drop trailing candidates. NaN passes through unchanged (out of scope).
+  const candidateLimit = Math.max(1, options?.candidateLimit ?? RERANK_CANDIDATE_LIMIT);
   const collection = options?.collection;
   const filter = options?.filter;
   const explain = options?.explain ?? false;
@@ -6513,6 +6624,10 @@ export async function hybridQuery(
 
   if (candidates.length === 0) return [];
 
+  // One batched context lookup for all candidates (was one N+1 triple per row
+  // in both assembly branches below — every assembled file comes from candidates).
+  const contexts = getContextsForFiles(store.db, candidates.map((c) => c.file));
+
   // Step 5: Chunk documents, pick best chunk per doc for reranking.
   // Reranking full bodies is O(tokens) — the critical perf lesson that motivated this refactor.
   const chunkStart = Date.now();
@@ -6560,7 +6675,7 @@ export async function hybridQuery(
           bestChunk,
           bestChunkPos,
           score: rrfScore,
-          context: store.getContextForFile(cand.file),
+          context: contexts.get(cand.file) ?? null,
           docid: docidMap.get(cand.file) || "",
           ...(explainData ? { explain: explainData } : {}),
         };
@@ -6584,6 +6699,9 @@ export async function hybridQuery(
     displayPath: c.displayPath, title: c.title, body: c.body,
   }]));
   const rrfRankMap = new Map(candidates.map((c, i) => [c.file, i + 1]));
+  // Cascade-tail placeholders were never scored: exempt them from the minScore
+  // filter below, or a decisive head would silently drop the whole tail.
+  const unscoredFiles = new Set(reranked.filter(r => r.unscored).map(r => r.file));
 
   const blended = reranked.map(r => {
     const rrfRank = rrfRankMap.get(r.file) || candidateLimit;
@@ -6620,7 +6738,7 @@ export async function hybridQuery(
       bestChunk,
       bestChunkPos,
       score: blendedScore,
-      context: store.getContextForFile(r.file),
+      context: contexts.get(r.file) ?? null,
       docid: docidMap.get(r.file) || "",
       ...(explainData ? { explain: explainData } : {}),
     };
@@ -6634,7 +6752,7 @@ export async function hybridQuery(
       seenFiles.add(r.file);
       return true;
     })
-    .filter(r => r.score >= minScore)
+    .filter(r => unscoredFiles.has(r.file) || r.score >= minScore)
     .slice(0, limit);
   return attachResultMetadata(store.db, finalResults);
 }
@@ -6707,7 +6825,8 @@ export async function vectorSearchQuery(
           title: r.title,
           body: r.body || "",
           score: r.score,
-          context: store.getContextForFile(r.filepath),
+          // Context is filled in one batch below (was one N+1 triple per row here).
+          context: null,
           docid: r.docid,
           metadata: r.metadata,
         });
@@ -6715,10 +6834,13 @@ export async function vectorSearchQuery(
     }
   }
 
-  return Array.from(allResults.values())
+  const final = Array.from(allResults.values())
     .sort((a, b) => b.score - a.score)
     .filter(r => r.score >= minScore)
     .slice(0, limit);
+  // One batched context lookup for the final rows.
+  const contexts = getContextsForFiles(store.db, final.map((r) => r.file));
+  return final.map((r) => ({ ...r, context: contexts.get(r.file) ?? null }));
 }
 
 // =============================================================================
@@ -6773,7 +6895,9 @@ export async function structuredSearch(
 ): Promise<HybridQueryResult[]> {
   const limit = options?.limit ?? 10;
   const minScore = options?.minScore ?? 0;
-  const candidateLimit = options?.candidateLimit ?? RERANK_CANDIDATE_LIMIT;
+  // Floor at 1: see hybridQuery — a zero/negative limit inverts the position
+  // score and makes slice(0, limit) drop trailing candidates.
+  const candidateLimit = Math.max(1, options?.candidateLimit ?? RERANK_CANDIDATE_LIMIT);
   const explain = options?.explain ?? false;
   const intent = options?.intent;
   const skipRerank = options?.skipRerank ?? false;
@@ -6784,6 +6908,13 @@ export async function structuredSearch(
   const scope = options?.scope;
 
   if (rawSearches.length === 0) return [];
+
+  // -C is documented as "Max candidates to rerank": the fusion pool must be
+  // able to fill it. The historic per-list breadth was a hardcoded 20, so the
+  // pool capped at 20×lists no matter what -C asked for. Grow the per-list
+  // breadth only above the default candidateLimit — at or below the default
+  // the fetch is byte-for-byte the old one, so default output is unchanged.
+  const breadth = candidateLimit > RERANK_CANDIDATE_LIMIT ? candidateLimit : 20;
 
   // Validate queries before executing
   for (const search of rawSearches) {
@@ -6820,40 +6951,51 @@ export async function structuredSearch(
   // Helper to run search across collections (or all if undefined)
   const collectionList = collections ?? [undefined]; // undefined = all collections
 
-  // Step 1: Run FTS for all lex searches (sync, instant)
+  // Step 1: Run FTS for all lex searches (sync, instant).
+  // One list per subquery: fan out across collections, then merge by score (filepath
+  // breaks exact ties) so -c order never becomes RRF weight or tiebreak order.
   const ftsStart = Date.now();
-  for (const search of searches) {
-    if (search.type === 'lex') {
-      for (const coll of collectionList) {
-        const ftsResults = store.searchFTS(search.query, 20, coll, filter, scope);
-        if (ftsResults.length > 0) {
-          for (const r of ftsResults) docidMap.set(r.filepath, r.docid);
-          rankedLists.push(ftsResults.map(r => ({
-            file: r.filepath, displayPath: r.displayPath,
-            title: r.title, body: r.body || "", score: r.score,
-          })));
-          rankedListMeta.push({
-            source: "fts",
-            queryType: "lex",
-            query: search.query,
-            relaxed: ftsResults[0]?.matchMode === "any",
-          });
-        }
+  for (let si = 0; si < searches.length; si++) {
+    const search = searches[si]!;
+    if (search.type !== 'lex') continue;
+    const best = new Map<string, SearchResult>();
+    for (const coll of collectionList) {
+      const ftsResults = store.searchFTS(search.query, breadth, coll, filter, scope);
+      for (const r of ftsResults) {
+        docidMap.set(r.filepath, r.docid);
+        const prev = best.get(r.filepath);
+        if (!prev || r.score > prev.score) best.set(r.filepath, r);
       }
     }
+    if (best.size === 0) continue;
+    const merged = Array.from(best.values()).sort((a, b) =>
+      b.score - a.score || (a.filepath < b.filepath ? -1 : a.filepath > b.filepath ? 1 : 0));
+    rankedLists.push(merged.map(r => ({
+      file: r.filepath, displayPath: r.displayPath,
+      title: r.title, body: r.body || "", score: r.score,
+    })));
+    rankedListMeta.push({
+      source: "fts",
+      queryType: "lex",
+      query: search.query,
+      relaxed: merged[0]?.matchMode === "any",
+      searchIndex: si,
+    });
   }
   if (searches.some(s => s.type === 'lex')) hooks?.onFtsDone?.(Date.now() - ftsStart);
 
   // Step 2: Batch embed and run vector searches for vec/hyde
   if (hasVectors) {
-    const vecSearches = searches.filter(
-      (s): s is ExpandedQuery & { type: 'vec' | 'hyde' } =>
-        s.type === 'vec' || s.type === 'hyde'
-    );
+    const vecSearches = searches
+      .map((s, searchIndex) => ({ s, searchIndex }))
+      .filter(
+        (e): e is { s: ExpandedQuery & { type: 'vec' | 'hyde' }; searchIndex: number } =>
+          e.s.type === 'vec' || e.s.type === 'hyde'
+      );
     if (vecSearches.length > 0) {
       const llm = getLlm(store);
       const embedModel = llm.embedModelName;
-      const textsToEmbed = vecSearches.map(s => formatQueryForEmbedding(s.query, embedModel));
+      const textsToEmbed = vecSearches.map(e => formatQueryForEmbedding(e.s.query, embedModel));
       hooks?.onEmbedStart?.(textsToEmbed.length);
       const embedStart = Date.now();
       const embeddings = await llm.embedBatch(textsToEmbed);
@@ -6864,24 +7006,33 @@ export async function structuredSearch(
         const embedding = embeddings[i]?.embedding;
         if (!embedding) continue;
 
+        // One list per subquery, merged across collections like the lex fan-out above.
+        const entry = vecSearches[i]!;
+        const best = new Map<string, SearchResult>();
         for (const coll of collectionList) {
           const vecResults = await store.searchVec(
-            vecSearches[i]!.query, embedModel, 20, coll,
+            entry.s.query, embedModel, breadth, coll,
             undefined, embedding, filter, scope
           );
-          if (vecResults.length > 0) {
-            for (const r of vecResults) docidMap.set(r.filepath, r.docid);
-            rankedLists.push(vecResults.map(r => ({
-              file: r.filepath, displayPath: r.displayPath,
-              title: r.title, body: r.body || "", score: r.score,
-            })));
-            rankedListMeta.push({
-              source: "vec",
-              queryType: vecSearches[i]!.type,
-              query: vecSearches[i]!.query,
-            });
+          for (const r of vecResults) {
+            docidMap.set(r.filepath, r.docid);
+            const prev = best.get(r.filepath);
+            if (!prev || r.score > prev.score) best.set(r.filepath, r);
           }
         }
+        if (best.size === 0) continue;
+        const merged = Array.from(best.values()).sort((a, b) =>
+          b.score - a.score || (a.filepath < b.filepath ? -1 : a.filepath > b.filepath ? 1 : 0));
+        rankedLists.push(merged.map(r => ({
+          file: r.filepath, displayPath: r.displayPath,
+          title: r.title, body: r.body || "", score: r.score,
+        })));
+        rankedListMeta.push({
+          source: "vec",
+          queryType: entry.s.type,
+          query: entry.s.query,
+          searchIndex: entry.searchIndex,
+        });
       }
       hooks?.onVecDone?.(Date.now() - vecStart);
     }
@@ -6889,8 +7040,8 @@ export async function structuredSearch(
 
   if (rankedLists.length === 0) return [];
 
-  // Step 3: RRF fusion — first list gets 2x weight (assume caller ordered by importance),
-  // a relaxed FTS list half of its slot's weight, scaled per document by query coverage
+  // Step 3: RRF fusion — first subquery's lists get 2x weight (assume caller ordered by
+  // importance), a relaxed FTS list half of its slot's weight, scaled per document by query coverage
   const weights = getStructuredRrfWeights(rankedListMeta);
   const docMultipliers = rrfDocMultipliers(rankedLists, rankedListMeta);
   const fused = reciprocalRankFusion(rankedLists, weights, 60, docMultipliers);
@@ -6898,6 +7049,10 @@ export async function structuredSearch(
   const candidates = fused.slice(0, candidateLimit);
 
   if (candidates.length === 0) return [];
+
+  // One batched context lookup for all candidates (was one N+1 triple per row
+  // in both assembly branches below — every assembled file comes from candidates).
+  const contexts = getContextsForFiles(store.db, candidates.map((c) => c.file));
 
   hooks?.onExpand?.("", [], 0); // Signal no expansion (pre-expanded)
 
@@ -6951,7 +7106,7 @@ export async function structuredSearch(
           bestChunk,
           bestChunkPos,
           score: rrfScore,
-          context: store.getContextForFile(cand.file),
+          context: contexts.get(cand.file) ?? null,
           docid: docidMap.get(cand.file) || "",
           ...(explainData ? { explain: explainData } : {}),
         };
@@ -6974,6 +7129,9 @@ export async function structuredSearch(
     displayPath: c.displayPath, title: c.title, body: c.body,
   }]));
   const rrfRankMap = new Map(candidates.map((c, i) => [c.file, i + 1]));
+  // Cascade-tail placeholders were never scored: exempt them from the minScore
+  // filter below, or a decisive head would silently drop the whole tail.
+  const unscoredFiles = new Set(reranked.filter(r => r.unscored).map(r => r.file));
 
   const blended = reranked.map(r => {
     const rrfRank = rrfRankMap.get(r.file) || candidateLimit;
@@ -7010,7 +7168,7 @@ export async function structuredSearch(
       bestChunk,
       bestChunkPos,
       score: blendedScore,
-      context: store.getContextForFile(r.file),
+      context: contexts.get(r.file) ?? null,
       docid: docidMap.get(r.file) || "",
       ...(explainData ? { explain: explainData } : {}),
     };
@@ -7024,7 +7182,7 @@ export async function structuredSearch(
       seenFiles.add(r.file);
       return true;
     })
-    .filter(r => r.score >= minScore)
+    .filter(r => unscoredFiles.has(r.file) || r.score >= minScore)
     .slice(0, limit);
   return attachResultMetadata(store.db, finalResults);
 }

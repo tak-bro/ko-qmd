@@ -51,6 +51,22 @@ describe("pathsMatch", () => {
   test("different files don't match", () => {
     expect(pathsMatch("docs/readme.md", "docs/other.md")).toBe(false);
   });
+
+  test("no match without separator boundary (result longer)", () => {
+    expect(pathsMatch("research.md", "search.md")).toBe(false);
+  });
+
+  test("no match without separator boundary (expected longer)", () => {
+    expect(pathsMatch("search.md", "research.md")).toBe(false);
+  });
+
+  test("no match without separator boundary in subpath", () => {
+    expect(pathsMatch("docs/research.md", "search.md")).toBe(false);
+  });
+
+  test("exact filename still matches", () => {
+    expect(pathsMatch("search.md", "search.md")).toBe(true);
+  });
 });
 
 describe("scoreResults", () => {

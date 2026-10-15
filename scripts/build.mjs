@@ -26,6 +26,60 @@ function run(command, args, options = {}) {
 
 run(process.execPath, [join(root, "node_modules", "typescript", "bin", "tsc"), "-p", "tsconfig.build.json"]);
 
+// Strip comments from emitted JS only (dist/**/*.js, never *.d.ts — the
+// declarations carry the SDK's API docs). Uses the TypeScript compiler API
+// with the build's own target/module so emit is identical minus trivia.
+{
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const ts = require(join(root, "node_modules", "typescript"));
+  const { readdirSync } = await import("node:fs");
+  const jsFiles = [];
+  const walk = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith(".js")) jsFiles.push(p);
+    }
+  };
+  walk(join(root, "dist"));
+  for (const f of jsFiles) {
+    const src = readFileSync(f, "utf8");
+    const out = ts.transpileModule(src, {
+      // Forced ESNext: single-file transpile cannot do nodenext package-scope
+      // detection (it would emit CJS); the full-program build emits ESM here.
+      compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext, removeComments: true },
+    }).outputText;
+    writeFileSync(f, out);
+  }
+  console.log(`build: stripped comments from ${jsFiles.length} JS files`);
+}
+
+// Minify emitted JS (dist/**/*.js only). esbuild comes from the dev
+// toolchain (tsx dependency, invoked via node_modules/.bin); keepNames keeps
+// top-level/function names readable in stack traces.
+{
+  const { readdirSync } = await import("node:fs");
+  const jsFiles = [];
+  const walk = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith(".js")) jsFiles.push(p);
+    }
+  };
+  walk(join(root, "dist"));
+  const esbuildBin = join(root, "node_modules", ".bin", process.platform === "win32" ? "esbuild.exe" : "esbuild");
+  for (const f of jsFiles) {
+    run(esbuildBin, [
+      f, "--minify", "--keep-names", "--format=esm", "--target=esnext",
+      "--legal-comments=none", `--outfile=${f}.min-tmp`,
+    ]);
+    renameSync(`${f}.min-tmp`, f);
+  }
+  console.log(`build: minified ${jsFiles.length} JS files`);
+}
+
 const cliPath = join(root, "dist", "cli", "qmd.js");
 const tmpPath = `${cliPath}.tmp`;
 const built = readFileSync(cliPath, "utf8");

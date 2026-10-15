@@ -127,6 +127,42 @@ describe("tryAcquireEmbedLock", () => {
     }
   });
 
+  test("recovers from corrupted lockfile contents (non-integer/empty/zero/negative)", async () => {
+    const cases: Array<{ name: string; content: string }> = [
+      { name: "garbage", content: "garbage\n" },
+      { name: "empty", content: "" },
+      { name: "zero", content: "0\n" },
+      { name: "negative", content: "-5\n" },
+    ];
+    for (const { name, content } of cases) {
+      const dir = await mkdtemp(join(tmpdir(), `qmd-embed-lock-corrupt-${name}-`));
+      const dbPath = join(dir, "index.sqlite");
+      const lockPath = embedLockPathForDb(dbPath);
+      try {
+        writeFileSync(lockPath, content);
+        const handle = tryAcquireEmbedLock(lockPath);
+        expect(handle, `corrupted lockfile (${name}) should be treated as stale`).not.toBeNull();
+        expect((await readFile(lockPath, "utf-8")).trim()).toBe(String(process.pid));
+        handle!.release();
+        expect(existsSync(lockPath)).toBe(false);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test("pre-written own pid is a live lock (second acquire skips)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "qmd-embed-lock-ownpid-"));
+    const lockPath = embedLockPathForDb(join(dir, "index.sqlite"));
+    try {
+      writeFileSync(lockPath, `${process.pid}\n`);
+      expect(tryAcquireEmbedLock(lockPath)).toBeNull();
+      expect((await readFile(lockPath, "utf-8")).trim()).toBe(String(process.pid));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("release is idempotent and only unlinks owned lock", async () => {
     const dir = await mkdtemp(join(tmpdir(), "qmd-embed-lock-own-"));
     const lockPath = join(dir, ".qmd-embed.lock");

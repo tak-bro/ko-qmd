@@ -23,6 +23,7 @@ import {
   replaceDocumentMetadata,
   countDocumentsPendingMetadata,
   getMetadataByFilepath,
+  parseMetadataJson,
 } from "../src/metadata-store.js";
 import { METADATA_EXTRACTION_VERSION, type DocumentMetadata } from "../src/metadata.js";
 
@@ -148,6 +149,28 @@ describe("syncDocumentMetadata", () => {
 
     expect(JSON.parse(getMetadataRow(firstId)!.metadata_json)).toEqual({ status: "shared" });
     expect(JSON.parse(getMetadataRow(secondId)!.metadata_json)).toEqual({ status: "overridden" });
+  });
+});
+
+describe("parseMetadataJson", () => {
+  test("passes valid metadata JSON through", () => {
+    expect(parseMetadataJson('{"status":"ok","priority":3}')).toEqual({ status: "ok", priority: 3 });
+  });
+
+  test("round-trips stringified metadata", () => {
+    const metadata: DocumentMetadata = { topics: ["a", "b"], priority: 3 };
+    expect(parseMetadataJson(JSON.stringify(metadata))).toEqual(metadata);
+  });
+
+  test("maps corrupt JSON to empty metadata", () => {
+    expect(parseMetadataJson("{not-json")).toEqual({});
+    expect(parseMetadataJson('{"status":')).toEqual({});
+  });
+
+  test("maps null, undefined, and empty string to empty metadata", () => {
+    expect(parseMetadataJson(null)).toEqual({});
+    expect(parseMetadataJson(undefined)).toEqual({});
+    expect(parseMetadataJson("")).toEqual({});
   });
 });
 
