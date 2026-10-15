@@ -58,11 +58,12 @@ run(process.execPath, [join(root, "node_modules", "typescript", "bin", "tsc"), "
 // Minify emitted JS (dist/**/*.js only). esbuild comes from the dev
 // toolchain (tsx dependency) through its JS API: node_modules/.bin holds a
 // native binary on POSIX but only .cmd/.ps1 shims on Windows, which
-// spawnSync cannot run without a shell (#681). keepNames keeps
+// spawnSync cannot run without a shell (#681). It is resolved from tsx's real
+// path because pnpm does not hoist it to node_modules/esbuild. keepNames keeps
 // top-level/function names readable in stack traces.
 {
   const { createRequire } = await import("node:module");
-  const esbuild = createRequire(import.meta.url)(join(root, "node_modules", "esbuild"));
+  const esbuild = createRequire(realpathSync(join(root, "node_modules", "tsx", "package.json")))("esbuild");
   const { readdirSync } = await import("node:fs");
   const jsFiles = [];
   const walk = (dir) => {
