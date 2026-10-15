@@ -87,7 +87,9 @@ describe("qmd update with a checked-in collection path outside the project", () 
     expect(result.stdout).toContain("qmd trust");
     expect(result.stdout).toContain(`Skipping collection 'secrets'`);
     expect(result.stdout).not.toContain("Indexed: 1 new");
-    expect(result.exitCode).toBe(0);
+    expect(result.stdout).not.toContain("All collections updated");
+    expect(result.stdout).toContain("Updated 0 of 1 collection(s), skipped 1");
+    expect(result.exitCode).toBe(1);
   }, 120_000);
 
   test("indexes it after `qmd trust`", async () => {

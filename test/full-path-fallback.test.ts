@@ -13,11 +13,12 @@
 
 import { describe, test, expect, beforeAll, afterAll } from "vitest";
 import { mkdir, mkdtemp, rename, rm, writeFile } from "fs/promises";
-import { realpathSync } from "fs";
+import { realpathSync, symlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join, dirname } from "path";
 import { spawn } from "child_process";
 import { fileURLToPath } from "url";
+import { renderFullPath } from "../src/cli/qmd.ts";
 
 const thisDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(thisDir, "..");
@@ -206,5 +207,32 @@ describe("--full-path fallback for unresolvable results", () => {
       expect(r.docid).toMatch(/^#[a-f0-9]{6}$/);
     }
     expect(hasFullPathWarning(stderr)).toBe(false);
+  });
+});
+
+describe("renderFullPath totality (TOCTOU + symlink)", () => {
+  // TOCTOU: the caller checked existsSync, the file was deleted before the
+  // inner realpathSync ran. null is the stale signal — every --full-path
+  // caller converts it to the qmd:// + docid fallback plus the stderr
+  // warning instead of printing a ./-relative path with no warning.
+  test("deleted path returns null (stale signal, not ./-relative)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "qmd-render-"));
+    const cwd = realpathSync(dir);
+    const target = join(cwd, "gone.md");
+    await writeFile(target, "x");
+    await rm(target);
+    expect(renderFullPath(target, cwd)).toBeNull();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  // Previously-unexecuted symlink branch: a symlink under cwd resolves via
+  // realpath before the ./-prefix comparison.
+  test("symlink under cwd resolves to ./-relative", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "qmd-render-sym-"));
+    const cwd = realpathSync(dir);
+    await writeFile(join(cwd, "real.md"), "x");
+    symlinkSync(join(cwd, "real.md"), join(cwd, "link.md"));
+    expect(renderFullPath(join(cwd, "link.md"), cwd)).toBe("./real.md");
+    await rm(dir, { recursive: true, force: true });
   });
 });

@@ -2,14 +2,14 @@ import { isBun, openDatabase } from "../db.js";
 import type { Database, SQLiteValue } from "../db.js";
 import fastGlob from "fast-glob";
 import { spawn as nodeSpawn } from "child_process";
-import { isQmdMcpPid, mcpDaemonStateFiles } from "./mcp-pid.js";
+import { isQmdMcpPid, mcpDaemonStateFiles, openDaemonLogFile } from "./mcp-pid.js";
 import { embedLockPathForDb, tryAcquireEmbedLock, EMBED_LOCK_BUSY_MESSAGE } from "./embed-lock.js";
 import { fileURLToPath } from "url";
 import { basename, dirname, join as pathJoin, relative as relativePath, resolve as pathResolve } from "path";
-import { parseArgs } from "util";
+import { parseArgs, type ParseArgsOptionsConfig } from "util";
 import { buildDocumentFilter, describeFilter, type DocumentFilter } from "../filters.js";
 import { compileGrepPattern, grepDocuments, type GrepFileMatch } from "../grep.js";
-import { readFileSync, readdirSync, realpathSync, statSync, existsSync, unlinkSync, writeFileSync, openSync, closeSync, mkdirSync, lstatSync, rmSync, symlinkSync, readlinkSync, copyFileSync } from "fs";
+import { readFileSync, readdirSync, realpathSync, statSync, existsSync, unlinkSync, writeFileSync, closeSync, mkdirSync, lstatSync, rmSync, symlinkSync, readlinkSync, copyFileSync } from "fs";
 import { createInterface } from "readline/promises";
 import {
   getPwd,
@@ -68,6 +68,7 @@ import {
   escapeLikePattern,
   hybridQuery,
   vectorSearchQuery,
+  validateLexQuery,
   structuredSearch,
   addLineNumbers,
   type ExpandedQuery,
@@ -223,6 +224,58 @@ function mcpDaemonPaths(): { cacheDir: string; pidPath: string; logPath: string 
     pidPath: resolve(cacheDir, pidFile),
     logPath: resolve(cacheDir, logFile),
   };
+}
+
+export const DEFAULT_MCP_PORT = 8181;
+
+export function resolveMcpPort(raw: unknown): number {
+  if (raw === undefined) return DEFAULT_MCP_PORT;
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`Invalid --port ${JSON.stringify(String(raw))}: expected an integer between 1 and 65535.`);
+  }
+  return port;
+}
+
+/**
+ * Wait until a freshly spawned `--daemon` child reports listening in its log
+ * file, or fail. The daemon branch must not print `Started` before this
+ * resolves: a bind failure (e.g. an occupied port) would otherwise exit 0
+ * while the child dies and its exit handler removes the pidfile, leaving
+ * `stop` reporting Not running. On failure no pidfile is written, so
+ * `stop`/`status` keep their missing-pidfile behavior.
+ */
+export async function waitForDaemonListening(
+  child: ReturnType<typeof nodeSpawn>,
+  logPath: string,
+  timeoutMs = 15000,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  let exited = child.exitCode !== null;
+  child.on("exit", () => { exited = true; });
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    let log = "";
+    try {
+      log = readFileSync(logPath, "utf-8");
+    } catch { /* log not written yet */ }
+    if (/listening on /i.test(log)) return { ok: true };
+    if (exited || child.exitCode !== null) {
+      const bindFailure = log.match(/^.*(?:already in use|EADDRINUSE).*$/gim);
+      if (bindFailure) {
+        const lastLine = bindFailure[bindFailure.length - 1] ?? "Port already in use.";
+        return { ok: false, message: lastLine.trim() };
+      }
+      return {
+        ok: false,
+        message: `Daemon exited before listening (code ${child.exitCode ?? "?"}). See logs: ${logPath}`,
+      };
+    }
+    if (Date.now() >= deadline) {
+      try { child.kill("SIGTERM"); } catch { /* already dead */ }
+      return { ok: false, message: `Timed out waiting for the daemon to listen. See logs: ${logPath}` };
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
 }
 
 function setIndexName(name: string | null): void {
@@ -878,7 +931,13 @@ function manageTrust(subcommand?: string): void {
       return;
     }
     for (const record of records) {
-      console.log(`${record.path} ${c.dim}(trusted ${record.trustedAt})${c.reset}`);
+      // TrustRecord keeps the full approved digest under `hooks`; show a
+      // short prefix so an approval can be audited without dumping 64 hex.
+      // (No per-record gated-item count exists in the store — the record is
+      // digest + timestamp only — so there is nothing to display for that.)
+      const digest = typeof record.hooks === "string" ? record.hooks : "";
+      const short = digest.length > 12 ? `${digest.slice(0, 12)}…` : digest;
+      console.log(`${record.path} ${c.dim}(trusted ${record.trustedAt}, digest ${short})${c.reset}`);
     }
     return;
   }
@@ -920,12 +979,16 @@ function manageTrust(subcommand?: string): void {
   console.log(`${c.dim}Editing a hook, out-of-project path, or custom model will ask again. Revoke with 'qmd trust revoke'.${c.reset}`);
 }
 
-async function updateCollections(): Promise<void> {
+async function updateCollections(): Promise<number> {
   // Prompt before opening the store so an approval is visible to getStore (#889).
   const allowed = await resolveLocalConfigTrust();
 
   const db = getDb();
   const storeInstance = getStore();
+  // Resolve once: the end-of-update 'qmd embed' hint must count against the
+  // same model fingerprint `qmd embed` itself uses (resolveModelsForRuntime),
+  // not the DEFAULT_EMBED_MODEL fallback.
+  const updateEmbedModel = resolveModelsForRuntime().embed;
   // Collections are defined in YAML; no duplicate cleanup needed.
 
   // Clear Ollama cache on update
@@ -936,7 +999,7 @@ async function updateCollections(): Promise<void> {
   if (collections.length === 0) {
     console.log(`${c.dim}No collections found. Run 'qmd collection add .' to index markdown files.${c.reset}`);
     closeDb();
-    return;
+    return 0;
   }
 
   // A project-local .qmd/index.yml travels with a `git clone`, so its `update:`
@@ -947,6 +1010,7 @@ async function updateCollections(): Promise<void> {
 
   console.log(`${c.bold}Updating ${collections.length} collection(s)...${c.reset}\n`);
 
+  let skippedCollections = 0;
   for (let i = 0; i < collections.length; i++) {
     const col = collections[i];
     if (!col) continue;
@@ -958,6 +1022,7 @@ async function updateCollections(): Promise<void> {
     if (!hooksAllowed && isLocalConfigPath(configPath) && !isCollectionPathInsideProject(configPath, rawPath)) {
       console.log(`${c.yellow}Skipping collection '${col.name}' — path ${rawPath} is outside this project and this .qmd config is not trusted.${c.reset}`);
       console.log(`${c.dim}Approve with 'qmd trust'.${c.reset}\n`);
+      skippedCollections++;
       continue;
     }
     if (yamlCol?.update && hooksAllowed) {
@@ -1021,18 +1086,27 @@ async function updateCollections(): Promise<void> {
   }
 
   // Check if any documents need embedding (show once at end)
-  const needsEmbedding = getHashesNeedingEmbedding(db);
+  const needsEmbedding = getHashesNeedingEmbedding(db, undefined, updateEmbedModel);
   const vectorTotal = (db.prepare(`SELECT COUNT(*) as count FROM content_vectors`).get() as { count: number }).count;
   const orphanedVectors = countOrphanedVectors(db);
   closeDb();
 
-  console.log(`${c.green}✓ All collections updated.${c.reset}`);
+  if (skippedCollections > 0) {
+    // A skip is not an update: never claim "All" when some collections were
+    // left untouched. The nonzero exit is reported by the caller (mirrors the
+    // hook-failure process.exit(1) above); finishSuccessfulCliCommand would
+    // reset process.exitCode to 0, so the count must travel via return value.
+    console.log(`${c.yellow}Updated ${collections.length - skippedCollections} of ${collections.length} collection(s), skipped ${skippedCollections} (not trusted — run 'qmd trust').${c.reset}`);
+  } else {
+    console.log(`${c.green}✓ All collections updated.${c.reset}`);
+  }
   if (needsEmbedding > 0) {
     console.log(`\nRun 'qmd embed' to update embeddings (${needsEmbedding} unique hashes need vectors)`);
   }
   if (vectorTotal > 0 && orphanedVectors / vectorTotal >= ORPHAN_VECTOR_HINT_RATIO) {
     console.log(`\n${formatOrphanedVectorHint(orphanedVectors, vectorTotal)}`);
   }
+  return skippedCollections;
 }
 
 /**
@@ -1238,12 +1312,13 @@ function contextRemove(pathArg: string): void {
  * "./"-prefixed relative path so it is unambiguously a filesystem path (not a
  * bare collection-relative string that could be confused for a `qmd://`
  * fragment). Otherwise return the absolute realpath so symlinks resolve
- * consistently. Returns `null` if the path could not be normalized — callers
- * fall back to whatever they had before.
+ * consistently. Returns `null` if the path could not be normalized (deleted
+ * between the caller's existsSync check and now) — callers fall back to
+ * whatever they had before plus the stale-index stderr warning.
  */
-function renderFullPath(absolutePath: string, cwd: string = process.cwd()): string {
+export function renderFullPath(absolutePath: string, cwd: string = process.cwd()): string | null {
   let real: string;
-  try { real = realpathSync(absolutePath); } catch { real = absolutePath; }
+  try { real = realpathSync(absolutePath); } catch { return null; }
   const cwdReal = (() => { try { return realpathSync(cwd); } catch { return cwd; } })();
   if (real === cwdReal) return "./";
   if (real.startsWith(cwdReal + "/")) {
@@ -1336,8 +1411,9 @@ function getDocument(filename: string, fromLine?: number, maxLines?: number, lin
   let header: string;
   if (fullPath) {
     const fsPath = resolveVirtualPath(db, canonicalPath);
-    if (fsPath && existsSync(fsPath)) {
-      header = renderFullPath(fsPath);
+    const rendered = fsPath && existsSync(fsPath) ? renderFullPath(fsPath) : null;
+    if (rendered) {
+      header = rendered;
     } else {
       header = docid ? `${canonicalPath}  #${docid}` : canonicalPath;
       warnUnresolvedFullPaths(1, 1);
@@ -1409,9 +1485,15 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
       process.exit(1);
     }
   } else {
-    // Glob pattern - matchFilesByGlob now returns virtual paths
+    // Glob pattern: show the qmd:// virtual path as the ident — the same shape
+    // as the comma branch above — so same-relpath docs in different
+    // collections stay distinguishable (File: rows keep identifying the same
+    // docs; only the display ident changes). matchFilesByGlob's own
+    // displayPath stays bare-relative (pinned by store tests); only the CLI
+    // ident is normalized here.
     files = matchFilesByGlob(db, pattern).map(f => ({
       ...f,
+      displayPath: f.filepath,
       collection: undefined,  // Will be fetched later if needed
       path: undefined
     }));
@@ -1455,7 +1537,7 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
     let fsPath: string | undefined;
     if (fullPath) {
       const resolved = resolveVirtualPath(db, file.filepath);
-      if (resolved && existsSync(resolved)) fsPath = renderFullPath(resolved);
+      if (resolved && existsSync(resolved)) fsPath = renderFullPath(resolved) ?? undefined;
     }
 
     // Check size limit
@@ -1469,7 +1551,7 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
         body: "",
         context,
         skipped: true,
-        skipReason: `File too large (${Math.round(file.bodyLength / 1024)}KB > ${Math.round(maxBytes / 1024)}KB). Use 'qmd get ${file.displayPath}' to retrieve.`,
+        skipReason: `File too large (${Math.round(file.bodyLength / 1024)}KB > ${Math.round(maxBytes / 1024)}KB). Re-run with a larger --max-bytes to retrieve the full content.`,
       });
       continue;
     }
@@ -1488,18 +1570,24 @@ function multiGet(pattern: string, maxLines?: number, maxBytes: number = DEFAULT
 
     let body = doc.body;
 
-    // Apply line limit if specified
+    // Apply line limit if specified. The truncation notice is appended
+    // AFTER line numbering so it never occupies a content line number
+    // (mirrors get's offset-correct numbering).
+    let truncatedNotice: string | null = null;
     if (maxLines !== undefined) {
       const lines = body.split('\n');
       body = lines.slice(0, maxLines).join('\n');
       if (lines.length > maxLines) {
-        body += `\n\n[... truncated ${lines.length - maxLines} more lines]`;
+        truncatedNotice = `\n\n[... truncated ${lines.length - maxLines} more lines]`;
       }
     }
 
     // Line numbers on by default (disable with --no-line-numbers).
     if (lineNumbers) {
       body = addLineNumbers(body);
+    }
+    if (truncatedNotice) {
+      body += truncatedNotice;
     }
 
     results.push({
@@ -1857,9 +1945,13 @@ async function collectionAdd(pwd: string, globPattern: string, name?: string): P
     process.exit(1);
   }
 
-  // Check if a collection with this pwd+glob already exists in YAML
+  // Check if a collection with this pwd+glob already exists in YAML.
+  // Compare canonical paths: entries stored before path canonicalization
+  // (e.g. a raw $PWD like /tmp/... vs /private/tmp/...) must still match.
+  // getRealPath() is idempotent for canonical paths and falls back to
+  // resolve() for missing paths, so normal adds are unaffected.
   const allCollections = yamlListCollections();
-  const existingPwdGlob = allCollections.find(c => c.path === pwd && c.pattern === globPattern);
+  const existingPwdGlob = allCollections.find(c => getRealPath(c.path) === pwd && c.pattern === globPattern);
 
   if (existingPwdGlob) {
     console.error(`${c.yellow}A collection already exists for this path and pattern:${c.reset}`);
@@ -2138,6 +2230,27 @@ function parseEmbedBatchOption(name: string, value: unknown): number | undefined
   return parsed;
 }
 
+function parseCandidateLimit(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`--candidate-limit must be a positive integer (got "${String(value)}")`);
+  }
+  return parsed;
+}
+
+// --max-batch-mb is expressed in megabytes, so fractional values (e.g. 0.5)
+// are valid. Kept separate from parseEmbedBatchOption on purpose: that
+// helper pins the integer contract relied on by --max-docs-per-batch.
+export function parseEmbedBatchMbOption(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`--max-batch-mb must be a positive number`);
+  }
+  return parsed;
+}
+
 function parseChunkStrategy(value: unknown): ChunkStrategy | undefined {
   if (value === undefined) return undefined;
   const s = String(value);
@@ -2154,6 +2267,46 @@ function parseEmbedTimeoutOption(value: unknown): number | undefined {
     throw new Error(`--timeout must be a non-negative number of minutes (0 = no limit)`);
   }
   return minutes * 60 * 1000;
+}
+
+// -n for search/query/vsearch: result cap. A provided value must be a positive
+// integer; unlike `parseInt(...) || default`, this rejects negatives (truthy,
+// so they used to slip into opts.limit where slice(0, -5) and SQL LIMIT -5
+// disagree) instead of silently falling back to the default.
+function parseLimitOption(value: unknown, defaultLimit: number): number {
+  if (value === undefined || value === "") return defaultLimit;
+  const parsed = parseInt(String(value), 10);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`-n must be a positive integer (got "${String(value)}")`);
+  }
+  return parsed;
+}
+
+// --from/-l for get/multi-get: 1-based line bounds. A provided value must be a
+// positive integer; parseInt failures used to pass NaN straight into
+// getDocument (Math.max(1, NaN) is NaN, so `--from abc` read the whole doc)
+// while negatives/0 silently truncated via slice (`-l -3` drops the last 3
+// lines, `-l 0` empties the body). Reject instead, mirroring the -n guard.
+function parseGetLineOption(name: "--from" | "-l", value: unknown): number | undefined {
+  if (value === undefined || value === "") return undefined;
+  const parsed = parseInt(String(value), 10);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`${name} must be a positive integer (got "${String(value)}")`);
+  }
+  return parsed;
+}
+
+// --min-score for search/query/vsearch: similarity floor. A provided value must
+// be numeric; unlike `parseFloat(...) || 0`, this rejects non-numeric input
+// (NaN is falsy, so "abc" used to slip into opts.minScore as 0 and silently
+// turn the filter off, while the truthy raw string also skipped the vsearch
+// 0.3 default) instead of quietly falling back to 0.
+function parseMinScoreOption(value: unknown): number {
+  const parsed = parseFloat(String(value));
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`--min-score must be a number (got "${String(value)}")`);
+  }
+  return parsed;
 }
 
 function ensureModelsConfiguredForCli(): { embed: string; generate: string; rerank: string } {
@@ -2202,20 +2355,29 @@ function resolveModelsForRuntime(): { embed: string; generate: string; rerank: s
   return resolveModels();
 }
 
-async function vectorIndex(
+// Exported for regression tests (cursor-restore coverage); the CLI calls it
+// without `deps` so production always uses the real generateEmbeddings.
+export async function vectorIndex(
   model: string = resolveEmbedModelForCli(),
   force: boolean = false,
   batchOptions?: { maxDocsPerBatch?: number; maxBatchBytes?: number; chunkStrategy?: ChunkStrategy; collection?: string; maxDurationMs?: number },
+  deps?: { runEmbeddings?: typeof generateEmbeddings },
 ): Promise<void> {
   const storeInstance = getStore();
   const db = storeInstance.db;
+  const runEmbeddings = deps?.runEmbeddings ?? generateEmbeddings;
 
   // Exclusive process lock — concurrent embeds race on vectors_vec (#825)
   const embedLock = tryAcquireEmbedLock(embedLockPathForDb(getDbPath()));
   if (!embedLock) {
     console.log(EMBED_LOCK_BUSY_MESSAGE);
     closeDb();
-    return;
+    // A skipped run is not a success: exit nonzero so automation
+    // (`qmd embed && deploy`) can tell skip from success. Mirrors the
+    // "Already running" guards elsewhere in the CLI (mcp daemon, EADDRINUSE),
+    // which exit 1. Direct process.exit (not exitCode) because
+    // finishSuccessfulCliCommand resets exitCode to 0 after the switch.
+    process.exit(1);
   }
 
   try {
@@ -2242,7 +2404,10 @@ async function vectorIndex(
 
     const startTime = Date.now();
 
-    const result = await generateEmbeddings(storeInstance, {
+    // Pair cursor.hide() with a finally restore: generateEmbeddings throws
+    // (dim mismatch, dims fetch) propagate to exitWithError→process.exit,
+    // which would otherwise leave the terminal cursor hidden.
+    const result = await runEmbeddings(storeInstance, {
       force,
       model,
       collection: batchOptions?.collection,
@@ -2275,10 +2440,10 @@ async function vectorIndex(
 
         if (isTTY) process.stderr.write(`\r${c.cyan}${bar}${c.reset} ${c.bold}${percentStr}% input${c.reset} ${c.dim}${chunkStr}${errStr} · ${inputStr} · ${throughput} · ETA ${eta}${c.reset}   `);
       },
+    }).finally(() => {
+      progress.clear();
+      cursor.show();
     });
-
-    progress.clear();
-    cursor.show();
 
     const totalTimeSec = result.durationMs / 1000;
 
@@ -2427,9 +2592,12 @@ function highlightTerms(text: string, query: string): string {
   return result;
 }
 
-// Format score with color based on value
-function formatScore(score: number): string {
-  const pct = (score * 100).toFixed(0).padStart(3);
+// Format score with color based on value.
+// Percent keeps 2 decimals so epsilon scores stay distinguishable from zero
+// and from the --min-score threshold: the filter compares raw scores, so a
+// row displayed as "0.00%" must never be one the filter would drop at 0.001.
+export function formatScore(score: number): string {
+  const pct = (score * 100).toFixed(2).padStart(6);
   if (!useColor) return `${pct}%`;
   if (score >= 0.7) return `${c.green}${pct}%${c.reset}`;
   if (score >= 0.4) return `${c.yellow}${pct}%${c.reset}`;
@@ -2469,26 +2637,71 @@ function reportEmptyFilteredSearch(db: Database, opts: OutputOptions, collection
   console.log(`No results found in the ${kept} of ${total} documents matching ${describeFilter(opts.scope)}.`);
 }
 
+/**
+ * Min-score filtering happens in outputResults, after the pre-filter emptiness check —
+ * so a threshold wipeout would lose the scope diagnosis that reportEmptyFilteredSearch
+ * gives a true no-match. Precompute the same scope clause and carry it into the
+ * post-filter message. Returns undefined when no scope is in play.
+ */
+function describeScopeCounts(db: Database, opts: OutputOptions, collectionNames: string[]): string | undefined {
+  if (!opts.scope) return undefined;
+  const { kept, total } = countFilteredDocuments(db, opts.scope, collectionSearchFilter(collectionNames));
+  if (kept === 0) {
+    return `— ${describeFilter(opts.scope)} matched 0 of ${total} documents`;
+  }
+  return `in the ${kept} of ${total} documents matching ${describeFilter(opts.scope)}`;
+}
+
+/**
+ * Scope clause for a post-minScore wipeout. Only computes document counts when every
+ * candidate actually fell below the threshold, so passing searches pay nothing.
+ */
+function minScoreScopeNote(
+  db: Database,
+  rows: { score: number }[],
+  opts: OutputOptions,
+  collectionNames: string[],
+): string | undefined {
+  if (!opts.scope || rows.some(r => r.score >= opts.minScore)) return undefined;
+  return describeScopeCounts(db, opts, collectionNames);
+}
+
 // Emit format-safe empty output for search commands.
-function printEmptySearchResults(format: OutputFormat, reason: EmptySearchReason = "no_results"): void {
-  if (format === "json") {
-    console.log("[]");
-    return;
-  }
-  if (format === "csv") {
-    console.log("docid,score,file,title,context,line,snippet");
-    return;
-  }
-  if (format === "xml") {
-    console.log("<results></results>");
-    return;
-  }
-  if (format === "md" || format === "files") {
-    return;
+function printEmptySearchResults(format: OutputFormat, reason: EmptySearchReason = "no_results", scopeNote?: string): void {
+  if (format === "json" || format === "csv" || format === "xml"
+      || format === "md" || format === "files") {
+    // Machine shapes stay byte-identical (pinned by tests); the stderr note is what
+    // distinguishes a threshold wipeout from a true no-match.
+    if (reason === "min_score") {
+      process.stderr.write(
+        scopeNote
+          ? `Note: no results above --min-score threshold ${scopeNote}.\n`
+          : `Note: no results above --min-score threshold.\n`,
+      );
+    }
+    if (format === "json") {
+      console.log("[]");
+      return;
+    }
+    if (format === "csv") {
+      console.log("docid,score,file,title,context,line,snippet");
+      return;
+    }
+    if (format === "xml") {
+      console.log("<results></results>");
+      return;
+    }
+    if (format === "md" || format === "files") {
+      return;
+    }
   }
 
   if (reason === "min_score") {
-    console.log("No results found above minimum score threshold.");
+    console.log(
+      scopeNote
+        ? `No results found above minimum score threshold ${scopeNote}.`
+        : "No results found above minimum score threshold.",
+    );
     return;
   }
   console.log("No results found.");
@@ -2555,11 +2768,22 @@ export function termLink(text: string, url: string, isTTY: boolean = !!process.s
   return `\x1b]8;;${url}\x07${text}\x1b]8;;\x07`;
 }
 
-function outputResults(results: OutputRow[], query: string, opts: OutputOptions): void {
+/**
+ * Resolve the effective MCP HTTP bind host (single source of truth).
+ * Same precedence the daemon child uses in startMcpHttpServer:
+ * `--host` flag ?? QMD_HOST env ?? "localhost". The daemon parent uses
+ * this for both the Started announcement and the explicit --host passed
+ * to the child, so the announced URL always matches the actual bind.
+ */
+export function resolveDaemonHost(flagHost: string | undefined): string {
+  return flagHost ?? process.env.QMD_HOST ?? "localhost";
+}
+
+function outputResults(results: OutputRow[], query: string, opts: OutputOptions, scopeNote?: string): void {
   const filtered = results.filter(r => r.score >= opts.minScore).slice(0, opts.limit);
 
   if (filtered.length === 0) {
-    printEmptySearchResults(opts.format, "min_score");
+    printEmptySearchResults(opts.format, "min_score", scopeNote);
     return;
   }
 
@@ -2593,7 +2817,8 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
     if (opts.fullPath && linkDbForPaths) {
       const absolute = resolveVirtualPath(linkDbForPaths, qmdUri);
       if (absolute && existsSync(absolute)) {
-        resolution = { ident: renderFullPath(absolute), resolved: true };
+        const rendered = renderFullPath(absolute);
+        if (rendered) resolution = { ident: rendered, resolved: true };
       }
     }
     resolutions.set(row, resolution);
@@ -2625,7 +2850,10 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
       // caller has.
       return {
         ...(docid && showDocid(row) && { docid: `#${docid}` }),
-        score: Math.round(row.score * 100) / 100,
+        // 4-decimal display: the min-score filter compares the raw score, so
+        // rounding to 2 decimals could render a kept row as 0 and a dropped
+        // row as indistinguishable from a kept one (e.g. 0.0004 vs 0.001).
+        score: Math.round(row.score * 10000) / 10000,
         file: displayPathFor(row),
         line: snippetInfo.line,
         title: row.title,
@@ -2644,9 +2872,11 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
       const ctx = row.context ? `,"${row.context.replace(/"/g, '""')}"` : "";
       if (opts.fullPath) {
         // --full-path: drop the docid, the on-disk path is the identifier.
-        console.log(`${row.score.toFixed(2)},${displayPathFor(row)}${ctx}`);
+        // 4-decimal score so epsilon rows stay distinguishable from the
+        // --min-score threshold (filter compares raw scores).
+        console.log(`${row.score.toFixed(4)},${displayPathFor(row)}${ctx}`);
       } else {
-        console.log(`#${docid},${row.score.toFixed(2)},${displayPathFor(row)}${ctx}`);
+        console.log(`#${docid},${row.score.toFixed(4)},${displayPathFor(row)}${ctx}`);
       }
     }
   } else if (opts.format === "cli") {
@@ -2745,15 +2975,15 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions)
     }
   } else if (opts.format === "xml") {
     for (const row of filtered) {
-      const titleAttr = row.title ? ` title="${row.title.replace(/"/g, '&quot;')}"` : "";
-      const contextAttr = row.context ? ` context="${row.context.replace(/"/g, '&quot;')}"` : "";
+      const titleAttr = row.title ? ` title="${escapeXml(row.title)}"` : "";
+      const contextAttr = row.context ? ` context="${escapeXml(row.context)}"` : "";
       const docid = row.docid || (row.hash ? row.hash.slice(0, 6) : "");
       let content = opts.full ? row.body : extractSnippet(row.body, query, 500, row.chunkPos, row.chunkLen, opts.intent).snippet;
       if (opts.lineNumbers) {
         content = addLineNumbers(content);
       }
       const docidAttr = showDocid(row) ? ` docid="#${docid}"` : "";
-      console.log(`<file${docidAttr} name="${displayPathFor(row)}"${titleAttr}${contextAttr}>\n${content}\n</file>\n`);
+      console.log(`<file${docidAttr} name="${escapeXml(displayPathFor(row))}"${titleAttr}${contextAttr}>\n${escapeXml(content)}\n</file>\n`);
     }
   } else {
     // CSV format. The docid column is always present — under --full-path it is
@@ -2929,6 +3159,17 @@ function warnPendingMetadata(db: Database): void {
 }
 
 function search(query: string, opts: OutputOptions): void {
+  if (opts.explain) {
+    process.stderr.write(`${c.yellow}Warning: --explain is only supported for query; ignoring it for search.${c.reset}\n`);
+  }
+  // Same clean-error contract as the structured path (structuredSearch throws
+  // `Location (lex): <validateLexQuery message>`): an unclosed quote would
+  // otherwise silently become a trailing phrase in buildFTS5Query.
+  const lexError = validateLexQuery(query);
+  if (lexError) {
+    console.error(lexError);
+    process.exit(1);
+  }
   const db = getDb();
 
   // Validate collection filter (supports multiple -c flags)
@@ -2939,16 +3180,22 @@ function search(query: string, opts: OutputOptions): void {
 
   // Use large limit for --all, otherwise fetch more than needed and let outputResults filter
   const fetchLimit = opts.all ? 100000 : Math.max(50, opts.limit * 2);
-  const results = searchFTS(db, query, fetchLimit, collectionSearchFilter(collectionNames), opts.filter, opts.scope);
+  // A filter/scope in play caps the FTS candidate scan at FILTERED_FTS_SCAN_MAX before
+  // narrowing, so an --all-scale request can lose documents silently. The callback turns
+  // that silent cut into the stderr warning below; the cap itself stays put (perf guard).
+  let scanCapped = false;
+  const results = searchFTS(db, query, fetchLimit, collectionSearchFilter(collectionNames), opts.filter, opts.scope, () => { scanCapped = true; });
 
   // Add context to results
+  // searchFTS already batches context for every row (one batched lookup);
+  // reuse it and only re-derive per row when the batch left it absent.
   const resultsWithContext = results.map(r => ({
     file: r.filepath,
     displayPath: r.displayPath,
     title: r.title,
     body: r.body || "",
     score: r.score,
-    context: getContextForFile(db, r.filepath),
+    context: r.context ?? getContextForFile(db, r.filepath),
     hash: r.hash,
     docid: r.docid,
     metadata: r.metadata,
@@ -2959,8 +3206,12 @@ function search(query: string, opts: OutputOptions): void {
     closeDb();
     return;
   }
+  if (scanCapped) {
+    process.stderr.write(`${c.yellow}Warning: filtered search hit the 50,000-candidate scan cap before narrowing, so results may be incomplete. Narrow the query text, or run unfiltered and filter the output instead.${c.reset}\n`);
+  }
+  const scopeNote = minScoreScopeNote(db, resultsWithContext, opts, collectionNames);
   closeDb();
-  outputResults(resultsWithContext, query, opts);
+  outputResults(resultsWithContext, query, opts, scopeNote);
 }
 
 /**
@@ -2973,7 +3224,7 @@ function grepCommand(pattern: string, opts: OutputOptions, values: Record<string
   const caseSensitive = values["case-sensitive"] ? true : (values["ignore-case"] ? false : undefined);
   let compiled: RegExp;
   try {
-    compiled = compileGrepPattern(pattern, { caseSensitive, fixedString: !!values["fixed-strings"] });
+    compiled = compileGrepPattern(pattern, { caseSensitive, fixedString: !!(values["fixed-strings"] || values["fixed-string"]) });
   } catch (error) {
     console.error(`qmd: ${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
@@ -2981,11 +3232,16 @@ function grepCommand(pattern: string, opts: OutputOptions, values: Record<string
 
   const db = getDb();
   const collectionNames = resolveCollectionFilter(opts.collection, true);
+  if (opts.filter) warnPendingMetadata(db);
   const maxLinesRaw = values["max-lines"];
+  // Grep has its own default file cap (20, matching --help and the MCP tool),
+  // not search's format-dependent default (5 for cli output) inherited via opts.limit.
+  const grepLimit = opts.all ? 100000 : (values.n ? parseInt(String(values.n), 10) || 20 : 20);
   const result = grepDocuments(db, compiled, {
     collections: collectionNames,
     filter: opts.scope,
-    limit: opts.all ? 100000 : (opts.limit || 20),
+    metadataFilter: opts.filter,
+    limit: grepLimit,
     maxLinesPerFile: maxLinesRaw ? Math.max(1, parseInt(String(maxLinesRaw), 10) || 20) : undefined,
   });
   closeDb();
@@ -3054,6 +3310,9 @@ function logExpansionTree(originalQuery: string, expanded: ExpandedQuery[]): voi
 }
 
 async function vectorSearch(query: string, opts: OutputOptions, _model: string = DEFAULT_EMBED_MODEL): Promise<void> {
+  if (opts.explain) {
+    process.stderr.write(`${c.yellow}Warning: --explain is only supported for query; ignoring it for vsearch.${c.reset}\n`);
+  }
   const store = getStore();
 
   // Validate collection filter (supports multiple -c flags)
@@ -3084,6 +3343,7 @@ async function vectorSearch(query: string, opts: OutputOptions, _model: string =
       closeDb();
       return;
     }
+    const scopeNote = minScoreScopeNote(store.db, results, opts, collectionNames);
     closeDb();
 
     outputResults(results.map(r => ({
@@ -3095,7 +3355,7 @@ async function vectorSearch(query: string, opts: OutputOptions, _model: string =
       context: r.context,
       docid: r.docid,
       metadata: r.metadata,
-    })), query, { ...opts, limit: results.length });
+    })), query, { ...opts, limit: results.length }, scopeNote);
   }, { maxDuration: 10 * 60 * 1000, name: 'vectorSearch' });
 }
 
@@ -3210,6 +3470,7 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
       closeDb();
       return;
     }
+    const scopeNote = minScoreScopeNote(store.db, results, opts, collectionNames);
     closeDb();
 
     // Use first lex/vec query for output context, or original query
@@ -3230,15 +3491,13 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
       docid: r.docid,
       metadata: r.metadata,
       explain: r.explain,
-    })), displayQuery, { ...opts, limit: results.length });
+    })), displayQuery, { ...opts, limit: results.length }, scopeNote);
   }, { maxDuration: 10 * 60 * 1000, name: 'querySearch' });
 }
 
-// Parse CLI arguments using util.parseArgs
-function parseCLI() {
-  const { values, positionals } = parseArgs({
-    args: process.argv.slice(2), // Skip node and script path
-    options: {
+// All CLI flags must be declared here so parseCLI() can spot typo'd
+// unknown flags (strict:false would otherwise absorb them silently).
+const CLI_OPTIONS: ParseArgsOptionsConfig = {
       // Global options
       index: {
         type: "string",
@@ -3266,7 +3525,7 @@ function parseCLI() {
       json: { type: "boolean" },
       explain: { type: "boolean" },
       collection: { type: "string", short: "c", multiple: true },  // Filter by collection(s)
-      filter: { type: "string" },  // Metadata filter (JSON AST) for search/vsearch/query
+      filter: { type: "string" },  // Metadata filter (JSON AST) for search/vsearch/query/grep
       // Collection options
       name: { type: "string" },  // collection name
       mask: { type: "string" },  // glob pattern
@@ -3297,6 +3556,7 @@ function parseCLI() {
       "ignore-case": { type: "boolean", short: "i" },   // grep: force case-insensitive
       "case-sensitive": { type: "boolean", short: "S" },// grep: force case-sensitive
       "fixed-strings": { type: "boolean", short: "F" }, // grep: treat the pattern as literal
+      "fixed-string": { type: "boolean" },              // alias for --fixed-strings (MCP fixedString)
       "max-lines": { type: "string" },                  // grep: max reported lines per file
       since: { type: "string" },                 // only documents modified at/after this
       until: { type: "string" },                 // only documents modified at/before this
@@ -3307,10 +3567,36 @@ function parseCLI() {
       daemon: { type: "boolean" },
       port: { type: "string" },
       host: { type: "string" },
-    },
+};
+
+// Parse CLI arguments using util.parseArgs
+function parseCLI() {
+  const { values, positionals, tokens } = parseArgs({
+    args: process.argv.slice(2), // Skip node and script path
+    options: CLI_OPTIONS,
     allowPositionals: true,
-    strict: false, // Allow unknown options to pass through
+    // Keep strict:false for back-compat, but surface typo'd flags (e.g.
+    // --ful/--fromt) via a stderr warning instead of silently absorbing them.
+    strict: false,
+    tokens: true,
   });
+
+  const knownLong = new Set(Object.keys(CLI_OPTIONS));
+  const knownShort = new Set(
+    Object.values(CLI_OPTIONS).flatMap((o) => (o.short ? [o.short] : [])),
+  );
+  const unknownRaws: string[] = [];
+  for (const t of tokens) {
+    if (t.kind !== "option") continue;
+    if (knownLong.has(t.name) || knownShort.has(t.name)) continue;
+    if (!unknownRaws.includes(t.rawName)) unknownRaws.push(t.rawName);
+    delete (values as Record<string, unknown>)[t.name];
+  }
+  if (unknownRaws.length > 0) {
+    console.error(
+      `Warning: ignoring unknown option(s): ${unknownRaws.join(", ")} (did you misspell a flag?)`,
+    );
+  }
 
   if (values["no-gpu"]) {
     process.env.QMD_FORCE_CPU = "1";
@@ -3362,12 +3648,12 @@ function parseCLI() {
   const opts: OutputOptions = {
     format,
     full: !!values.full,
-    limit: isAll ? 100000 : (values.n ? parseInt(String(values.n), 10) || defaultLimit : defaultLimit),
-    minScore: values["min-score"] ? parseFloat(String(values["min-score"])) || 0 : 0,
+    limit: isAll ? 100000 : parseLimitOption(values.n, defaultLimit),
+    minScore: values["min-score"] ? parseMinScoreOption(values["min-score"]) : 0,
     all: isAll,
     collection: values.collection as string[] | undefined,
     lineNumbers: !!values["line-numbers"],
-    candidateLimit: values["candidate-limit"] ? parseInt(String(values["candidate-limit"]), 10) : undefined,
+    candidateLimit: values["candidate-limit"] ? parseCandidateLimit(values["candidate-limit"]) : undefined,
     skipRerank: !!values["no-rerank"],
     explain: !!values.explain,
     intent: values.intent as string | undefined,
@@ -3861,7 +4147,7 @@ function showHelp(): void {
   console.log("");
   console.log("  Constraints:");
   console.log("    - Standalone expand queries cannot mix with typed lines.");
-  console.log("    - Query documents allow only lex:, vec:, or hyde: prefixes.");
+  console.log("    - Query documents allow only lex:, vec:, hyde:, or intent: prefixes.");
   console.log("    - Each typed line must be single-line text with balanced quotes.");
   console.log("");
   console.log("AI agents & integrations:");
@@ -3896,7 +4182,7 @@ function showHelp(): void {
   console.log("                                Matched against collection/path, as printed in results");
   console.log("  --since <when>             - Only documents modified at or after (7d, 3h, 2w, 2026-09-01)");
   console.log("  --until <when>             - Only documents modified at or before (same formats)");
-  console.log("  --filter <json>            - Metadata filter (recursive JSON AST; search/vsearch/query)");
+  console.log("  --filter <json>            - Metadata filter (recursive JSON AST; search/vsearch/query/grep)");
   console.log("                                e.g. '{\"key\":\"status\",\"operator\":\"eq\",\"value\":\"published\"}'");
   console.log("");
   console.log("Grep options:");
@@ -3950,6 +4236,7 @@ function shortHashSeq(hashSeq: string): string {
 type DoctorVectorSampleResult = {
   ok: boolean;
   details: string;
+  empty: boolean;
 };
 
 function decodeStoredEmbedding(bytes: Uint8Array): Float32Array {
@@ -4037,10 +4324,12 @@ function collectEnvironmentOverrides(activeModels: { embed: string; generate: st
   };
 
   add("INDEX_PATH", "overrides the SQLite index path; QMD reads/writes a different database");
+  add("QMD_SQLITE_BUSY_TIMEOUT", "overrides the SQLite busy-timeout in ms (default 120000, 0 = fail-fast); too low can surface SQLITE_BUSY under concurrent writers");
   add("QMD_CONFIG_DIR", "overrides the QMD config directory and takes precedence over XDG_CONFIG_HOME");
   add("XDG_CONFIG_HOME", "moves QMD config to $XDG_CONFIG_HOME/qmd when QMD_CONFIG_DIR is not set");
   add("XDG_CACHE_HOME", "moves the default index cache, model cache, MCP daemon PID files, and query logs");
   add("QMD_QUERY_LOG", "1/true/yes makes the HTTP daemon append each search to queries-YYYY-MM.jsonl in the cache dir");
+  add("QMD_HOST", "overrides the MCP HTTP server bind host (default localhost); 0.0.0.0 accepts off-host connections");
   addModel("QMD_EMBED_MODEL", "embed", activeModels.embed);
   addModel("QMD_GENERATE_MODEL", "generate", activeModels.generate);
   addModel("QMD_RERANK_MODEL", "rerank", activeModels.rerank);
@@ -4063,6 +4352,8 @@ function collectEnvironmentOverrides(activeModels: { embed: string; generate: st
   add("CI", "disables real LLM operations inside QMD's LlamaCpp wrapper");
   add("HF_ENDPOINT", "changes Hugging Face download endpoint used when pulling models");
   add("QMD_WRAPPER_CAPTURE", "test/debug hook for the qmd shell wrapper; should not be set in normal use");
+  add("QMD_TRUST_LOCAL_CONFIG", "trusts project-local .qmd config hooks/paths/models without prompting; runs unreviewed commands on update/query");
+  add("QMD_TRUST_UPDATE_HOOKS", "runs project-local update hooks without prompting; runs unreviewed commands on update");
   add("WSL_DISTRO_NAME", "enables WSL path handling heuristics");
   add("WSL_INTEROP", "enables WSL path handling heuristics");
   return overrides;
@@ -4180,12 +4471,12 @@ function checkModelCache(activeModels: { embed: string; generate: string; rerank
 async function checkEmbeddingVectorSamples(db: Database, model: string, fingerprint: string, sampleSize: number = 3): Promise<DoctorVectorSampleResult> {
   const activeDocs = (db.prepare(`SELECT COUNT(*) AS count FROM documents WHERE active = 1`).get() as { count: number }).count;
   if (activeDocs === 0) {
-    return { ok: true, details: "no active documents indexed" };
+    return { ok: true, details: "no active documents indexed", empty: true };
   }
 
   const vecTableExists = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
   if (!vecTableExists) {
-    return { ok: false, details: "no vector table to test; please run qmd embed again" };
+    return { ok: false, details: "no vector table to test; please run qmd embed again", empty: true };
   }
 
   const samples = db.prepare(`
@@ -4200,7 +4491,7 @@ async function checkEmbeddingVectorSamples(db: Database, model: string, fingerpr
   `).all(model, fingerprint, sampleSize) as { hash: string; seq: number; body: string; path: string }[];
 
   if (samples.length === 0) {
-    return { ok: false, details: "no current embedded chunks to test; please run qmd embed again" };
+    return { ok: false, details: "no current embedded chunks to test; please run qmd embed again", empty: true };
   }
 
   const threshold = 0.0001;
@@ -4240,12 +4531,14 @@ async function checkEmbeddingVectorSamples(db: Database, model: string, fingerpr
     return {
       ok: false,
       details: `${mismatches.length}/${samples.length} sampled chunks differ from stored vectors (${mismatches[0]}). Rebuild with \`qmd embed --force\``,
+      empty: false,
     };
   }
 
   return {
     ok: true,
     details: `${samples.length} sampled ${samples.length === 1 ? "chunk" : "chunks"} reproduce stored vectors`,
+    empty: false,
   };
 }
 
@@ -4481,7 +4774,7 @@ async function showDoctor(): Promise<void> {
   try {
     const vectorSample = await checkEmbeddingVectorSamples(db, embedModel, fingerprint);
     doctorCheck("embedding vector sample", vectorSample.ok, vectorSample.details);
-    if (!vectorSample.ok) {
+    if (!vectorSample.ok && !vectorSample.empty) {
       nextSteps.push("Run `qmd embed --force` to rebuild existing vectors that no longer reproduce under the current embedding pipeline.");
     }
   } catch (error) {
@@ -4662,10 +4955,16 @@ if (isMain) {
         console.error("Usage: qmd get <filepath>[:from[:count]] [--from <line>] [-l <lines>] [--no-line-numbers] [--full-path]");
         process.exit(1);
       }
-      const fromLine = cli.values.from ? parseInt(cli.values.from as string, 10) : undefined;
-      const maxLines = cli.values.l ? parseInt(cli.values.l as string, 10) : undefined;
       // Line numbers default ON for get; opt out with --no-line-numbers.
       const getLineNumbers = !cli.values["no-line-numbers"];
+      let fromLine: number | undefined;
+      let maxLines: number | undefined;
+      try {
+        fromLine = parseGetLineOption("--from", cli.values.from);
+        maxLines = parseGetLineOption("-l", cli.values.l);
+      } catch (error) {
+        exitWithError(error);
+      }
       getDocument(cli.args[0], fromLine, maxLines, getLineNumbers, !!cli.values["full-path"]);
       break;
     }
@@ -4676,10 +4975,20 @@ if (isMain) {
         console.error("  pattern: glob (e.g., 'journals/2025-05*.md') or comma-separated list");
         process.exit(1);
       }
-      const maxLinesMulti = cli.values.l ? parseInt(cli.values.l as string, 10) : undefined;
-      const maxBytes = cli.values["max-bytes"] ? parseInt(cli.values["max-bytes"] as string, 10) : DEFAULT_MULTI_GET_MAX_BYTES;
+      let maxBytes: number;
+      try {
+        maxBytes = parseEmbedBatchOption("--max-bytes", cli.values["max-bytes"]) ?? DEFAULT_MULTI_GET_MAX_BYTES;
+      } catch (error) {
+        exitWithError(error);
+      }
       // Line numbers default ON for multi-get; opt out with --no-line-numbers.
       const mgLineNumbers = !cli.values["no-line-numbers"];
+      let maxLinesMulti: number | undefined;
+      try {
+        maxLinesMulti = parseGetLineOption("-l", cli.values.l);
+      } catch (error) {
+        exitWithError(error);
+      }
       multiGet(cli.args[0], maxLinesMulti, maxBytes, cli.opts.format, mgLineNumbers, !!cli.values["full-path"]);
       break;
     }
@@ -4705,7 +5014,13 @@ if (isMain) {
             console.error("  --mask / --glob: glob (default **/*.md), brace group, or comma-separated list");
             process.exit(1);
           }
-          const resolvedPwd = pwd === '.' ? getPwd() : getRealPath(resolve(pwd));
+          // Canonicalize both branches identically: '.' uses $PWD (logical cwd,
+          // which may contain symlinked components like /tmp on macOS), so it
+          // must go through getRealPath() too — otherwise the string-compared
+          // dup guard in collectionAdd() misses the same dir added twice.
+          // getRealPath() falls back to resolve() when realpath fails, so an
+          // unresolvable cwd still keeps the old getPwd() value.
+          const resolvedPwd = getRealPath(pwd === '.' ? getPwd() : resolve(pwd));
           const globPattern = collectionGlobFromCli(cli.values);
           const name = cli.values.name as string | undefined;
 
@@ -4873,9 +5188,11 @@ if (isMain) {
       await showDoctor();
       break;
 
-    case "update":
-      await updateCollections();
+    case "update": {
+      const skipped = await updateCollections();
+      if (skipped > 0) process.exit(1);
       break;
+    }
 
     case "trust":
       manageTrust(cli.args[0]);
@@ -4885,7 +5202,7 @@ if (isMain) {
       try {
         await resolveLocalConfigTrust();
         const maxDocsPerBatch = parseEmbedBatchOption("maxDocsPerBatch", cli.values["max-docs-per-batch"]);
-        const maxBatchMb = parseEmbedBatchOption("maxBatchBytes", cli.values["max-batch-mb"]);
+        const maxBatchMb = parseEmbedBatchMbOption(cli.values["max-batch-mb"]);
         const embedChunkStrategy = parseChunkStrategy(cli.values["chunk-strategy"]);
         const embedMaxDurationMs = parseEmbedTimeoutOption(cli.values["timeout"]);
         // Validate -c against configured collections before dispatching, so a
@@ -4894,9 +5211,16 @@ if (isMain) {
         // embed operates on a single collection; only the first value is used.
         const embedValidatedCollections = resolveCollectionFilter(cli.opts.collection, false);
         const embedCollection = embedValidatedCollections[0];
+        // Round to whole bytes: fractional MB values (e.g. 0.1) rarely land
+        // on a byte boundary, and downstream expects an integer byte count.
+        const maxBatchBytes =
+          maxBatchMb === undefined ? undefined : Math.round(maxBatchMb * 1024 * 1024);
+        if (maxBatchBytes !== undefined && maxBatchBytes < 1) {
+          throw new Error(`--max-batch-mb is too small (rounds to 0 bytes)`);
+        }
         await vectorIndex(resolveModelsForRuntime().embed, !!cli.values.force, {
           maxDocsPerBatch,
-          maxBatchBytes: maxBatchMb === undefined ? undefined : maxBatchMb * 1024 * 1024,
+          maxBatchBytes,
           chunkStrategy: embedChunkStrategy,
           collection: embedCollection,
           maxDurationMs: embedMaxDurationMs,
@@ -4907,24 +5231,28 @@ if (isMain) {
       break;
 
     case "pull": {
-      await resolveLocalConfigTrust();
-      const refresh = cli.values.refresh === undefined ? false : Boolean(cli.values.refresh);
-      const activeModels = resolveModelsForRuntime();
-      const models = [
-        activeModels.embed,
-        activeModels.generate,
-        activeModels.rerank,
-      ];
-      console.log(`${c.bold}Pulling models${c.reset}`);
-      const results = await pullModels(models, {
-        refresh,
-        cacheDir: DEFAULT_MODEL_CACHE_DIR,
-        cli: Boolean(cli.values.progress),
-      });
-      for (const result of results) {
-        const size = formatBytes(result.sizeBytes);
-        const note = result.refreshed ? "refreshed" : "cached/checked";
-        console.log(`- ${result.model} -> ${result.path} (${size}, ${note})`);
+      try {
+        await resolveLocalConfigTrust();
+        const refresh = cli.values.refresh === undefined ? false : Boolean(cli.values.refresh);
+        const activeModels = resolveModelsForRuntime();
+        const models = [
+          activeModels.embed,
+          activeModels.generate,
+          activeModels.rerank,
+        ];
+        console.log(`${c.bold}Pulling models${c.reset}`);
+        const results = await pullModels(models, {
+          refresh,
+          cacheDir: DEFAULT_MODEL_CACHE_DIR,
+          cli: Boolean(cli.values.progress),
+        });
+        for (const result of results) {
+          const size = formatBytes(result.sizeBytes);
+          const note = result.refreshed ? "refreshed" : "cached/checked";
+          console.log(`- ${result.model} -> ${result.path} (${size}, ${note})`);
+        }
+      } catch (error) {
+        exitWithError(error);
       }
       break;
     }
@@ -4943,6 +5271,7 @@ if (isMain) {
         console.error("Usage: qmd grep [options] <pattern>");
         process.exit(1);
       }
+      cli.opts.filter = parseCliMetadataFilter(cli.values.filter);
       grepCommand(cli.query, cli.opts, cli.values);
       break;
 
@@ -4953,12 +5282,16 @@ if (isMain) {
         process.exit(1);
       }
       // Default min-score for vector search is 0.3
-      if (!cli.values["min-score"]) {
-        cli.opts.minScore = 0.3;
+      try {
+        if (!cli.values["min-score"]) {
+          cli.opts.minScore = 0.3;
+        }
+        cli.opts.filter = parseCliMetadataFilter(cli.values.filter);
+        await resolveLocalConfigTrust();
+        await vectorSearch(cli.query, cli.opts);
+      } catch (error) {
+        exitWithError(error);
       }
-      cli.opts.filter = parseCliMetadataFilter(cli.values.filter);
-      await resolveLocalConfigTrust();
-      await vectorSearch(cli.query, cli.opts);
       break;
 
     case "query":
@@ -4969,7 +5302,12 @@ if (isMain) {
       }
       cli.opts.filter = parseCliMetadataFilter(cli.values.filter);
       await resolveLocalConfigTrust();
-      await querySearch(cli.query, cli.opts);
+      try {
+        await querySearch(cli.query, cli.opts);
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : String(error));
+        process.exit(1);
+      }
       break;
 
     case "bench": {
@@ -4983,6 +5321,10 @@ if (isMain) {
       }
       const { runBenchmark } = await import("../bench/bench.js");
       const benchCollection = cli.opts.collection;
+      if (Array.isArray(benchCollection) && benchCollection.length > 1) {
+        console.error(`qmd bench accepts only one -c/--collection; got: ${benchCollection.join(", ")}`);
+        process.exit(1);
+      }
       try {
         await runBenchmark(fixturePath, {
           json: !!cli.values.json,
@@ -5027,11 +5369,21 @@ if (isMain) {
       }
 
       if (cli.values.http) {
-        const port = Number(cli.values.port) || 8181;
+        let port: number;
+        try {
+          port = resolveMcpPort(cli.values.port);
+        } catch (error) {
+          console.error(error instanceof Error ? error.message : String(error));
+          process.exit(1);
+        }
         // --host overrides the default localhost bind; QMD_HOST env is the
         // fallback (resolved in startMcpHttpServer). Use "0.0.0.0" to accept
         // off-host connections, e.g. a container liveness probe.
-        const host = cli.values.host ? String(cli.values.host) : undefined;
+        const flagHost = cli.values.host ? String(cli.values.host) : undefined;
+        // Single source of truth: same precedence the child uses
+        // (options.host ?? QMD_HOST ?? "localhost") so the announced URL
+        // always matches the actual bind.
+        const host = resolveDaemonHost(flagHost);
 
         if (cli.values.daemon) {
           // Guard: check if already running (identity-checked — recycled PIDs are stale)
@@ -5046,10 +5398,10 @@ if (isMain) {
           }
 
           mkdirSync(cacheDir, { recursive: true });
-          const logFd = openSync(logPath, "w"); // truncate — fresh log per daemon run
+          const logFd = openDaemonLogFile(logPath); // truncate — fresh log per daemon run (0600: carries query text)
           const selfPath = fileURLToPath(import.meta.url);
           const indexArgs = cli.values.index ? ["--index", String(cli.values.index)] : [];
-          const hostArgs = host ? ["--host", host] : [];
+          const hostArgs = ["--host", host];
           const spawnArgs = selfPath.endsWith(".ts")
             ? ["--import", pathJoin(dirname(selfPath), "..", "..", "node_modules", "tsx", "dist", "esm", "index.mjs"), selfPath, ...indexArgs, "mcp", "--http", "--port", String(port), ...hostArgs]
             : [selfPath, ...indexArgs, "mcp", "--http", "--port", String(port), ...hostArgs];
@@ -5066,8 +5418,16 @@ if (isMain) {
           child.unref();
           closeSync(logFd); // parent's copy; child inherited the fd
 
+          // Report Started only once the child is actually listening —
+          // otherwise a bind failure exits 0 while the child dies unseen.
+          const listening = await waitForDaemonListening(child, logPath);
+          if (!listening.ok) {
+            console.error(listening.message);
+            process.exit(1);
+          }
+
           writeFileSync(pidPath, String(child.pid));
-          console.log(`Started on http://${host ?? "localhost"}:${port}/mcp (PID ${child.pid})`);
+          console.log(`Started on http://${host}:${port}/mcp (PID ${child.pid})`);
           console.log(`Logs: ${logPath}`);
           process.exit(0);
         }
@@ -5097,7 +5457,11 @@ if (isMain) {
           throw e;
         }
       } else {
-        // Default: stdio transport
+        // Default: stdio transport. Remove top-level cursor handlers so the
+        // async cleanup handlers in startMcpServer actually run (same as
+        // foreground HTTP mode above — SIGTERM is stdio's only stop).
+        process.removeAllListeners("SIGTERM");
+        process.removeAllListeners("SIGINT");
         const { startMcpServer } = await import("../mcp/server.js");
         await startMcpServer({ dbPath: getDbPath() });
       }

@@ -388,17 +388,30 @@ export async function runBenchmark(
     throw new Error("Invalid fixture: missing 'queries' array");
   }
 
+  if (fixture.queries.length === 0) {
+    throw new Error(
+      `Invalid fixture: '${fixturePath}' has no queries — nothing to run.\nAdd at least one query; an empty fixture would otherwise report success with no results.`,
+    );
+  }
+
+  // Filter backends if requested
+  const activeBackends = options.backends
+    ? BACKENDS.filter(b => options.backends!.includes(b.name))
+    : BACKENDS;
+
+  if (activeBackends.length === 0) {
+    const names = (options.backends ?? []).join(", ") || "(empty backend list)";
+    throw new Error(
+      `Unknown backend(s): ${names}.\nAvailable: ${BACKENDS.map(b => b.name).join(", ")}.`,
+    );
+  }
+
   // Open store
   const store = await createStore({
     dbPath: options.dbPath ?? getDefaultDbPath(),
     ...(options.configPath ? { configPath: options.configPath } : {}),
     ...(options.config ? { config: options.config } : {}),
   });
-
-  // Filter backends if requested
-  const activeBackends = options.backends
-    ? BACKENDS.filter(b => options.backends!.includes(b.name))
-    : BACKENDS;
 
   const collection = options.collection ?? fixture.collection;
 

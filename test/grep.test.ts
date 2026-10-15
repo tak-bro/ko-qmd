@@ -14,6 +14,8 @@ import { join } from "node:path";
 import { createStore, type QMDStore } from "../src/index.js";
 import { compileGrepPattern, grepDocuments, MAX_PATTERN_LENGTH } from "../src/grep.js";
 import { buildDocumentFilter } from "../src/filters.js";
+import { replaceDocumentMetadata } from "../src/metadata-store.js";
+import { METADATA_EXTRACTION_VERSION } from "../src/metadata.js";
 
 let root: string;
 let store: QMDStore;
@@ -165,12 +167,88 @@ describe("grepDocuments", () => {
     expect(note.matchCount).toBe(2);
   });
 
+  test("a zero file limit clamps to 1 rather than returning 1 file as truncated", () => {
+    const result = grep("TODO", { limit: 0 });
+    expect(result.files).toHaveLength(1);
+    expect(result.truncated).toBe(true);
+  });
+
+  test("a negative file limit clamps to 1", () => {
+    const result = grep("TODO", { limit: -5 });
+    expect(result.files).toHaveLength(1);
+    expect(result.truncated).toBe(true);
+  });
+
+  test("a zero per-file line cap clamps to 1 so lines stay addressable", () => {
+    const result = grep("todo", { maxLinesPerFile: 0 });
+    const note = result.files.find(f => f.displayPath === "docs/journals/note.md")!;
+    expect(note.matchCount).toBe(2);
+    expect(note.lines).toHaveLength(1);
+  });
+
+  test("a negative per-file line cap clamps to 1", () => {
+    const result = grep("todo", { maxLinesPerFile: -3 });
+    const note = result.files.find(f => f.displayPath === "docs/journals/note.md")!;
+    expect(note.lines).toHaveLength(1);
+  });
+
+  test("a fractional file limit floors to an integer", () => {
+    const result = grep("TODO", { limit: 1.5 });
+    expect(result.files).toHaveLength(1);
+    expect(result.truncated).toBe(true);
+  });
+
+  test("a non-finite bound falls back to the default", () => {
+    expect(grep("TODO", { limit: NaN }).files.length).toBeGreaterThan(1);
+    expect(grep("todo", { maxLinesPerFile: Infinity }).files.length).toBeGreaterThan(0);
+  });
+
   test("a regular expression is a regular expression", () => {
     const result = grep("TODO: (call|archived)");
     expect(result.files.map(f => f.displayPath).sort()).toEqual([
       "docs/archive/old.md",
       "docs/journals/note.md",
     ]);
+  });
+});
+
+describe("grepDocuments with metadataFilter", () => {
+  const tag = (pathSuffix: string, metadata: Record<string, unknown>) => {
+    const row = store.internal.db
+      .prepare("SELECT id FROM documents WHERE path LIKE ?")
+      .get(`%${pathSuffix}`) as { id: number };
+    replaceDocumentMetadata(store.internal.db, row.id, {
+      metadata,
+      extractionVersion: METADATA_EXTRACTION_VERSION,
+    });
+  };
+
+  test("a metadata filter narrows grep to matching documents", () => {
+    tag("note.md", { status: "published" });
+    tag("old.md", { status: "draft" });
+    const result = grep("TODO", {
+      metadataFilter: { key: "status", operator: "eq", value: "published" },
+    });
+    expect(result.files.map(f => f.displayPath)).toEqual(["docs/journals/note.md"]);
+  });
+
+  test("documents whose metadata does not match stay excluded", () => {
+    // quiet.md and long.md extracted to empty metadata, old.md is tagged
+    // draft — none of them satisfies eq published, so the filter must not
+    // sweep them back in.
+    const result = grep("TODO", {
+      metadataFilter: { key: "status", operator: "eq", value: "published" },
+    });
+    expect(result.files.map(f => f.displayPath)).toEqual(["docs/journals/note.md"]);
+  });
+
+  test("omitting the filter leaves the scan untouched", () => {
+    const result = grep("TODO");
+    expect(result.files.map(f => f.displayPath).sort()).toEqual([
+      "docs/archive/old.md",
+      "docs/journals/note.md",
+    ]);
+    expect(result.scanned).toBe(4);
   });
 });
 

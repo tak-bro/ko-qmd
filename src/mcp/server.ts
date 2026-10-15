@@ -90,14 +90,26 @@ type StatusResult = {
   totalDocuments: number;
   needsEmbedding: number;
   hasVectorIndex: boolean;
-  collections: {
-    name: string;
-    path: string | null;
-    pattern: string | null;
-    documents: number;
-    lastUpdated: string;
-  }[];
+  collections: StatusCollection[];
 };
+
+export type StatusCollection = {
+  name: string;
+  path: string | null;
+  pattern: string | null;
+  documents: number;
+  lastUpdated: string;
+};
+
+/**
+ * Render one collection line for the status text summary.
+ * path is null when the store_collections row is gone but documents remain
+ * active (e.g. after removeCollection); render a human token instead of the
+ * literal "null". structuredContent keeps the null unchanged.
+ */
+export function formatStatusCollectionLine(col: Pick<StatusCollection, "name" | "path" | "documents">): string {
+  return `    - ${col.name}: ${col.path ?? "(removed)"} (${col.documents} docs)`;
+}
 
 // =============================================================================
 // Helper functions
@@ -175,16 +187,20 @@ function stageTimer(): { stages: QueryLogStages; timeouts: QueryLogTimeout[]; ho
 
 /**
  * ko-qmd: how long the daemon waits for query expansion and for the reranker before answering
- * without them. QMD_EXPAND_DEADLINE_MS / QMD_RERANK_DEADLINE_MS: 0 = wait, a positive integer =
- * that many ms, anything else = the default. One MCP query once took 85 s.
+ * without them. QMD_EXPAND_DEADLINE_MS / QMD_RERANK_DEADLINE_MS: 0 = wait, a positive integer up
+ * to 2^31-1 = that many ms, anything else = the default. One MCP query once took 85 s.
  * The model-load wait itself is bounded separately by QMD_LLM_LOAD_TIMEOUT_MS
  * (default 120 s, 0 = wait forever), so a load that never reports ready also
  * falls back instead of hanging.
  */
 const DEFAULT_EXPAND_DEADLINE_MS = 5_000;
 const DEFAULT_RERANK_DEADLINE_MS = 10_000;
+/** Node clamps a longer setTimeout delay to 1 ms; a giant deadline would wait forever. Mirror daemon-health. */
+const MAX_DEADLINE_MS = 2 ** 31 - 1;
 export function resolveDeadlineMs(envValue: string | undefined, fallback: number): number {
-  return envValue !== undefined && /^\d+$/.test(envValue) ? Number(envValue) : fallback;
+  if (envValue === undefined || !/^\d+$/.test(envValue)) return fallback;
+  const ms = Number(envValue);
+  return ms <= MAX_DEADLINE_MS ? ms : fallback;
 }
 function searchDeadlines(): { expandDeadlineMs: number; rerankDeadlineMs: number } {
   return {
@@ -525,6 +541,14 @@ Intent-aware lex (C++ performance, not sports):
     },
     track(async ({ query, searches, limit, minScore, candidateLimit, collections, path, since, until, filter, intent, rerank }) => {
       const startedAt = Date.now();
+      // A non-positive limit would silently disarm the cap: slice(0, -1) drops
+      // only the last row (limit:-1) and slice(0, 0) empties the answer (limit:0).
+      if (!Number.isInteger(limit) || limit < 1) {
+        return {
+          content: [{ type: "text" as const, text: "Error: limit must be a positive integer" }],
+          isError: true,
+        };
+      }
       // Require exactly one of `query` (plain text, auto-expanded) or `searches` (typed sub-queries).
       if (!query && (!searches || searches.length === 0)) {
         return {
@@ -561,6 +585,25 @@ Intent-aware lex (C++ performance, not sports):
 
       // Use default collections if none specified
       const effectiveCollections = collections ?? defaultCollectionNames;
+
+      // An unknown collection name is a caller typo, not an empty corpus: the SQL
+      // IN filter would silently match 0 rows. Fail loudly naming the bad names
+      // (path/since/until mismatches get the same treatment via describeEmptyFilteredSearch).
+      // The default path is skipped: defaults are known by construction, and an
+      // explicit [] still means "search everything" as before.
+      if (collections !== undefined) {
+        const knownNames = (await store.listCollections()).map(c => c.name);
+        const known = new Set(knownNames);
+        const unknown = collections.filter(c => !known.has(c));
+        if (unknown.length > 0) {
+          const plural = unknown.length === 1 ? "collection" : "collections";
+          const knownList = knownNames.length > 0 ? knownNames.join(", ") : "(none)";
+          return {
+            content: [{ type: "text" as const, text: `Error: unknown ${plural}: ${unknown.join(", ")}. Known collections: ${knownList}` }],
+            isError: true,
+          };
+        }
+      }
 
       // Plain `query` takes the SDK's hybrid path (expand unless it has Hangul → fuse → rerank);
       // `searches` runs the caller's typed sub-queries directly.
@@ -630,12 +673,25 @@ Intent-aware lex (C++ performance, not sports):
         }), store);
       }
 
+      // The empty-filter explainer is diagnostic only: it must never turn an
+      // already-successful empty search into a -32603. On a damaged DB the
+      // search above succeeded with [] and only this helper throws (SqliteError).
+      let summary: string;
+      if (filtered.length === 0 && scope) {
+        try {
+          summary = describeEmptyFilteredSearch(store, scope, effectiveCollections);
+        } catch (error) {
+          console.error(`qmd: empty-result description failed: ${error instanceof Error ? error.message : String(error)}`);
+          summary = formatSearchSummary(filtered, primaryQuery) + describeTimeouts(timer.timeouts);
+        }
+      } else {
+        summary = formatSearchSummary(filtered, primaryQuery) + describeTimeouts(timer.timeouts);
+      }
+
       return {
         content: [{
           type: "text",
-          text: filtered.length === 0 && scope
-            ? describeEmptyFilteredSearch(store, scope, effectiveCollections)
-            : formatSearchSummary(filtered, primaryQuery) + describeTimeouts(timer.timeouts),
+          text: summary,
         }],
         structuredContent: { results: filtered, ...timeoutField(timer.timeouts) },
       };
@@ -643,7 +699,7 @@ Intent-aware lex (C++ performance, not sports):
   );
 
   // ---------------------------------------------------------------------------
-  // Tool: qmd_get (Retrieve document)
+  // Tool: get (Retrieve document)
   // ---------------------------------------------------------------------------
 
   server.registerTool(
@@ -720,7 +776,7 @@ Intent-aware lex (C++ performance, not sports):
   );
 
   // ---------------------------------------------------------------------------
-  // Tool: qmd_multi_get (Retrieve multiple documents)
+  // Tool: multi_get (Retrieve multiple documents)
   // ---------------------------------------------------------------------------
 
   server.registerTool(
@@ -737,11 +793,29 @@ Intent-aware lex (C++ performance, not sports):
       }),
     },
     track(async ({ pattern, maxLines, maxBytes, lineNumbers }) => {
+      if (maxLines !== undefined && (!Number.isInteger(maxLines) || maxLines < 1)) {
+        return {
+          content: [{ type: "text", text: "maxLines must be a positive integer" }],
+          isError: true,
+        };
+      }
+      if (maxBytes !== undefined && (!Number.isInteger(maxBytes) || maxBytes < 1)) {
+        return {
+          content: [{ type: "text", text: "maxBytes must be a positive integer" }],
+          isError: true,
+        };
+      }
       const { docs, errors } = await store.multiGet(pattern, { includeBody: true, maxBytes: maxBytes || DEFAULT_MULTI_GET_MAX_BYTES });
 
-      if (docs.length === 0 && errors.length === 0) {
+      if (docs.length === 0) {
+        if (errors.length === 0) {
+          return {
+            content: [{ type: "text", text: `No files matched pattern: ${pattern}` }],
+            isError: true,
+          };
+        }
         return {
-          content: [{ type: "text", text: `No files matched pattern: ${pattern}` }],
+          content: [{ type: "text", text: `Errors:\n${errors.join('\n')}` }],
           isError: true,
         };
       }
@@ -756,7 +830,7 @@ Intent-aware lex (C++ performance, not sports):
         if (result.skipped) {
           content.push({
             type: "text",
-            text: `[SKIPPED: ${result.doc.displayPath} - ${result.skipReason}. Use 'qmd_get' with file="${result.doc.displayPath}" to retrieve.]`,
+            text: `[SKIPPED: ${result.doc.displayPath} - ${result.skipReason}. Use 'get' with file="${result.doc.displayPath}" to retrieve.]`,
           });
           continue;
         }
@@ -793,7 +867,7 @@ Intent-aware lex (C++ performance, not sports):
   );
 
   // ---------------------------------------------------------------------------
-  // Tool: qmd_grep (Exact / regex match over indexed bodies) — ko-qmd
+  // Tool: grep (Exact / regex match over indexed bodies) — ko-qmd
   // ---------------------------------------------------------------------------
 
   server.registerTool(
@@ -838,6 +912,26 @@ Smart case: a pattern containing an uppercase letter matches case-sensitively, o
       }
 
       const effectiveCollections = collections ?? defaultCollectionNames;
+
+      // An unknown collection name is a caller typo, not an empty corpus: the SQL
+      // filter would silently match 0 rows (files 0, scanned 0). Fail loudly naming
+      // the bad names, mirroring the query tool.
+      // The default path is skipped: defaults are known by construction, and an
+      // explicit [] still means "scan everything" as before.
+      if (collections !== undefined) {
+        const knownNames = (await store.listCollections()).map(c => c.name);
+        const known = new Set(knownNames);
+        const unknown = collections.filter(c => !known.has(c));
+        if (unknown.length > 0) {
+          const plural = unknown.length === 1 ? "collection" : "collections";
+          const knownList = knownNames.length > 0 ? knownNames.join(", ") : "(none)";
+          return {
+            content: [{ type: "text" as const, text: `Error: unknown ${plural}: ${unknown.join(", ")}. Known collections: ${knownList}` }],
+            isError: true,
+          };
+        }
+      }
+
       await refreshBeforeQuery(store, effectiveCollections);
 
       const result = grepDocuments(store.internal.db, compiled, {
@@ -873,7 +967,7 @@ Smart case: a pattern containing an uppercase letter matches case-sensitively, o
   );
 
   // ---------------------------------------------------------------------------
-  // Tool: qmd_status (Index status)
+  // Tool: status (Index status)
   // ---------------------------------------------------------------------------
 
   server.registerTool(
@@ -896,7 +990,7 @@ Smart case: a pattern containing an uppercase letter matches case-sensitively, o
       ];
 
       for (const col of status.collections) {
-        summary.push(`    - ${col.name}: ${col.path} (${col.documents} docs)`);
+        summary.push(formatStatusCollectionLine(col));
       }
       // ko-qmd: daemon query log state (only this process knows its env and write errors).
       const queryLog = queryLogStatus();
@@ -1148,10 +1242,26 @@ export async function startMcpServer(options: McpStartupOptions = {}): Promise<v
   // disposeLlm here — store.close() disposes this store's own LlamaCpp
   // instance, so passing the global disposeDefaultLlamaCpp would only risk
   // tearing down an unrelated instance in an embedded process.
-  registerStdioEofShutdown({
+  const shutdown = registerStdioEofShutdown({
     closeServer: () => handle.close(),
     waitForIdle: (timeoutMs) => inflight.waitForIdle(timeoutMs),
     closeStore: () => store.close(),
+  });
+
+  // SIGTERM is stdio's only stop mechanism (no pidfile/stop command), so it
+  // runs the same drain/close/store.close sequence as the EOF path — mirroring
+  // the HTTP transport's SIGTERM/SIGINT handlers below. The CLI's top-level
+  // cursor.show + exit(143) handlers are removed by the stdio caller in
+  // qmd.ts so this async cleanup actually runs.
+  process.on("SIGTERM", async () => {
+    console.error("Shutting down (SIGTERM)...");
+    await shutdown();
+    process.exit(0);
+  });
+  process.on("SIGINT", async () => {
+    console.error("Shutting down (SIGINT)...");
+    await shutdown();
+    process.exit(0);
   });
 }
 
@@ -1307,7 +1417,7 @@ export async function startMcpHttpServer(
       }
 
       if (pathname === "/health" && nodeReq.method === "GET") {
-        const body = JSON.stringify({ status: "ok", uptime: Math.floor((Date.now() - startTime) / 1000) });
+        const body = JSON.stringify({ status: "ok", uptime: Math.floor((Date.now() - startTime) / 1000), listens: openMcp.listens, mcp_inflight: openMcp.inflight });
         nodeRes.writeHead(200, { "Content-Type": "application/json" });
         nodeRes.end(body);
         log(`${ts()} GET /health (${Date.now() - reqStart}ms)`);
@@ -1339,12 +1449,46 @@ export async function startMcpHttpServer(
           nodeRes.end(JSON.stringify({ error: "Missing required field: searches (array)" }));
           return;
         }
+        if (params.searches.length === 0) {
+          nodeRes.writeHead(400, { "Content-Type": "application/json" });
+          nodeRes.end(JSON.stringify({ error: "Invalid field: searches (must be a non-empty array)" }));
+          return;
+        }
+        // Mirror the MCP tool schema's max(10) cap — the REST mapping bypasses zod.
+        if (params.searches.length > 10) {
+          nodeRes.writeHead(400, { "Content-Type": "application/json" });
+          nodeRes.end(JSON.stringify({ error: "Invalid field: searches (maximum 10 items)" }));
+          return;
+        }
 
-        // Map to internal format
+        // Validate each entry (the MCP path gets this from zod; REST maps manually).
+        const validTypes = new Set(["lex", "vec", "hyde"]);
+        for (let i = 0; i < params.searches.length; i++) {
+          const entry: unknown = (params.searches as unknown[])[i];
+          if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+            nodeRes.writeHead(400, { "Content-Type": "application/json" });
+            nodeRes.end(JSON.stringify({ error: `Invalid field: searches[${i}] (must be an object)` }));
+            return;
+          }
+          const s = entry as RestSearchInput;
+          if (typeof s.type !== "string" || !validTypes.has(s.type)) {
+            nodeRes.writeHead(400, { "Content-Type": "application/json" });
+            nodeRes.end(JSON.stringify({ error: `Invalid field: searches[${i}].type (must be one of: lex, vec, hyde)` }));
+            return;
+          }
+          if (typeof s.query !== "string" || s.query.trim() === "") {
+            nodeRes.writeHead(400, { "Content-Type": "application/json" });
+            nodeRes.end(JSON.stringify({ error: `Invalid field: searches[${i}].query (must be a non-empty string)` }));
+            return;
+          }
+        }
+
+        // Map to internal format (every entry validated as an object above,
+        // so the map cannot throw a TypeError on null/non-object input).
         const searches = params.searches as RestSearchInput[];
         const queries: ExpandedQuery[] = searches.map((s) => ({
           type: s.type as 'lex' | 'vec' | 'hyde',
-          query: String(s.query || ""),
+          query: s.query as string,
         }));
 
         // Optional metadata filter — must be an object and a valid filter AST
@@ -1429,7 +1573,7 @@ export async function startMcpHttpServer(
         timer.stages.serialize = Date.now() - serializeStart;
         // ko-qmd: opt-in query log (QMD_QUERY_LOG), written after the response.
         logQuery(entryFromRest({ path: pathname, headers: nodeReq.headers, searches: queries, params, collections: effectiveCollections, results: formatted, ms: Date.now() - reqStart, stages: timer.stages, timeouts: timer.timeouts }), store);
-        log(`${ts()} POST /query ${params.searches.length} queries (${Date.now() - reqStart}ms)`);
+        log(`${ts()} POST ${pathname} ${params.searches.length} queries (${Date.now() - reqStart}ms)`);
         return;
       }
 
@@ -1474,12 +1618,16 @@ export async function startMcpHttpServer(
         return;
       }
 
-      nodeRes.writeHead(404);
-      nodeRes.end("Not Found");
+      nodeRes.writeHead(404, { "Content-Type": "application/json" });
+      nodeRes.end(JSON.stringify({ error: "Not Found" }));
     } catch (err) {
       console.error("HTTP handler error:", err);
-      nodeRes.writeHead(500);
-      nodeRes.end("Internal Server Error");
+      if (!nodeRes.headersSent) {
+        nodeRes.writeHead(500, { "Content-Type": "application/json" });
+        nodeRes.end(JSON.stringify({ error: "Internal Server Error" }));
+      } else {
+        nodeRes.end();
+      }
     }
   });
 

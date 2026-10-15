@@ -26,6 +26,10 @@ import {
   documentToMarkdown,
   documentToXml,
   formatDocument,
+  escapeCSV,
+  escapeXml,
+  addLineNumbers,
+  getDocid,
   type MultiGetFile,
 } from "../src/cli/formatter.js";
 import type { SearchResult, DocumentResult } from "../src/store.js";
@@ -306,5 +310,73 @@ describe("single document omits context when null", () => {
   test("XML format does not show context element when null", () => {
     const output = documentToXml(doc);
     expect(output).not.toContain("<context>");
+  });
+});
+
+// =============================================================================
+// Escape Helpers: Hostile-Input Pinning (current behavior)
+// =============================================================================
+
+describe("escapeCSV pins current quoting behavior", () => {
+  test("comma triggers quoting", () => {
+    expect(escapeCSV("a,b")).toBe('"a,b"');
+  });
+
+  test('double quote is doubled and wrapped', () => {
+    expect(escapeCSV('a"b')).toBe('"a""b"');
+  });
+
+  test("newline triggers quoting", () => {
+    expect(escapeCSV("a\nb")).toBe('"a\nb"');
+  });
+
+  test("comma + quotes + newline combined", () => {
+    expect(escapeCSV('a,"b\nc')).toBe('"a,""b\nc"');
+  });
+
+  test("plain value passes through unquoted", () => {
+    expect(escapeCSV("abc")).toBe("abc");
+  });
+
+  test("null yields empty string", () => {
+    expect(escapeCSV(null)).toBe("");
+  });
+
+  test("number is stringified without quoting", () => {
+    expect(escapeCSV(42)).toBe("42");
+  });
+});
+
+describe("escapeXml pins current entity behavior", () => {
+  test("escapes all five special characters", () => {
+    expect(escapeXml('&<>"\'')).toBe("&amp;&lt;&gt;&quot;&apos;");
+  });
+
+  test("ampersand is escaped first (no double-escaping)", () => {
+    expect(escapeXml("Fish & Chips")).toBe("Fish &amp; Chips");
+  });
+
+  test("plain text passes through unchanged", () => {
+    expect(escapeXml("hello")).toBe("hello");
+  });
+});
+
+describe("addLineNumbers honors startLine offset", () => {
+  test("defaults to starting at 1", () => {
+    expect(addLineNumbers("a\nb")).toBe("1: a\n2: b");
+  });
+
+  test("non-1 startLine offsets numbering", () => {
+    expect(addLineNumbers("a\nb", 5)).toBe("5: a\n6: b");
+  });
+
+  test("single line with offset", () => {
+    expect(addLineNumbers("only", 10)).toBe("10: only");
+  });
+});
+
+describe("getDocid happy path", () => {
+  test("returns first six characters of hash", () => {
+    expect(getDocid("dc5590abcdef")).toBe("dc5590");
   });
 });

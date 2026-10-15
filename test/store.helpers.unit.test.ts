@@ -22,6 +22,7 @@ import {
   handelize,
   cleanupOrphanedVectors,
   countOrphanedVectors,
+  previewCleanup,
   sanitizeFTS5Term,
   splitGlobMask,
 } from "../src/store";
@@ -186,6 +187,84 @@ describe("cleanupOrphanedVectors", () => {
     } as any;
 
     expect(cleanupOrphanedVectors(db)).toBe(0);
+  });
+
+  test("returns 0 when the vectors_vec table is missing entirely", () => {
+    const db = {
+      prepare: (sql: string) => {
+        if (sql.includes("SELECT 1 FROM vectors_vec LIMIT 0")) {
+          return { get: () => { throw new Error("no such table: vectors_vec"); } };
+        }
+        throw new Error(`Unexpected SQL in test: ${sql}`);
+      },
+      exec: () => {
+        throw new Error("cleanup should not execute vector deletes without the vec table");
+      },
+    } as any;
+
+    expect(cleanupOrphanedVectors(db)).toBe(0);
+  });
+
+  test("removes orphaned chunks when the vec probe succeeds (no vec0 load)", () => {
+    const execCalls: string[] = [];
+    const db = {
+      prepare: (sql: string) => {
+        if (sql.includes("SELECT 1 FROM vectors_vec LIMIT 0")) {
+          return { get: () => ({ "1": 1 }) };
+        }
+        if (sql.includes("FROM content_vectors cv") && sql.includes("COUNT(*)")) {
+          return { get: () => ({ c: 2 }) };
+        }
+        throw new Error(`Unexpected SQL in test: ${sql}`);
+      },
+      exec: (sql: string) => { execCalls.push(sql); },
+      transaction: (fn: () => number) => Object.assign(() => fn(), { immediate: () => fn() }),
+    } as any;
+
+    expect(cleanupOrphanedVectors(db)).toBe(2);
+    expect(execCalls.some((sql) => sql.includes("DELETE FROM vectors_vec"))).toBe(true);
+    expect(execCalls.some((sql) => sql.includes("DELETE FROM content_vectors"))).toBe(true);
+  });
+});
+
+describe("previewCleanup vector agreement (#768)", () => {
+  // Mocked db only: both vec0 states are reachable via the probe outcome,
+  // so no vec0 module load is needed.
+  function makePreviewDb(opts: { probeOk: boolean; orphanCount: number }) {
+    let touchedContentVectors = false;
+    const db = {
+      prepare: (sql: string) => {
+        if (sql.includes("SELECT 1 FROM vectors_vec LIMIT 0")) {
+          if (!opts.probeOk) {
+            return { get: () => { throw new Error("no such module: vec0"); } };
+          }
+          return { get: () => ({ "1": 1 }) };
+        }
+        if (sql.includes("content_vectors")) {
+          touchedContentVectors = true;
+          return { get: () => ({ c: opts.orphanCount }) };
+        }
+        if (sql.includes("COUNT(*)")) {
+          return { get: () => ({ c: 0 }) };
+        }
+        throw new Error(`Unexpected SQL in test: ${sql}`);
+      },
+      wasAskedForContentVectors: () => touchedContentVectors,
+    } as any;
+    return db;
+  }
+
+  test("reports 0 actionable vectors when the vec probe fails", () => {
+    const db = makePreviewDb({ probeOk: false, orphanCount: 3 });
+    expect(previewCleanup(db).orphanedVectors).toBe(0);
+    // The count query must not run: there is nothing actionable to count.
+    expect(db.wasAskedForContentVectors()).toBe(false);
+  });
+
+  test("reports the count when the vec probe succeeds", () => {
+    const db = makePreviewDb({ probeOk: true, orphanCount: 3 });
+    expect(previewCleanup(db).orphanedVectors).toBe(3);
+    expect(db.wasAskedForContentVectors()).toBe(true);
   });
 });
 

@@ -34,5 +34,9 @@ function run(label, command, args, options = {}) {
 
 run("TypeScript build typecheck", process.execPath, [join(root, "node_modules", "typescript", "bin", "tsc"), "-p", "tsconfig.build.json", "--noEmit"]);
 run("Vitest suite under Node", process.execPath, [join(root, "node_modules", "vitest", "vitest.mjs"), "run", "--reporter=verbose", "--testTimeout", "60000", "test/"], { env: { CI: "true" } });
+// RuleTester-based custom oxlint rule tests run under plain node only:
+// vitest reports "No test suite found" and bun's runner rejects RuleTester.
+// The quoted glob is expanded by node's own test runner, not the shell.
+run("oxlint rule tests (node)", process.execPath, ["--import", "tsx", "--test", "tools/oxlint/**/*.test.ts"]);
 run("Bun test suite", "bun", ["test", "--timeout", "60000", "--preload", "./src/test-preload.ts", "test/"], { env: { CI: "true" } });
 run("Package smoke", process.execPath, ["scripts/package-smoke.mjs"]);

@@ -91,9 +91,14 @@ export const compilePathMatcher = (patterns: readonly string[]): PathMatcher => 
   }
 
   // `foo/bar` should match the directory's contents, not just a file called `bar`; people
-  // type the prefix they see in results. `foo/bar/**` stays exact.
-  const asPrefix = (pattern: string): string[] =>
-    pattern.includes("*") || pattern.endsWith("/") ? [pattern] : [pattern, `${pattern}/**`];
+  // type the prefix they see in results. `foo/bar/**` stays exact. A trailing slash is the
+  // same directory prefix (`foo/` ≡ `foo`), so strip it before expanding to `foo/**`.
+  const asPrefix = (pattern: string): string[] => {
+    if (pattern.includes("*")) return [pattern];
+    const base = pattern.replace(/\/+$/, "");
+    if (base === "" || base === pattern) return base === pattern ? [pattern, `${pattern}/**`] : [pattern];
+    return [base, `${base}/**`];
+  };
 
   const isIncluded = includes.length === 0
     ? () => true

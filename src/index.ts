@@ -524,7 +524,7 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
     addCollection: async (name, opts) => {
       upsertStoreCollection(db, name, { path: opts.path, pattern: opts.pattern, ignore: opts.ignore });
       if (hasYamlConfig || options.config) {
-        collectionsAddCollection(name, opts.path, opts.pattern);
+        collectionsAddCollection(name, opts.path, opts.pattern, { ignore: opts.ignore });
       }
     },
     removeCollection: async (name) => {
@@ -574,8 +574,16 @@ export async function createStore(options: StoreOptions): Promise<QMDStore> {
     // Indexing — reads collections from SQLite
     update: async (updateOpts) => {
       const collections = getStoreCollections(db);
-      const filtered = updateOpts?.collections
-        ? collections.filter(c => updateOpts.collections!.includes(c.name))
+      const requested = updateOpts?.collections;
+      if (requested) {
+        const known = new Set(collections.map(c => c.name));
+        const unknown = requested.filter(n => !known.has(n));
+        if (unknown.length > 0) {
+          throw new Error(`Unknown collection(s): ${unknown.join(", ")}`);
+        }
+      }
+      const filtered = requested
+        ? collections.filter(c => requested!.includes(c.name))
         : collections;
 
       internal.clearCache();

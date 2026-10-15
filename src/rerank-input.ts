@@ -75,21 +75,30 @@ export const LONG_FRONTMATTER_CHARS = 350;
 
 /** The leading YAML frontmatter block when longer than LONG_FRONTMATTER_CHARS, else the text as-is. */
 const stripLongFrontmatter = (text: string): string => {
-  if (!text.startsWith("---\n")) return text;
-  const m = text.match(/^---\n[\s\S]{1,4000}?---\n/);
+  if (!/^---\r?\n/.test(text)) return text;
+  // Tolerate CRLF fences; scan up to 100_000 chars so a missing closing fence returns fast.
+  const m = text.match(/^---\r?\n[\s\S]{1,100000}?---\r?\n/);
   return m && m[0].length > LONG_FRONTMATTER_CHARS ? text.slice(m[0].length) : text;
 };
 
-/** Links read as their anchor text; bare URLs are reranker noise and go. */
+/** Links read as their anchor text, with one level of parens allowed in the target; bare URLs are reranker noise and go, keeping trailing punctuation. */
 const stripUrls = (text: string): string =>
-  text.replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/https?:\/\/\S+/g, "");
+  text
+    .replace(/!?\[([^\]]*)\]\((?:[^()]|\([^()]*\))*\)/g, "$1")
+    .replace(/https?:\/\/\S+/g, (m) => m.match(/[.,;:!?)\]}>]+$/)?.[0] ?? "");
 
 /** Blockquote markers are not content; unwrap `>` lines to their text. */
 const stripQuotes = (text: string): string =>
   text.split("\n").map((line) => line.replace(/^\s*(>\s*)+/, "")).join("\n");
 
-/** HTML tags are not content; drop the tags but keep their inner text. */
-const stripHtmlTags = (text: string): string => text.replace(/<\/?[a-zA-Z][^<>]*>/g, "");
+/** HTML tags are not content; drop the tags but keep their inner text. Comments and
+ * script/style bodies are not content either, so drop those blocks entirely first. */
+const stripHtmlTags = (text: string): string =>
+  text
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<script\b[^<>]*>[\s\S]*?<\/script\s*>/gi, "")
+    .replace(/<style\b[^<>]*>[\s\S]*?<\/style\s*>/gi, "")
+    .replace(/<\/?[a-zA-Z][^<>]*>/g, "");
 
 /** The document text sent for one candidate: the selected chunk alone, without long frontmatter. */
 export const formatRerankDoc = (chunkText: string, _meta: RerankDocMeta): string =>

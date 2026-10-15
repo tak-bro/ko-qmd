@@ -71,12 +71,53 @@ describe("selectRerankChunk", () => {
 describe("formatRerankDoc", () => {
   const meta = { file: "wiki/a.md", title: "제목", displayPath: "wiki/a.md" };
 
-  test("leads a chunk that lacks the title with it", () => {
-    expect(formatRerankDoc("본문 청크", meta)).toBe("# 제목\n\n본문 청크");
+  test("sends a chunk that lacks the title alone, without prepending it", () => {
+    expect(formatRerankDoc("본문 청크", meta)).toBe("본문 청크");
   });
 
   test("sends a chunk that already holds the title, or a titleless note, unchanged", () => {
     expect(formatRerankDoc("# 제목\n본문", meta)).toBe("# 제목\n본문");
     expect(formatRerankDoc("본문 청크", { ...meta, title: "" })).toBe("본문 청크");
+  });
+
+  test("keeps only the anchor text when a markdown link target holds parens", () => {
+    expect(formatRerankDoc("see [wiki](https://x/X_(disambig)) end", meta)).toBe("see wiki end");
+  });
+
+  test("keeps the autolink brackets when stripping a bare URL", () => {
+    expect(formatRerankDoc("contact <https://example.com> now", meta)).toBe("contact <> now");
+  });
+
+  test("keeps sentence punctuation when stripping a trailing bare URL", () => {
+    expect(formatRerankDoc("see https://example.com. Next", meta)).toBe("see . Next");
+  });
+
+  test("drops HTML comments but keeps surrounding text", () => {
+    const noTitle = { ...meta, title: "" };
+    expect(formatRerankDoc("a <!-- hidden note --> b", noTitle)).toBe("a  b");
+  });
+
+  test("drops script and style blocks entirely, not just their tags", () => {
+    const noTitle = { ...meta, title: "" };
+    expect(formatRerankDoc("a <script>alert(1)</script> b", noTitle)).toBe("a  b");
+    expect(formatRerankDoc("a <STYLE>x{y:z}</STYLE> b", noTitle)).toBe("a  b");
+  });
+
+  test("strips a long CRLF frontmatter block, leaving the body", () => {
+    const bare = { ...meta, title: "" };
+    expect(formatRerankDoc(`---\r\n${"x".repeat(390)}\r\n---\r\nBODY`, bare)).toBe("BODY");
+  });
+
+  test("strips a frontmatter block larger than 4000 chars, leaving the body", () => {
+    const bare = { ...meta, title: "" };
+    expect(formatRerankDoc(`---\n${"y".repeat(4990)}\n---\nBODY`, bare)).toBe("BODY");
+  });
+
+  test("keeps a frontmatter block of exactly 350 chars, strips one of 351", () => {
+    const bare = { ...meta, title: "" };
+    const block350 = `---\n${"s".repeat(341)}\n---\n`;
+    expect(block350.length).toBe(350);
+    expect(formatRerankDoc(`${block350}BODY`, bare)).toBe(`${block350}BODY`);
+    expect(formatRerankDoc(`---\n${"z".repeat(342)}\n---\nBODY`, bare)).toBe("BODY");
   });
 });

@@ -315,14 +315,17 @@ export function updateCollectionSettings(
 export function addCollection(
   name: string,
   path: string,
-  pattern: string = "**/*.md"
+  pattern: string = "**/*.md",
+  opts?: { ignore?: string[] }
 ): void {
   const config = loadConfig();
+  const existing = config.collections[name];
 
   config.collections[name] = {
+    ...existing, // Merge: preserve ignore/includeByDefault/update/context, never drop
     path,
     pattern,
-    context: config.collections[name]?.context, // Preserve existing context
+    ...(opts?.ignore !== undefined ? { ignore: opts.ignore } : {}),
   };
 
   saveConfig(config);
@@ -382,14 +385,6 @@ export function setGlobalContext(context: string | undefined): void {
   const config = loadConfig();
   config.global_context = context;
   saveConfig(config);
-}
-
-/**
- * Get all contexts for a collection
- */
-export function getContexts(collectionName: string): ContextMap | undefined {
-  const collection = getCollection(collectionName);
-  return collection?.context;
 }
 
 /**
@@ -499,9 +494,18 @@ export function findContextForPath(
     // Normalize paths for comparison
     const normalizedPath = filePath.startsWith("/") ? filePath : `/${filePath}`;
     const normalizedPrefix = prefix.startsWith("/") ? prefix : `/${prefix}`;
+    // Strip trailing slashes (except root) so "/202/" behaves as "/202"
+    const cleanPrefix =
+      normalizedPrefix !== "/" ? normalizedPrefix.replace(/\/+$/, "") : normalizedPrefix;
 
-    if (normalizedPath.startsWith(normalizedPrefix)) {
-      matches.push({ prefix: normalizedPrefix, context });
+    // Segment-boundary match: the candidate must equal the path or be
+    // followed by "/" (mirrors getRelativePathFromPrefix in store.ts).
+    // Bare startsWith would let "/202" wrongly apply to "/2024/a.md".
+    if (
+      normalizedPath === cleanPrefix ||
+      normalizedPath.startsWith(cleanPrefix === "/" ? "/" : `${cleanPrefix}/`)
+    ) {
+      matches.push({ prefix: cleanPrefix, context });
     }
   }
 
@@ -534,13 +538,4 @@ export function configExists(): boolean {
   if (configSource.type === 'inline') return true;
   const path = configSource.path || getConfigFilePath();
   return existsSync(path);
-}
-
-/**
- * Validate a collection name
- * Collection names must be valid and not contain special characters
- */
-export function isValidCollectionName(name: string): boolean {
-  // Allow alphanumeric, hyphens, underscores
-  return /^[a-zA-Z0-9_-]+$/.test(name);
 }
