@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+## [2.8.3-ko.10] - 2026-10-15
+
+ko-qmd 2.8.3-ko.10 adds a shared working memory for agents: three MCP tools
+write provenance-tagged claims into a `mem` collection and read them back, so
+Claude Code, opencode and pi share one store through the same daemon.
+
+- MCP: `memory_store`, `memory_recall` and `memory_correct` over a collection
+  named `mem`. Every claim carries `actor`, `type` (fact · opinion · decision),
+  optional `source` and `project` frontmatter. A claim-lint gate (R1–R6) rejects
+  missing fields, facts or decisions without a locatable source, oversize
+  fields, out-of-range confidence and anything that looks like a secret before
+  a file is written. Corrections are append-only: `memory_correct`
+  writes a new file that `supersedes` the old one and stamps the old file with a
+  `superseded_by` footer. `memory_recall` searches `mem` and `kb` together,
+  narrows by actor or project, and marks a replaced claim with `superseded_by`.
+  Writes are lex-searchable at once; vectors follow on the next
+  `qmd embed -c mem`.
+- `memory_correct` path checks use the platform separator, so the
+  stay-inside-the-collection check no longer rejects every correction on
+  Windows.
+- Build: minification calls the esbuild JS API instead of spawning
+  `node_modules/.bin/esbuild.exe`, which npm never creates on Windows
+  (only `.cmd`/`.ps1` shims), so `npm install` fails there no more.
+
 - `qmd mcp --http --port` now validates the port: non-numeric or outside
   1–65535 exits 1 with an error instead of silently falling back to 8181
   (`--port 0`/`abc`) or crashing downstream on bind (`--port -1`).
@@ -46,6 +70,8 @@
   are byte-identical before and after; Nix flake `qmd-node-modules` FOD hashes
   refreshed for the new tree.
 
+## [2.8.3-ko.9] - 2026-10-10
+
 ko-qmd 2.8.3-ko.9 buys rank-1 accuracy and rerank latency at once. Per-document
 coverage weighting on relaxed lex lists takes hard `hybrid_r1` from 0.4444 to
 0.4778, and head-first rerank cascade halves rerank p50 with identical top-1
@@ -73,6 +99,24 @@ the query, as the scoring deadlines never covered the pre-ready wait.
   constant could not split the mirrored tie of `hmu-05` vs `sem-08` (2026-10-09
   probe); both lead one list and take the same top-rank bonus, so only a per-doc
   signal separates them. List weights are unchanged.
+## [2.8.3-ko.8] - 2026-10-09
+
+- `structuredSearch` (MCP `searches`, SDK `search({ queries })`) no longer lets a relaxed
+  (any-word) first lex list keep the 2x positional boost: it now counts 0.25 instead of 1.0.
+  Even halved, a relaxed rank 1 still tied a vector rank 1 against a lex rank 4 (`hmu-05`
+  probe), so the decoy sharing a few question words kept rank 1 on the `rerank:false` path.
+  On the ko-vault seam form, hard `hybrid_r1` goes 0.4111 → 0.4444 with `full_r1` unchanged at
+  0.6111; one easy query (`sem-08`) trades hybrid rank 1 for 2 while its `full` rank 1 and all
+  recall@5 lines hold. Non-first relaxed lists still count half, as before.
+- Hangul loanword table gains 11 entries mined from real query-log traffic (`지연` →
+  `latency`, `병렬` → `parallel`, `게이트` → `gate`, `가드` → `guard`, `패널` → `panel`,
+  `팔레트` → `palette`, `하네스` → `harness`, `옵시디언` → `obsidian`, `백링크` → `backlink`,
+  `포즈` → `pause`, `루프` → `loop`). Native words from the same logs (`색인`·`질의`·`요약`·`문서`
+  …) stay unbridged. Query-side only, no re-index; ko-vault bench lines are unchanged.
+- Negation routing stays strip-only by measurement: demoting X with lex `-term`s was tried
+  and reverted — the expected note often discusses X itself (`bm25-ranking.md` mentions TF-IDF),
+  so NOT removed the answer with the decoy (`hybrid_r1` 0.4111 → 0.3778). `stripHangulNegation`
+  now shares its parsing through an internal split helper; behavior is unchanged.
 
 ## [2.8.3-ko.7] - 2026-10-02
 
