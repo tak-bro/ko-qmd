@@ -38,6 +38,12 @@ jobs:
 
       - run: npm run build
 
+      # Gate the tarball that is about to ship: every files[] entry exists, bin is
+      # executable, the dist entry points resolve, and the CLI answers --help under
+      # both Node and Bun. `bun test` above checks none of that.
+      - name: Package smoke
+        run: node scripts/package-smoke.mjs
+
       # Idempotent: a version that is already on the registry (first publishes are
       # manual, and a tag may be re-pushed) is skipped instead of failing with 403,
       # so the GitHub release below is still created.
