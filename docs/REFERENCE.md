@@ -267,7 +267,7 @@ Point any MCP client at `http://localhost:8181/mcp` to connect.
 | `get` | `maxLines` | number | Limit returned lines |
 | `get` | `lineNumbers` | boolean | Prefix lines with numbers (default **true**) |
 | `multi_get` | `pattern` | string | Glob pattern or comma-separated list |
-| `multi_get` | `maxBytes` | number | Skip files larger than N (default 10240) |
+| `multi_get` | `maxBytes` | number | Skip files larger than N (default 65536 = 64KB) |
 | `multi_get` | `maxLines` | number | Limit lines per file |
 | `multi_get` | `lineNumbers` | boolean | Prefix lines with numbers (default **true**) |
 | `grep` | `pattern` | string | ko-qmd: regex, or a literal when `fixedString` is set. **Required.** |
