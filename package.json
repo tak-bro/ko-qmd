@@ -79,9 +79,9 @@
     "sqlite-vec-windows-x64": "0.1.9"
   },
   "devDependencies": {
-    "@oxlint/plugins": "1.87.0",
+    "@oxlint/plugins": "1.88.0",
     "@types/better-sqlite3": "7.6.13",
-    "oxlint": "1.87.0",
+    "oxlint": "1.88.0",
     "tsx": "4.23.15",
     "vitest": "3.2.7"
   },
