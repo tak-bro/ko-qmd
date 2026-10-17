@@ -1,4 +1,4 @@
-# Windows 에서 git 태그 설치(prepare = tsc 빌드)가 되는지 본다 — 앱이 이 경로로 소비한다.
+# Windows 에서 푸시된 ref 의 git 설치(prepare = tsc 빌드)가 되는지 본다 — 앱이 이 경로로 소비한다.
 name: Windows git install
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ jobs:
   git-install:
     runs-on: windows-latest
     steps:
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       # npm and pnpm resolve any github.com URL through hosted-git-info and try SSH
@@ -25,19 +25,23 @@ jobs:
           git config --global url."$AUTH".insteadOf "ssh://git@github.com/"
           git config --global --add url."$AUTH".insteadOf "git@github.com:"
           git config --global --add url."$AUTH".insteadOf "https://github.com/"
-      - name: npm install from tag
+      - name: npm install from the pushed ref
         shell: bash
+        env:
+          PROBE_REF: ${{ github.ref_name }}
         run: |
           mkdir -p "$RUNNER_TEMP/npm-probe" && cd "$RUNNER_TEMP/npm-probe"
           npm init -y >/dev/null
-          npm i --foreground-scripts --no-audit --no-fund "git+https://github.com/tak-bro/ko-qmd.git#main"
+          npm i --foreground-scripts --no-audit --no-fund "git+https://github.com/tak-bro/ko-qmd.git#${PROBE_REF}"
           node -e "require('fs').accessSync('node_modules/ko-qmd/dist/index.js')"
-      - name: pnpm install from tag
+      - name: pnpm install from the pushed ref
         if: always()
         shell: bash
+        env:
+          PROBE_REF: ${{ github.ref_name }}
         run: |
           npm i -g pnpm@10.17.1
           mkdir -p "$RUNNER_TEMP/pnpm-probe" && cd "$RUNNER_TEMP/pnpm-probe"
           npm init -y >/dev/null
-          pnpm add --reporter=append-only --loglevel=debug "git+https://github.com/tak-bro/ko-qmd.git#main"
+          pnpm add --reporter=append-only --loglevel=debug "git+https://github.com/tak-bro/ko-qmd.git#${PROBE_REF}"
           node -e "require('fs').accessSync('node_modules/ko-qmd/dist/index.js')"
