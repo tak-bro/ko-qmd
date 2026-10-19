@@ -100,7 +100,11 @@ Although the tool works perfectly fine when you just tell your agent to use it o
 - `query` — Search with typed sub-queries (`lex`/`vec`/`hyde`), combined via RRF + reranking
 - `get` — Retrieve a document by path or docid (with fuzzy matching suggestions)
 - `multi_get` — Batch retrieve by glob pattern, comma-separated list, or docids
+- `grep` — Exact regex or literal search across document bodies, returns matching lines with line numbers
 - `status` — Index health and collection info
+- `memory_store` — Store one claim (fact/opinion/decision) with provenance into the shared mem collection
+- `memory_recall` — Recall shared memory across mem + kb collections, with actor/project narrowing
+- `memory_correct` — Append-only correction of a mem file (supersedes chain)
 
 **Claude Desktop configuration** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 
@@ -267,7 +271,7 @@ Point any MCP client at `http://localhost:8181/mcp` to connect.
 | `get` | `maxLines` | number | Limit returned lines |
 | `get` | `lineNumbers` | boolean | Prefix lines with numbers (default **true**) |
 | `multi_get` | `pattern` | string | Glob pattern or comma-separated list |
-| `multi_get` | `maxBytes` | number | Skip files larger than N (default 10240) |
+| `multi_get` | `maxBytes` | number | Skip files larger than N (default 65536 = 64KB) |
 | `multi_get` | `maxLines` | number | Limit lines per file |
 | `multi_get` | `lineNumbers` | boolean | Prefix lines with numbers (default **true**) |
 | `grep` | `pattern` | string | ko-qmd: regex, or a literal when `fixedString` is set. **Required.** |
@@ -277,6 +281,27 @@ Point any MCP client at `http://localhost:8181/mcp` to connect.
 | `grep` | `maxLinesPerFile` | number | Max reported lines per file (default 20) |
 | `grep` | `caseSensitive` | boolean | Override smart case |
 | `grep` | `fixedString` | boolean | Treat the pattern as a literal string |
+| `memory_store` | `text` | string | The claim, one idea per call. **Required.** |
+| `memory_store` | `actor` | string | Who says it: `user` or `agent:<harness\|lane>`. **Required.** |
+| `memory_store` | `type` | enum | `fact` / `opinion` / `decision`. Facts and decisions require `source`. **Required.** |
+| `memory_store` | `source` | string \| null | Where it came from (file:line, URL, session ref). Required for fact/decision. |
+| `memory_store` | `project` | string \| null | Project tag for narrowing recall. |
+| `memory_store` | `confidence` | number | 0..1 when known. |
+| `memory_recall` | `query` | string | Plain-text query, auto-expanded unless it has Hangul. Mutually exclusive with `searches`. |
+| `memory_recall` | `searches` | array | Typed sub-queries (`lex`/`vec`/`hyde`); mutually exclusive with `query`. |
+| `memory_recall` | `actor` | string \| null | Narrow to who said it. |
+| `memory_recall` | `project` | string \| null | Narrow to a project tag. |
+| `memory_recall` | `limit` | number | Max hits, 1..50 (default 5). |
+| `memory_recall` | `collections` | string[] | Override search scope; default `[mem, kb]` ∩ known collections. |
+| `memory_recall` | `filter` | object | Extra metadata filter (JSON AST), AND-combined with actor/project. |
+| `memory_recall` | `rerank` | boolean | true = LLM rerank (slower); omitted/false = fused RRF fast path. |
+| `memory_correct` | `file` | string | Mem filename to correct (e.g. `20261014-210000-abcdef12.md`). **Required.** |
+| `memory_correct` | `text` | string | The corrected claim. **Required.** |
+| `memory_correct` | `reason` | string | Why the old claim was wrong. **Required.** |
+| `memory_correct` | `actor` | string | Who corrects it. **Required.** |
+| `memory_correct` | `type` | enum \| null | Defaults to the old claim's type. |
+| `memory_correct` | `source` | string \| null | Evidence for the correction — never inherited. Required when type is fact/decision. |
+| `memory_correct` | `project` | string \| null | Defaults to the old claim's project. |
 
 Unknown parameters are silently ignored (not rejected) — double-check names if
 results seem unscoped. The HTTP `/query` and `/search` endpoints return

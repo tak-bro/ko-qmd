@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+- Release: the publish workflow runs the package smoke test before
+  `npm publish`, so a tarball that fails to install or start never ships.
+- CI: the Windows git-install job installs the pushed ref instead of `main`;
+  `docs/vault-search/WINDOWS.md` records the accepted Windows test failures.
+- Deps: zod 4.6.7, oxlint 1.88.0, actions/checkout and setup-node v7.
+- Docs: REFERENCE documents the memory MCP tools and `grep`, and corrects the
+  `multi_get` `maxBytes` default to 65536.
+
 ## [2.8.3-ko.10] - 2026-10-15
 
 ko-qmd 2.8.3-ko.10 adds a shared working memory for agents: three MCP tools
