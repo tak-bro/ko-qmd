@@ -282,7 +282,7 @@ Point any MCP client at `http://localhost:8181/mcp` to connect.
 | `grep` | `caseSensitive` | boolean | Override smart case |
 | `grep` | `fixedString` | boolean | Treat the pattern as a literal string |
 | `memory_store` | `text` | string | The claim, one idea per call. **Required.** |
-| `memory_store` | `actor` | string | Who says it: `user` or `agent:<harness|lane>`. **Required.** |
+| `memory_store` | `actor` | string | Who says it: `user` or `agent:<harness\|lane>`. **Required.** |
 | `memory_store` | `type` | enum | `fact` / `opinion` / `decision`. Facts and decisions require `source`. **Required.** |
 | `memory_store` | `source` | string \| null | Where it came from (file:line, URL, session ref). Required for fact/decision. |
 | `memory_store` | `project` | string \| null | Project tag for narrowing recall. |

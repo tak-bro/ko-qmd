@@ -40,8 +40,8 @@ Failing test files:
 ## Refreshing this list
 
 ```sh
-RUN=$(gh run list --branch develop --workflow CI --limit 1 --json databaseId --jq '.[0].databaseId')
-gh run view "$RUN" --log \
+RUN=$(gh run list -R tak-bro/ko-qmd --branch develop --workflow CI --limit 1 --json databaseId --jq '.[0].databaseId')
+gh run view -R tak-bro/ko-qmd "$RUN" --log \
   | grep 'Node 22 (windows-latest)' \
   | perl -pe 's/\e\[[0-9;]*m//g' \
   | grep 'FAIL' | grep -oE 'test/[a-z0-9._-]+\.test\.ts' | sort -u
