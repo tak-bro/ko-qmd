@@ -2080,6 +2080,39 @@ describe("CLI Context Management", () => {
     expect(stdout).toContain("✓ Added context for: qmd://fixtures/notes");
   });
 
+  test("add context by filesystem path when the collection path is relative", async () => {
+    const projectDir = join(testDir, `ctx-relative-project-${++testCounter}`);
+    const docsDir = join(projectDir, "docs");
+    await mkdir(docsDir, { recursive: true });
+    await writeFile(join(docsDir, "a.md"), "# A\n\nbody\n");
+    await mkdir(join(projectDir, ".qmd"), { recursive: true });
+    // REFERENCE documents in-project paths such as ./docs; indexing resolves
+    // them, so context add must too (it compares a realpath against this).
+    await writeFile(
+      join(projectDir, ".qmd", "index.yml"),
+      `collections:\n  docs:\n    path: docs\n    pattern: "**/*.md"\n`,
+    );
+    const update = await runQmd(["update"], { cwd: projectDir });
+    expect(update.exitCode).toBe(0);
+
+    const { stdout, stderr, exitCode } = await runQmd(
+      ["context", "add", "docs", "Folder context"],
+      { cwd: projectDir },
+    );
+    expect(stderr).not.toContain("not in any indexed collection");
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("✓ Added context for: qmd://docs/");
+
+    // A descendant keeps only the part below the collection root.
+    const nested = await runQmd(
+      ["context", "add", "docs/nested", "Nested folder"],
+      { cwd: projectDir },
+    );
+    expect(nested.stderr).not.toContain("not in any indexed collection");
+    expect(nested.exitCode).toBe(0);
+    expect(nested.stdout).toContain("✓ Added context for: qmd://docs/nested");
+  });
+
   test("remove global context", async () => {
     // Add a global context first
     await runQmd([

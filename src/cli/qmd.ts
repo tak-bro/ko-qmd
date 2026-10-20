@@ -15,6 +15,7 @@ import {
   getPwd,
   getRealPath,
   isPathInsideDir,
+  getRelativePathFromPrefix,
   homedir,
   resolve,
   enableProductionMode,
@@ -1110,38 +1111,56 @@ async function updateCollections(): Promise<number> {
 }
 
 /**
+ * Resolve symlinks in the deepest existing ancestor of `p` and append the
+ * part that does not exist yet. A path below a collection root must compare
+ * equal to that root even before it is created, and `qmd context add` accepts
+ * such a path (macOS /var vs /private/var is the common mismatch).
+ */
+function canonicalizeForMatch(p: string): string {
+  const tail: string[] = [];
+  let head = resolve(p);
+  while (true) {
+    try {
+      return resolve(realpathSync(head), ...tail);
+    } catch {
+      const parent = dirname(head);
+      if (parent === head) return resolve(p);
+      tail.unshift(basename(head));
+      head = parent;
+    }
+  }
+}
+
+/**
  * Detect which collection (if any) contains the given filesystem path.
  * Returns { collectionId, collectionName, relativePath } or null if not in any collection.
  */
 function detectCollectionFromPath(db: Database, fsPath: string): { collectionName: string; relativePath: string } | null {
-  const realPath = getRealPath(fsPath);
+  const realPath = canonicalizeForMatch(fsPath);
 
   // Find collections that this path is under from YAML
   const allCollections = yamlListCollections();
 
-  // Find longest matching path
-  let bestMatch: { name: string; path: string } | null = null;
+  // Find longest matching path. Canonicalize the YAML side too: a project
+  // config may carry a relative in-project path (`./docs`) or one written
+  // before collectionAdd started realpath-ing (macOS /var vs /private/var).
+  // Indexing already canonicalizes both sides via isPathInsideDir.
+  let bestMatch: { name: string; path: string; relativePath: string } | null = null;
   for (const coll of allCollections) {
-    if (realPath.startsWith(coll.path + '/') || realPath === coll.path) {
-      if (!bestMatch || coll.path.length > bestMatch.path.length) {
-        bestMatch = { name: coll.name, path: coll.path };
-      }
+    if (typeof coll.path !== "string" || !coll.path) continue;
+    const collPath = canonicalizeForMatch(coll.path);
+    const rel = getRelativePathFromPrefix(realPath, collPath);
+    if (rel === null) continue;
+    if (!bestMatch || collPath.length > bestMatch.path.length) {
+      bestMatch = { name: coll.name, path: collPath, relativePath: rel };
     }
   }
 
   if (!bestMatch) return null;
 
-  // Calculate relative path
-  let relativePath = realPath;
-  if (relativePath.startsWith(bestMatch.path + '/')) {
-    relativePath = relativePath.slice(bestMatch.path.length + 1);
-  } else if (relativePath === bestMatch.path) {
-    relativePath = '';
-  }
-
   return {
     collectionName: bestMatch.name,
-    relativePath
+    relativePath: bestMatch.relativePath
   };
 }
 

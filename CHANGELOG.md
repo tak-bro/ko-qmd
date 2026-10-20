@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Context: `qmd context add <path>` resolves the collection path the same way
+  indexing does, so relative (`./docs`) and symlinked project paths are found
+  instead of reporting "not in any indexed collection".
 - Embed: `qmd embed` exits 1 when chunks still fail after retries, so
   `qmd embed && deploy` automation cannot mistake a partial index for
   success (the lock-busy skip already exits nonzero).
