@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Embed: `qmd embed` exits 1 when chunks still fail after retries, so
+  `qmd embed && deploy` automation cannot mistake a partial index for
+  success (the lock-busy skip already exits nonzero).
 - Scripts: `npm run test:bun` runs `test/` only, so bun no longer collects the
   oxlint RuleTester tests it cannot execute.
 - Docs: CLAUDE.md drops the removed `qmd context check` command.

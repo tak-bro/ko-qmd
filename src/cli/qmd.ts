@@ -2362,7 +2362,7 @@ export async function vectorIndex(
   force: boolean = false,
   batchOptions?: { maxDocsPerBatch?: number; maxBatchBytes?: number; chunkStrategy?: ChunkStrategy; collection?: string; maxDurationMs?: number },
   deps?: { runEmbeddings?: typeof generateEmbeddings },
-): Promise<void> {
+): Promise<number> {
   const storeInstance = getStore();
   const db = storeInstance.db;
   const runEmbeddings = deps?.runEmbeddings ?? generateEmbeddings;
@@ -2390,7 +2390,7 @@ export async function vectorIndex(
     if (hashesToEmbed === 0 && !force) {
       console.log(`${c.green}✓ All content hashes already have embeddings.${c.reset}`);
       closeDb();
-      return;
+      return 0;
     }
 
     console.log(`${c.dim}Model: ${shortModelName(model)}${c.reset}\n`);
@@ -2447,23 +2447,34 @@ export async function vectorIndex(
 
     const totalTimeSec = result.durationMs / 1000;
 
+    const reportFailures = () => {
+      if (result.errors === 0) return;
+      console.log(`${c.yellow}⚠ ${formatCount(result.errors)} chunks still failed after retries${c.reset}`);
+      for (const failure of (result.failures ?? []).slice(0, 8)) {
+        console.log(`  ${c.dim}${failure.path}#${failure.seq} (${failure.attempts} attempts): ${failure.reason}${c.reset}`);
+      }
+      if ((result.failures?.length ?? 0) > 8) {
+        console.log(`  ${c.dim}...and ${formatCount((result.failures?.length ?? 0) - 8)} more${c.reset}`);
+      }
+    };
+
     if (result.chunksEmbedded === 0 && result.docsProcessed === 0) {
-      console.log(`${c.green}✓ No non-empty documents to embed.${c.reset}`);
+      // An all-failed run (error-rate abort, model unavailable) lands here
+      // with errors > 0 too — do not print a green checkmark for it.
+      console.log(result.errors > 0
+        ? `${c.yellow}✗ No chunks embedded.${c.reset}`
+        : `${c.green}✓ No non-empty documents to embed.${c.reset}`);
+      reportFailures();
     } else {
       console.log(`\r${c.green}${renderProgressBar(100)}${c.reset} ${c.bold}100%${c.reset}                                    `);
       console.log(`\n${c.green}✓ Done!${c.reset} Embedded ${c.bold}${result.chunksEmbedded}${c.reset} chunks from ${c.bold}${result.docsProcessed}${c.reset} documents in ${c.bold}${formatETA(totalTimeSec)}${c.reset}`);
-      if (result.errors > 0) {
-        console.log(`${c.yellow}⚠ ${formatCount(result.errors)} chunks still failed after retries${c.reset}`);
-        for (const failure of (result.failures ?? []).slice(0, 8)) {
-          console.log(`  ${c.dim}${failure.path}#${failure.seq} (${failure.attempts} attempts): ${failure.reason}${c.reset}`);
-        }
-        if ((result.failures?.length ?? 0) > 8) {
-          console.log(`  ${c.dim}...and ${formatCount((result.failures?.length ?? 0) - 8)} more${c.reset}`);
-        }
-      }
+      reportFailures();
     }
 
     closeDb();
+    // Surviving failures mean this run did not finish the index; the caller
+    // turns a positive count into a nonzero exit for automation.
+    return result.errors;
   } finally {
     embedLock.release();
   }
@@ -5218,13 +5229,17 @@ if (isMain) {
         if (maxBatchBytes !== undefined && maxBatchBytes < 1) {
           throw new Error(`--max-batch-mb is too small (rounds to 0 bytes)`);
         }
-        await vectorIndex(resolveModelsForRuntime().embed, !!cli.values.force, {
+        const failedChunks = await vectorIndex(resolveModelsForRuntime().embed, !!cli.values.force, {
           maxDocsPerBatch,
           maxBatchBytes,
           chunkStrategy: embedChunkStrategy,
           collection: embedCollection,
           maxDurationMs: embedMaxDurationMs,
         });
+        // A run that leaves chunks failed did not finish the index. Exit
+        // directly: finishSuccessfulCliCommand would reset exitCode to 0
+        // (same reason the lock-busy skip exits here instead of setting it).
+        if (failedChunks > 0) process.exit(1);
       } catch (error) {
         exitWithError(error);
       }
