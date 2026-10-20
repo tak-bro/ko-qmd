@@ -4,6 +4,7 @@
 
 - Scripts: `npm run test:bun` runs `test/` only, so bun no longer collects the
   oxlint RuleTester tests it cannot execute.
+- Docs: CLAUDE.md drops the removed `qmd context check` command.
 - Release: the publish workflow runs the package smoke test before
   `npm publish`, so a tarball that fails to install or start never ships.
 - CI: the Windows git-install job installs the pushed ref instead of `main`;
