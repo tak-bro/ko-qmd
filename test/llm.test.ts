@@ -38,6 +38,7 @@ import {
   canUnloadLLM,
   SessionReleasedError,
   inspectGgufFile,
+  DEFAULT_RERANK_MAX_DOC_TOKENS,
   type RerankDocument,
   type ILLMSession,
 } from "../src/llm.js";
@@ -1204,14 +1205,25 @@ describe("LlamaCpp rerank doc token cap (QMD_RERANK_MAX_DOC_TOKENS)", () => {
     expect(rankAll).toHaveBeenCalledWith("q", ["abcd", "xy"]);
   });
 
-  test("unset, docs go in whole up to the context budget", async () => {
+  test("unset env applies the default cap", async () => {
     const llm = withEnv(undefined);
-    expect(llm.rerankMaxDocTokens).toBeUndefined();
+    expect(llm.rerankMaxDocTokens).toBe(DEFAULT_RERANK_MAX_DOC_TOKENS);
     const rankAll = stubRerank(llm);
 
-    await llm.rerank("q", [{ file: "a.md", text: "abcdefgh" }]);
+    await llm.rerank("q", [{ file: "a.md", text: "x".repeat(DEFAULT_RERANK_MAX_DOC_TOKENS + 10) }]);
 
-    expect(rankAll).toHaveBeenCalledWith("q", ["abcdefgh"]);
+    expect(rankAll.mock.calls[0]![1][0]).toHaveLength(DEFAULT_RERANK_MAX_DOC_TOKENS);
+  });
+
+  test("0 disables the cap: docs go in whole up to the context budget", async () => {
+    const llm = withEnv("0");
+    expect(llm.rerankMaxDocTokens).toBeUndefined();
+    const rankAll = stubRerank(llm);
+    const long = "x".repeat(DEFAULT_RERANK_MAX_DOC_TOKENS + 10);
+
+    await llm.rerank("q", [{ file: "a.md", text: long }]);
+
+    expect(rankAll).toHaveBeenCalledWith("q", [long]);
   });
 
   test("a cap above the context budget cannot raise it", async () => {
@@ -1226,8 +1238,8 @@ describe("LlamaCpp rerank doc token cap (QMD_RERANK_MAX_DOC_TOKENS)", () => {
     expect(rankAll.mock.calls[0]![1][0]).toHaveLength(contextBudget);
   });
 
-  test.each(["0", "-5", "abc", ""])("invalid value %j counts as unset", (value) => {
-    expect(withEnv(value).rerankMaxDocTokens).toBeUndefined();
+  test.each(["-5", "abc", "", "0.5", "0x100", "-0"])("invalid value %j counts as unset (default cap)", (value) => {
+    expect(withEnv(value).rerankMaxDocTokens).toBe(DEFAULT_RERANK_MAX_DOC_TOKENS);
   });
 
   test("a per-call maxDocTokens overrides the env cap for that call only", async () => {
@@ -1781,7 +1793,8 @@ describe.skipIf(!!process.env.CI)("LlamaCpp Integration", () => {
 
       console.log(`Long doc length: ${longText.length} chars (~${Math.round(longText.length / 4)} tokens)`);
 
-      const result = await llm.rerank(query, documents);
+      // Lift the default doc token cap so the long doc reaches the context budget path.
+      const result = await llm.rerank(query, documents, { maxDocTokens: 100000 });
 
       // Should return all 3 documents without crashing
       expect(result.results).toHaveLength(3);

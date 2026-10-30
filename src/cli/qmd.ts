@@ -4342,7 +4342,7 @@ function collectEnvironmentOverrides(activeModels: { embed: string; generate: st
   add("QMD_RERANK_CASCADE", "0/false/off/no disables head-first cascade rerank and scores all candidates at once");
   add("QMD_EXPAND_CONTEXT_SIZE", "overrides query expansion context size; larger values use more memory");
   add("QMD_RERANK_CONTEXT_SIZE", "overrides reranker context size; larger values use more memory");
-  add("QMD_RERANK_MAX_DOC_TOKENS", "caps tokens per document sent to the reranker; lower is faster but scores less text");
+  add("QMD_RERANK_MAX_DOC_TOKENS", "caps tokens per document sent to the reranker (default 256, 0 = no cap); lower is faster but scores less text");
   add("QMD_EMBED_CONTEXT_SIZE", "overrides embed context size; larger values use more memory");
   add("QMD_EDITOR_URI", "overrides clickable editor link template in terminal output");
   add("QMD_SKILLS_DIR", "overrides where qmd skills are discovered from");

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+- Rerank now caps each document at 256 tokens by default
+  (`DEFAULT_RERANK_MAX_DOC_TOKENS` in `src/llm.ts`); `QMD_RERANK_MAX_DOC_TOKENS=0`
+  restores whole chunks, and an unset or invalid value takes the default. Replaying
+  29 rerank queries from the daemon query log with the rerank cache cleared
+  (M3 Max): query p50 5323 → 1682 ms, p90 8508 → 2668 ms, rerank stage p50
+  4968 → 1343 ms. ko-vault seam bench: `full_mrr` 0.9440 → 0.9451, hard line
+  unchanged (`full_r1`=0.6630). The cap is part of the rerank cache key, so
+  uncapped cache rows miss once after upgrading.
 - Release: the publish workflow runs the package smoke test before
   `npm publish`, so a tarball that fails to install or start never ships.
 - CI: the Windows git-install job installs the pushed ref instead of `main`;
