@@ -44,8 +44,8 @@
         });
 
         nodeModulesHashes = {
-          x86_64-linux = "sha256-mVZX/NMYp3KzW3rAMi/6yh8/DKMXmii7AnC3C/YUI/4=";
-          aarch64-darwin = "sha256-7G8Xx9KtRwuQ6Qp9itoxtlGqfvpeO/3nml2JPXYUpYA=";
+          x86_64-linux = "sha256-eisdPsR/FGZzXnf8naWYl+JQEkV5OvDKR4c6Q/GF4mU=";
+          aarch64-darwin = "sha256-KIwwkK9JmL6CEULYoawlUBJTLSH0+hFnZoX6sk3BGao=";
 
           # Populate these on first build for additional hosts if/when needed.
           aarch64-linux = pkgs.lib.fakeHash;
