@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.8.3-ko.11] - 2026-10-31
+
 - Rerank now caps each document at 256 tokens by default
   (`DEFAULT_RERANK_MAX_DOC_TOKENS` in `src/llm.ts`); `QMD_RERANK_MAX_DOC_TOKENS=0`
   restores whole chunks, and an unset or invalid value takes the default. Replaying
