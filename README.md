@@ -79,8 +79,9 @@ flowchart LR
   그 경로의 `score` 는 1/순위라 임계값을 걸 수 없기 때문이다.
 - **모델 상주** — `QMD_LLM_IDLE_TIMEOUT_MS=0` 이면 모델을 내리지 않는다. 기본은 5분 idle 뒤 내린다.
 - **리랭크 입력 cap** — 리랭커에 보내는 문서당 토큰을 자른다. 데몬 전체는 `QMD_RERANK_MAX_DOC_TOKENS`,
-  요청 하나는 REST `rerankMaxDocTokens` 로 건다(요청 값이 우선). KB 골드셋에서 128토큰 cap 은 품질을 지키면서
-  콜드 p90 을 3.6s → 0.9s 로 줄였다(Apple M3 Max, 후보 15).
+  요청 하나는 REST `rerankMaxDocTokens` 로 건다(요청 값이 우선). 기본은 256토큰이고 `QMD_RERANK_MAX_DOC_TOKENS=0` 이면
+  자르지 않는다. 요청 값은 양의 정수만 받으므로 요청 하나에서 cap 을 풀려면 큰 값(예: 100000)을 보낸다. 데몬 쿼리 29건 재생에서 256 cap 은 쿼리 p50 을 5.3s → 1.7s 로 줄였고 ko-vault bench 지표는 같거나
+  올랐다(Apple M3 Max, 리랭크 캐시 비움). KB 골드셋에서는 128토큰도 품질을 지켰다(콜드 p90 3.6s → 0.9s, 후보 15).
 
 ## 설치
 
@@ -171,7 +172,7 @@ API 전체: [docs/REFERENCE.md § SDK / Library Usage](docs/REFERENCE.md#sdk--li
 | `QMD_LLM_IDLE_TIMEOUT_MS` | 모델을 내리기까지 idle ms (`0` = 내리지 않음) |
 | `QMD_LLM_LOAD_TIMEOUT_MS` | 모델 로드 대기의 상한 ms (기본 120000, `0` = 무한 대기). 넘으면 그 단계 없이 답하고 로드는 백그라운드에서 계속된다 |
 | `QMD_RERANK_CASCADE` | `0`/`false`/`off`/`no` 면 리랭크 cascade를 끄고 후보 전체를 한 번에 채점한다 |
-| `QMD_RERANK_MAX_DOC_TOKENS` | 리랭커에 보내는 문서당 토큰 cap (요청의 `rerankMaxDocTokens` 가 우선) |
+| `QMD_RERANK_MAX_DOC_TOKENS` | 리랭커에 보내는 문서당 토큰 cap (기본 256, `0` = 자르지 않음, 요청의 `rerankMaxDocTokens` 가 우선) |
 | `QMD_RERANK_CONTEXT_SIZE` · `QMD_EMBED_CONTEXT_SIZE` · `QMD_EXPAND_CONTEXT_SIZE` | 역할별 context 크기 |
 | `QMD_EMBED_PARALLELISM` | 병렬 context 수 (높으면 RAM/VRAM 고갈) |
 | `QMD_LLAMA_GPU` · `QMD_FORCE_CPU` | GPU 백엔드 선택·끄기 |

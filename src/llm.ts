@@ -229,6 +229,20 @@ export type GenerateOptions = {
 export const normalizeRerankMaxDocTokens = (value: unknown): number | undefined => // unknown: REST JSON and SDK input, narrowed here
   typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
 
+/**
+ * ko-qmd: default rerank doc token cap. On 29 replayed daemon queries (M3 Max, rerank cache
+ * cleared) 256 cut query p50 5323 → 1682 ms with ko-vault bench lines equal or higher.
+ */
+export const DEFAULT_RERANK_MAX_DOC_TOKENS = 256;
+
+/** QMD_RERANK_MAX_DOC_TOKENS → cap: unset or invalid gives the default, 0 gives no cap. */
+export const resolveRerankMaxDocTokens = (raw: string | undefined): number | undefined => {
+  // Only a literal 0 turns the cap off; "0.5" or "0x100" are typos and keep the default.
+  if (/^\s*0\s*$/.test(raw ?? "")) return undefined;
+  const value = parseInt(raw ?? "", 10);
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_RERANK_MAX_DOC_TOKENS;
+};
+
 export type RerankOptions = {
   model?: string;
   /** Per-call doc token cap; overrides QMD_RERANK_MAX_DOC_TOKENS, never raises the context budget. */
@@ -943,8 +957,9 @@ export class LlamaCpp implements LLM {
   private embedModelUri: string;
   private generateModelUri: string;
   private rerankModelUri: string;
-  // QMD_RERANK_MAX_DOC_TOKENS: optional per-doc token cap for rerank input, below the
-  // context budget. Rerank cost grows with input tokens; unset keeps whole chunks.
+  // QMD_RERANK_MAX_DOC_TOKENS: per-doc token cap for rerank input, below the context
+  // budget. Rerank cost grows with input tokens; unset or invalid uses
+  // DEFAULT_RERANK_MAX_DOC_TOKENS, 0 keeps whole chunks (undefined = no cap).
   // Read per instance (not a static) so it is set by the env at construction.
   readonly rerankMaxDocTokens: number | undefined;
   private modelCacheDir: string;
@@ -981,8 +996,7 @@ export class LlamaCpp implements LLM {
     this.embedModelUri = resolveEmbedModel({ embed: config.embedModel });
     this.generateModelUri = resolveGenerateModel({ generate: config.generateModel });
     this.rerankModelUri = resolveRerankModel({ rerank: config.rerankModel });
-    const maxDocTokens = parseInt(process.env.QMD_RERANK_MAX_DOC_TOKENS ?? "", 10);
-    this.rerankMaxDocTokens = Number.isFinite(maxDocTokens) && maxDocTokens > 0 ? maxDocTokens : undefined;
+    this.rerankMaxDocTokens = resolveRerankMaxDocTokens(process.env.QMD_RERANK_MAX_DOC_TOKENS);
     this.modelCacheDir = config.modelCacheDir || MODEL_CACHE_DIR;
     this.expandContextSize = resolveExpandContextSize(config.expandContextSize);
     this.inactivityTimeoutMs = resolveIdleTimeoutOverride()
