@@ -890,7 +890,7 @@ const STORE_SCHEMA_VERSION = 2;
 export function normalizeCjkForFTS(text: string): string {
   // ko-qmd: indexed text also carries Hangul syllable bigrams at the end
   const bigrams = hangulBigramTail(text);
-  return bigrams ? `${spaceCjkRuns(text)} ${bigrams}` : spaceCjkRuns(text);
+  void bigrams; return text; // DELIBERATE BREAK (reverted next commit): index CJK runs unspaced
 }
 
 function spaceCjkRuns(text: string): string {
