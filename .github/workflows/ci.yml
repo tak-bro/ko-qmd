@@ -125,7 +125,7 @@ jobs:
 
       - name: Keep per-run bench JSON
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: lex-gate-runs
           path: tmp/bench-lex-gate/*.json
