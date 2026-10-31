@@ -174,6 +174,14 @@ describe("perQueryMetrics", () => {
     expect(perQueryMetrics(bench, "bm25")).toEqual({ a: { r5: 1, rr: 0.5 }, b: { r5: 0, rr: 0 } });
   });
 
+  test("a backend that threw is an error, not a zero score", () => {
+    // runQuery records the exception and scores the query 0; the gate must not read that as a drop.
+    const bench: BenchmarkResult = JSON.parse(JSON.stringify({
+      results: [{ id: "a", query: "x", type: "exact", backends: { bm25: { recall_at_5: 0, mrr: 0, error: "SqliteError: fts5: syntax error" } } }],
+    }));
+    expect(() => perQueryMetrics(bench, "bm25")).toThrow(/a.*bm25.*threw.*fts5: syntax error/);
+  });
+
   test("a result without that backend throws", () => {
     const bench: BenchmarkResult = JSON.parse(JSON.stringify({
       results: [{ id: "a", query: "x", type: "exact", backends: {} }],

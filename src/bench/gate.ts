@@ -208,6 +208,7 @@ export function perQueryMetrics(bench: BenchmarkResult, backend: string): PerQue
   for (const r of bench.results) {
     const b = r.backends[backend];
     if (!b) throw new Error(`bench result for query ${r.id} has no ${backend} backend`);
+    if (b.error !== undefined) throw new Error(`bench result for query ${r.id}: ${backend} threw: ${b.error}`);
     out[r.id] = assertMetrics(r.id, { r5: b.recall_at_5, rr: b.mrr }, "bench");
   }
   return out;
