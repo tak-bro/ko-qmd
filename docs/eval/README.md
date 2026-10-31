@@ -35,6 +35,12 @@ change, run `bash scripts/bench-lex-gate.sh --update-baseline`.
 | Same tree vs baseline | same machine, 5 reps | `GATE PASS`; Δr5 0.0000 [0.0000, 0.0000] |
 | Hangul bigram tail dropped from the index | same machine, 1 rep, local only | `GATE WARN`; 5 queries lower; Δr5 −0.0041 [−0.0366, 0.0285], ΔMRR −0.0008 [−0.0045, 0.0030] |
 | CJK runs indexed unspaced (deliberate break) | same machine, 1 rep, local only | `GATE FAIL`, exit 1; 45 queries lower; Δr5 −0.2222 [−0.2995, −0.1463], ΔMRR −0.2107 [−0.2824, −0.1424] |
+| CI, unchanged tree | GitHub `ubuntu-latest`, Node 22, commit `3d6c962`, 5 reps | `GATE PASS`; r5 0.8875, MRR 0.8169 (identical to the local baseline); `NOISE differing=0` |
+| CI, deliberate break pushed | same runner, commit `154b298`, 5 reps | job red, exit 1; `GATE FAIL`, same numbers as the local break; `NOISE differing=0` |
+| CI, break reverted | same runner, commit `df6c639`, 5 reps | `GATE PASS`; no model cache found after the gate |
+
+The CI runner (ubuntu, Node 22) reproduced the macOS baseline to the fourth decimal, so one
+committed baseline serves both. A lex gate job takes about 40 s.
 
 The bigram row shows the WARN tier at work. Dropping the bigram tail lowers 5 queries and raises
 others, and the interval cannot tell the net change from zero. So the gate warns and names the 5
