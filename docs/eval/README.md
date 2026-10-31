@@ -5,9 +5,10 @@ and the measured result with its conditions (machine, model, commit, repeat coun
 
 ## Stage 1 — lex (BM25) CI gate
 
-**What.** Every push and pull request benches the bm25 path, the only one that needs no model, over
-the ko-vault goldset: 123 queries in `test/fixtures/ko-vault/ko-bench.json` against the 97 notes that
-`qmd update` indexes from `wiki/` and `distractors/`. The gate fails a change that lowers recall@5 or
+**What.** CI benches the bm25 path, the only one that needs no model, on every push to `main`,
+`develop` or `feat/**` and every pull request into `main` or `develop`. It runs the ko-vault goldset:
+123 queries in `test/fixtures/ko-vault/ko-bench.json` against the 97 notes that `qmd update` indexes
+from `wiki/` and `distractors/`. The gate fails a change that lowers recall@5 or
 MRR by more than the query sample can explain.
 
 **How.** `scripts/bench-lex-gate.sh` builds a fresh index with `qmd update` (no `qmd embed`) and runs

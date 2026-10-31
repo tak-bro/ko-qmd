@@ -8,7 +8,7 @@
 #
 # No model is needed: the index is built with `qmd update` only (no `qmd embed`), the generated
 # index.yml has no `models:` block, and `qmd bench --backend bm25` never touches the vector or
-# rerank paths. CI runs this on every push (.github/workflows/ci.yml job `lex-gate`).
+# rerank paths. CI runs this as the `lex-gate` job (.github/workflows/ci.yml; its push/PR branches).
 #
 # Each of the LEX_REPS runs rebuilds the index from scratch, so the `NOISE` line measures
 # run-to-run variation of the whole index + search path. The verdict uses the per-query mean.
