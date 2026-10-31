@@ -167,6 +167,9 @@ const BACKENDS: Backend[] = [
   },
 ];
 
+/** Backend names `runBenchmark` accepts in `options.backends`, in run order. */
+export const BENCH_BACKEND_NAMES: readonly string[] = BACKENDS.map(b => b.name);
+
 async function runQuery(
   store: QMDStore,
   backend: Backend,
@@ -182,9 +185,11 @@ async function runQuery(
   let resultFiles: string[];
   try {
     resultFiles = await backend.run(store, query, limit, collection);
-  } catch {
-    // Backend may not be available (e.g., no embeddings for vector search)
+  } catch (err) {
+    // Backend may not be available (e.g., no embeddings for vector search). The message is kept so
+    // a crash is not read as a relevance miss (src/bench/gate.ts perQueryMetrics refuses it).
     return {
+      error: err instanceof Error ? err.message : String(err),
       precision_at_k: 0,
       recall: 0,
       recall_at_1: 0,

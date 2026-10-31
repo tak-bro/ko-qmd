@@ -177,6 +177,24 @@ describe("runBenchmark collection guard", () => {
     }
   });
 
+  test("a backend that throws records the error next to its zero scores", async () => {
+    const docs = join(dir, "docs");
+    await mkdir(docs, { recursive: true });
+    await writeFile(join(docs, "api.md"), "# API versioning\n\nUse /v1 and /v2 endpoints.\n");
+    const dbPath = join(dir, "index.sqlite");
+    const config = { collections: { docs: { path: docs, pattern: "**/*.md" } } };
+    const store = await createStore({ dbPath, config });
+    await store.update();
+    await store.close();
+
+    // A typed query with an unprefixed second line makes bm25's parseStructuredQuery throw.
+    const fixturePath = writeFixture("docs", "lex: API versioning\nno prefix here", "api.md");
+    const result = await runBenchmark(fixturePath, { json: true, dbPath, backends: ["bm25"], config });
+    const bm25 = result.results[0]!.backends.bm25!;
+    expect(bm25.recall_at_5).toBe(0);
+    expect(bm25.error).toMatch(/missing a lex:\/vec:\/hyde:\/intent: prefix/);
+  });
+
   test("warns on stderr when every backend scores zero", async () => {
     const docs = join(dir, "docs");
     await mkdir(docs, { recursive: true });

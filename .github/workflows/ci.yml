@@ -86,6 +86,51 @@ jobs:
           DYLD_LIBRARY_PATH: /opt/homebrew/opt/sqlite/lib
           LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
 
+  # ko-qmd: lex (BM25) evaluation gate. Benches bm25 alone over test/fixtures/ko-vault, five
+  # fresh-index runs, and compares per-query recall@5 / reciprocal rank with the committed
+  # baseline (test/fixtures/ko-vault/lex-baseline.json) by paired bootstrap. No model is
+  # downloaded: the index is built without `qmd embed`. Rules: src/bench/gate.ts.
+  lex-gate:
+    name: Lex eval gate (ubuntu-latest)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Install SQLite
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+
+      - run: npm install
+
+      - name: Lex gate
+        shell: bash
+        run: |
+          # The summary is written before the exit so a FAIL still shows its DELTA and DROP lines.
+          set +e
+          bash scripts/bench-lex-gate.sh 2>&1 | tee lex-gate.log
+          rc=${PIPESTATUS[0]}
+          { echo '```'; cat lex-gate.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+        env:
+          LEX_REPS: "5"
+
+      # The gate must stay model-free. A fresh runner has no model cache, so its existence after
+      # the gate means something on the update or bm25 bench path pulled a model.
+      - name: No model was downloaded
+        run: test ! -e "${XDG_CACHE_HOME:-$HOME/.cache}/qmd/models"
+
+      - name: Keep per-run bench JSON
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: lex-gate-runs
+          path: tmp/bench-lex-gate/*.json
+          if-no-files-found: ignore
+
   # ko-qmd: stands in for the Electron app build (Electron 39 / ABI 140).
   # electron is installed with --no-save so git-dependency consumers, which run
   # `prepare` with devDependencies, never download the Electron binary.

@@ -3562,6 +3562,8 @@ const CLI_OPTIONS: ParseArgsOptionsConfig = {
       until: { type: "string" },                 // only documents modified at/before this
       // Chunking options
       "chunk-strategy": { type: "string" },  // "regex" (default) or "auto" (AST for code files)
+      // Bench options
+      backend: { type: "string", multiple: true },  // bench: run only these backends (repeatable or comma list)
       // MCP HTTP transport options
       http: { type: "boolean" },
       daemon: { type: "boolean" },
@@ -4097,7 +4099,7 @@ function showHelp(): void {
   console.log("  qmd skills list/get/path      - List and retrieve bundled runtime skills");
   console.log("  qmd skill show/install        - Show or install the QMD skill");
   console.log("  qmd mcp                       - Start the MCP server (stdio transport for AI agents)");
-  console.log("  qmd bench <fixture.json>      - Run search quality benchmarks against a fixture file");
+  console.log("  qmd bench <fixture.json>      - Run search quality benchmarks against a fixture file (--backend bm25 = lex only)");
   console.log("");
   console.log("Collections & context:");
   console.log("  qmd collection add/list/remove/rename/show   - Manage indexed folders");
@@ -5313,22 +5315,34 @@ if (isMain) {
     case "bench": {
       const fixturePath = cli.args[0];
       if (!fixturePath) {
-        console.error("Usage: qmd bench <fixture.json> [--json] [-c collection]");
+        console.error("Usage: qmd bench <fixture.json> [--json] [-c collection] [--backend bm25,vector,hybrid,full]");
         console.error("");
         console.error("Run search quality benchmarks against a fixture file.");
         console.error("See src/bench/fixtures/example.json for the fixture format.");
         process.exit(1);
       }
-      const { runBenchmark } = await import("../bench/bench.js");
+      const { runBenchmark, BENCH_BACKEND_NAMES } = await import("../bench/bench.js");
       const benchCollection = cli.opts.collection;
       if (Array.isArray(benchCollection) && benchCollection.length > 1) {
         console.error(`qmd bench accepts only one -c/--collection; got: ${benchCollection.join(", ")}`);
+        process.exit(1);
+      }
+      const benchBackend = cli.values.backend;
+      const backends = Array.isArray(benchBackend)
+        ? benchBackend.flatMap(v => String(v).split(",")).map(v => v.trim()).filter(Boolean)
+        : undefined;
+      // runBenchmark keeps the known names of a partly valid list; the CLI rejects the typo instead
+      // of benching what is left (`--backend bm25,hybird` would otherwise run bm25 alone).
+      const unknownBackends = (backends ?? []).filter(b => !BENCH_BACKEND_NAMES.includes(b));
+      if (unknownBackends.length > 0) {
+        console.error(`Unknown backend(s): ${unknownBackends.join(", ")}.\nAvailable: ${BENCH_BACKEND_NAMES.join(", ")}.`);
         process.exit(1);
       }
       try {
         await runBenchmark(fixturePath, {
           json: !!cli.values.json,
           collection: Array.isArray(benchCollection) ? benchCollection[0] : benchCollection,
+          backends,
           dbPath: getDbPath(),
           configPath: configExists() ? getConfigPath() : undefined,
         });

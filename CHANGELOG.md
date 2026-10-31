@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- CI gains a lex (BM25) evaluation gate, the `lex-gate` job. It runs
+  `scripts/bench-lex-gate.sh`, which benches bm25 over the ko-vault goldset five
+  times on fresh indexes with no model. It compares per-query recall@5 and
+  reciprocal rank with `test/fixtures/ko-vault/lex-baseline.json` by a seeded
+  paired bootstrap, and fails only when a 95% interval lies below zero. Baseline
+  (M3 Max, 5 reps): r5 0.8875, MRR 0.8169, no run-to-run difference. See
+  `docs/eval/README.md`.
+- `qmd bench --backend <name>` runs a subset of the bm25, vector, hybrid and
+  full backends (repeatable or a comma list). `--backend bm25` needs no
+  embedding or reranker model.
 - Rerank now caps each document at 256 tokens by default
   (`DEFAULT_RERANK_MAX_DOC_TOKENS` in `src/llm.ts`); `QMD_RERANK_MAX_DOC_TOKENS=0`
   restores whole chunks, and an unset or invalid value takes the default. Replaying
