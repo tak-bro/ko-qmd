@@ -26,7 +26,7 @@ qmd query <query>                 # Search with query expansion + reranking (rec
 qmd search <query>                # Full-text keyword search (BM25, no LLM)
 qmd vsearch <query>               # Vector similarity search (no reranking)
 qmd grep <pattern>                # Exact/regex match over indexed bodies (no ranking)
-qmd bench <fixture.json>          # Run search-quality benchmarks
+qmd bench <fixture.json>          # Run search-quality benchmarks (--backend bm25 = lex only, no models)
 qmd mcp                           # Start MCP server (stdio transport)
 qmd mcp --http [--port N]         # Start MCP server (HTTP, default port 8181)
 qmd mcp --http --daemon           # Start as background daemon

@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- `qmd bench --backend <name>` runs a subset of the bm25, vector, hybrid and
+  full backends (repeatable or a comma list). `--backend bm25` needs no
+  embedding or reranker model.
 - Rerank now caps each document at 256 tokens by default
   (`DEFAULT_RERANK_MAX_DOC_TOKENS` in `src/llm.ts`); `QMD_RERANK_MAX_DOC_TOKENS=0`
   restores whole chunks, and an unset or invalid value takes the default. Replaying

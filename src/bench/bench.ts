@@ -167,6 +167,9 @@ const BACKENDS: Backend[] = [
   },
 ];
 
+/** Backend names `runBenchmark` accepts in `options.backends`, in run order. */
+export const BENCH_BACKEND_NAMES: readonly string[] = BACKENDS.map(b => b.name);
+
 async function runQuery(
   store: QMDStore,
   backend: Backend,
