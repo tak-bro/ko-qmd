@@ -1,0 +1,442 @@
+{
+  "description": "Sentence-level faithfulness and citation grades by qwen3:8b for test/fixtures/ko-vault/rag/answers-baseline.json.",
+  "conditions": {
+    "model": "qwen3:8b",
+    "think": false,
+    "answers": "test/fixtures/ko-vault/rag/answers-baseline.json",
+    "prompt": "baseline",
+    "commit": "ded6b84",
+    "date": "2026-11-01T14:42:37.785Z",
+    "os": "darwin-arm64",
+    "cpu": "Apple M3 Max",
+    "rubric_sha256": "c771e76844dc906e5b013d5743d1c6ce5335a33cbf3523ab61f022192306af7c",
+    "seconds": 111
+  },
+  "grades": {
+    "rag-01": [
+      {
+        "support": "full",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-02": [
+      {
+        "support": "partial",
+        "citations": {
+          "1": false
+        },
+        "uncited": false
+      }
+    ],
+    "rag-03": [
+      {
+        "support": "full",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-04": [
+      {
+        "support": "full",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-05": [
+      {
+        "support": "partial",
+        "citations": {
+          "2": true,
+          "4": false
+        },
+        "uncited": false
+      }
+    ],
+    "rag-06": [],
+    "rag-07": [
+      {
+        "support": "full",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-08": [
+      {
+        "support": "partial",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      },
+      {
+        "support": "partial",
+        "citations": {
+          "2": true
+        },
+        "uncited": false
+      },
+      {
+        "support": "full",
+        "citations": {
+          "4": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-09": [
+      {
+        "support": "partial",
+        "citations": {
+          "2": false
+        },
+        "uncited": false
+      }
+    ],
+    "rag-10": [
+      {
+        "support": "full",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-11": [
+      {
+        "support": "full",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-12": [
+      {
+        "support": "partial",
+        "citations": {
+          "1": true,
+          "2": true,
+          "4": false
+        },
+        "uncited": false
+      }
+    ],
+    "rag-13": [
+      {
+        "support": "partial",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-14": [
+      {
+        "support": "partial",
+        "citations": {
+          "1": false
+        },
+        "uncited": false
+      }
+    ],
+    "rag-15": [
+      {
+        "support": "partial",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-16": [],
+    "rag-17": [
+      {
+        "support": "full",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-18": [
+      {
+        "support": "full",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-19": [
+      {
+        "support": "partial",
+        "citations": {
+          "2": false,
+          "5": false
+        },
+        "uncited": false
+      }
+    ],
+    "rag-20": [
+      {
+        "support": "full",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-21": [
+      {
+        "support": "partial",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-22": [
+      {
+        "support": "full",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-23": [
+      {
+        "support": "full",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-24": [
+      {
+        "support": "partial",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-25": [
+      {
+        "support": "partial",
+        "citations": {
+          "1": false
+        },
+        "uncited": false
+      }
+    ],
+    "rag-26": [
+      {
+        "support": "full",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-27": [],
+    "rag-28": [
+      {
+        "support": "partial",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      },
+      {
+        "support": "full",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      },
+      {
+        "support": "full",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-29": [
+      {
+        "support": "partial",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-30": [
+      {
+        "support": "none",
+        "citations": {
+          "2": false
+        },
+        "uncited": false
+      }
+    ],
+    "rag-31": [
+      {
+        "support": "partial",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-32": [
+      {
+        "support": "partial",
+        "citations": {
+          "2": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-33": [
+      {
+        "support": "full",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-34": [
+      {
+        "support": "full",
+        "citations": {
+          "1": true,
+          "2": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-35": [
+      {
+        "support": "partial",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-36": [
+      {
+        "support": "full",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      },
+      {
+        "support": "partial",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      },
+      {
+        "support": "none",
+        "citations": {
+          "4": false
+        },
+        "uncited": false
+      },
+      {
+        "support": "full",
+        "citations": {
+          "5": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-37": [
+      {
+        "support": "partial",
+        "citations": {
+          "1": true,
+          "2": false,
+          "3": false,
+          "4": false,
+          "5": false
+        },
+        "uncited": false
+      }
+    ],
+    "rag-38": [
+      {
+        "support": "full",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-39": [],
+    "rag-40": [
+      {
+        "support": "none",
+        "citations": {
+          "2": false,
+          "5": false
+        },
+        "uncited": false
+      }
+    ],
+    "rag-41": [
+      {
+        "support": "partial",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-42": [
+      {
+        "support": "partial",
+        "citations": {
+          "1": false,
+          "3": false
+        },
+        "uncited": false
+      }
+    ],
+    "rag-43": [
+      {
+        "support": "full",
+        "citations": {
+          "1": true
+        },
+        "uncited": false
+      }
+    ],
+    "rag-44": [
+      {
+        "support": "none",
+        "citations": {
+          "2": false
+        },
+        "uncited": false
+      }
+    ]
+  },
+  "errors": {}
+}

@@ -1,0 +1,137 @@
+{
+  "runs": [
+    {
+      "prompt": "baseline",
+      "model": "gemma3:4b",
+      "judge": "claude-opus-5-5 (reference)",
+      "summary": {
+        "questions": 44,
+        "faithfulness": {
+          "value": 0.6666666666666667,
+          "lo": 0.5166666666666667,
+          "hi": 0.8055555555555556,
+          "undefinedDraws": 0,
+          "n": 40
+        },
+        "citation_precision": {
+          "value": 0.6633333333333333,
+          "lo": 0.5216216216216216,
+          "hi": 0.8,
+          "undefinedDraws": 0,
+          "n": 40
+        },
+        "cites_expected": {
+          "value": 0.90625,
+          "lo": 0.7916666666666666,
+          "hi": 1,
+          "undefinedDraws": 0,
+          "n": 32
+        },
+        "context_recall": {
+          "value": 1,
+          "lo": 1,
+          "hi": 1,
+          "undefinedDraws": 0,
+          "n": 32
+        },
+        "abstain_unanswerable": {
+          "value": 0.3333333333333333,
+          "lo": 0.07692307692307693,
+          "hi": 0.625,
+          "undefinedDraws": 0,
+          "n": 12
+        },
+        "abstain_answerable": {
+          "value": 0,
+          "lo": 0,
+          "hi": 0,
+          "undefinedDraws": 0,
+          "n": 32
+        },
+        "sentences": 47,
+        "partial": 6,
+        "uncited": 0
+      }
+    },
+    {
+      "prompt": "grounded",
+      "model": "gemma3:4b",
+      "judge": "claude-opus-5-5 (reference)",
+      "summary": {
+        "questions": 44,
+        "faithfulness": {
+          "value": 0.7916666666666666,
+          "lo": 0.6153846153846154,
+          "hi": 0.95,
+          "undefinedDraws": 0,
+          "n": 24
+        },
+        "citation_precision": {
+          "value": 0.875,
+          "lo": 0.7272727272727273,
+          "hi": 1,
+          "undefinedDraws": 0,
+          "n": 24
+        },
+        "cites_expected": {
+          "value": 1,
+          "lo": 1,
+          "hi": 1,
+          "undefinedDraws": 0,
+          "n": 20
+        },
+        "context_recall": {
+          "value": 1,
+          "lo": 1,
+          "hi": 1,
+          "undefinedDraws": 0,
+          "n": 32
+        },
+        "abstain_unanswerable": {
+          "value": 0.6666666666666666,
+          "lo": 0.375,
+          "hi": 0.9166666666666666,
+          "undefinedDraws": 0,
+          "n": 12
+        },
+        "abstain_answerable": {
+          "value": 0.375,
+          "lo": 0.21212121212121213,
+          "hi": 0.5454545454545454,
+          "undefinedDraws": 0,
+          "n": 32
+        },
+        "sentences": 30,
+        "partial": 2,
+        "uncited": 0
+      }
+    }
+  ],
+  "errors": [],
+  "diff": {
+    "faithfulness": {
+      "mean": 0.09722222222222222,
+      "lo": -0.125,
+      "hi": 0.3333333333333333,
+      "n": 24
+    },
+    "citation_precision": {
+      "mean": 0.20694444444444446,
+      "lo": 1.850371707708594e-17,
+      "hi": 0.4124999999999999,
+      "n": 24
+    },
+    "abstain_unanswerable": {
+      "mean": 0.3333333333333333,
+      "lo": 0.08333333333333333,
+      "hi": 0.5833333333333334,
+      "n": 12
+    },
+    "abstain_answerable": {
+      "mean": 0.375,
+      "lo": 0.21875,
+      "hi": 0.5625,
+      "n": 32
+    }
+  }
+}
