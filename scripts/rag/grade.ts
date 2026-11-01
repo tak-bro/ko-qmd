@@ -9,7 +9,8 @@
  * sentence with no citation is not sent: it is recorded as unsupported and uncited. The rubric
  * is test/fixtures/ko-vault/rag/faithfulness.md, and its hash is recorded with the grades.
  *
- * Env: RAG_JUDGE_MODEL (qwen3:8b) · OLLAMA_HOST · RAG_CORPUS (test/fixtures/ko-vault) · RAG_COMMIT
+ * Env: RAG_JUDGE_MODEL (qwen3:8b) · RAG_JUDGE_THINK (1 = let the judge reason first, default off)
+ *      OLLAMA_HOST · RAG_CORPUS (test/fixtures/ko-vault) · RAG_COMMIT
  * Exit: 0 every sentence graded · 2 a reply failed validation twice, or bad input.
  * A question with a failed sentence is recorded under `errors` and gets no grades.
  */
@@ -109,7 +110,7 @@ export async function gradeAnswer(question: string, answer: Answer, chunks: read
 
 export interface Grades {
   description: string;
-  conditions: { model: string; answers: string; prompt: string; commit: string; date: string; os: string; cpu: string; rubric_sha256: string; seconds: number };
+  conditions: { model: string; think: boolean; answers: string; prompt: string; commit: string; date: string; os: string; cpu: string; rubric_sha256: string; seconds: number };
   /** question id → one grade per answer sentence (empty when the answer abstained) */
   grades: Record<string, SentenceGrade[]>;
   errors: Record<string, string>;
@@ -129,12 +130,16 @@ async function main(argv: string[]): Promise<number> {
   const rubric = readFileSync(join(corpus, "rag", "faithfulness.md"), "utf8");
   const contexts = JSON.parse(readFileSync(contextsPath, "utf8")) as Contexts;
   const answers = JSON.parse(readFileSync(answersPath, "utf8")) as Answers;
-  const chat = ollamaChat({ host, model, schema: GRADE_SCHEMA, seed: GRADE_SEED });
+  const thinkEnv = process.env.RAG_JUDGE_THINK ?? "0";
+  if (thinkEnv !== "0" && thinkEnv !== "1") throw new Error(`RAG_JUDGE_THINK must be 0 or 1, got ${thinkEnv}`);
+  const think = thinkEnv === "1";
+  const chat = ollamaChat({ host, model, schema: GRADE_SCHEMA, seed: GRADE_SEED, think });
   const started = Date.now();
   const out: Grades = {
-    description: `Sentence-level faithfulness and citation grades by ${model} for ${answersPath}.`,
+    description: `Sentence-level faithfulness and citation grades by ${model}${think ? " (thinking on)" : ""} for ${answersPath}.`,
     conditions: {
       model,
+      think,
       answers: answersPath,
       prompt: answers.conditions.prompt,
       commit: process.env.RAG_COMMIT ?? "unknown",

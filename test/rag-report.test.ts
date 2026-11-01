@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
+import { agreement, agreementLines, pairSentences } from "../scripts/rag/agreement.js";
 import type { Answers, PromptVariant } from "../scripts/rag/answer.js";
 import type { Grades } from "../scripts/rag/grade.js";
 import { buildReport, main, reportLines, type Run } from "../scripts/rag/report.js";
@@ -22,7 +23,7 @@ const contexts: Contexts = {
 function run(prompt: PromptVariant, answers: Answers["answers"], grades: Grades["grades"], errors: Record<string, string> = {}, sha = "r"): Run {
   return {
     answers: { description: "", conditions: { model: "gen", prompt, commit: "c", date: "", os: "", cpu: "", seconds: 0 }, answers, errors: {} },
-    grades: { description: "", conditions: { model: "judge", answers: "", prompt, commit: "c", date: "", os: "", cpu: "", rubric_sha256: sha, seconds: 0 }, grades, errors },
+    grades: { description: "", conditions: { model: "judge", think: false, answers: "", prompt, commit: "c", date: "", os: "", cpu: "", rubric_sha256: sha, seconds: 0 }, grades, errors },
   };
 }
 
@@ -80,6 +81,32 @@ describe("buildReport", () => {
     const lines = reportLines(buildReport(contexts, [before, after]));
     expect(lines[0]).toBe("RUN prompt=baseline model=gen judge=judge questions=3 sentences=4 partial=0 uncited=0 errors=0");
     expect(lines.find(l => l.startsWith("DIFF grounded-baseline faith="))).toMatch(/^DIFF grounded-baseline faith=\+0\.750 \[[-\d.]+, [-\d.]+\] n=2$/);
+  });
+});
+
+describe("agreement", () => {
+  const partial = { support: "partial" as const, citations: { "1": true }, uncited: false };
+  const uncited = { support: "none" as const, citations: {}, uncited: true };
+  const judge = run("baseline", {}, { s1: [yes, partial, uncited], s2: [no], n1: [yes] }).grades;
+  const ref = run("baseline", {}, { s1: [yes, no, uncited], s2: [no], n1: [no] }).grades;
+
+  test("pairs sentences by question and position, skipping questions the judge did not grade", () => {
+    const pairs = pairSentences(judge, run("baseline", {}, { ...ref.grades, x9: [yes] }).grades);
+    expect(pairs).toHaveLength(5);
+    expect(() => pairSentences(judge, run("baseline", {}, { s1: [yes] }).grades)).toThrow(/s1: 3 judge grades vs 1 reference/);
+  });
+
+  test("leaves uncited sentences out and fills the confusion matrix reference × judge", () => {
+    const a = agreement(pairSentences(judge, ref));
+    expect(a.sentences).toBe(4);
+    expect(a.exact).toBe(0.5);
+    expect(a.confusion).toEqual([
+      [1, 0, 0],
+      [0, 0, 0],
+      [1, 1, 1],
+    ]);
+    expect(a.citations).toEqual({ pairs: 4, agree: 2 });
+    expect(agreementLines(a)[0]).toMatch(/^AGREE n=4 exact=0\.500 kappa_support=/);
   });
 });
 
