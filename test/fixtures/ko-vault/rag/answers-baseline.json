@@ -3,6 +3,8 @@
   "conditions": {
     "model": "gemma3:4b",
     "prompt": "baseline",
+    "contexts_sha256": "eeb242d6ca086eb099fc61d5bf0fc7147c4a40448e997db80cdb9d29da83a2ce",
+    "ollama": "0.40.1",
     "commit": "ded6b84",
     "date": "2026-11-01T14:40:17.112Z",
     "os": "darwin-arm64",
