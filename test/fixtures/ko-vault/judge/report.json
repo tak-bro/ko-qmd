@@ -1,6 +1,7 @@
 {
   "conditions": {
     "model": "qwen3:8b",
+    "mode": "listwise",
     "commit": "131e590",
     "date": "2026-11-01T12:45:53.705Z",
     "os": "darwin-arm64",

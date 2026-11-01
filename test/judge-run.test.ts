@@ -182,7 +182,7 @@ describe("ollamaChat", () => {
     let sent: { url: string; body: Record<string, unknown> } | undefined;
     const fetchImpl: FetchLike = async (url, init) => {
       sent = { url, body: JSON.parse(init.body) as Record<string, unknown> };
-      return new Response(JSON.stringify({ message: { content: '{"grades":[]}' } }));
+      return new Response(JSON.stringify({ message: { content: '{"grades":[]}' }, prompt_eval_count: 100 }));
     };
     const chat = ollamaChat({ host: "http://h:1/", model: "m", schema: { type: "object" }, seed: 9, fetchImpl });
     expect(await chat("s", "u")).toBe('{"grades":[]}');
@@ -197,6 +197,11 @@ describe("ollamaChat", () => {
     const fits: FetchLike = async () =>
       new Response(JSON.stringify({ message: { content: "ok" }, prompt_eval_count: 500 }));
     expect(await ollamaChat({ host: "h", model: "m", schema: {}, seed: 1, numCtx: 1024, fetchImpl: fits })("s", "u")).toBe("ok");
+  });
+
+  test("a reply without prompt_eval_count throws: truncation cannot be ruled out", async () => {
+    const noCount: FetchLike = async () => new Response(JSON.stringify({ message: { content: "ok" } }));
+    await expect(ollamaChat({ host: "h", model: "m", schema: {}, seed: 1, fetchImpl: noCount })("s", "u")).rejects.toThrow(/no prompt_eval_count/);
   });
 
   test("an HTTP error or an error body throws with the server's message", async () => {

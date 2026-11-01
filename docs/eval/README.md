@@ -75,11 +75,15 @@ same rubric.
 
 Hand labels come from `scripts/judge/label.ts`. For each goldset query it shows 5 documents: the
 top 2 of `full` and 3 drawn at random from the rest of the pool. The order is shuffled, and the
-judge's grade is never shown. The labeler sees the same 900 characters the judge saw.
+judge's grade is never shown. The labeler sees the same 900 characters the judge saw. Only goldset
+queries are labeled, so kappa will not cover the judge's grades on the 27 open queries.
 
-**Result.** Conditions: Apple M3 Max, darwin-arm64, qwen3:8b on Ollama 0.40.1, 80 queries,
-1076 (query, document) pairs, no failed queries. Listwise ran at commit `131e590` and took
-3906 s for two passes. Pointwise ran at commit `c9c7e7c` and took 2796 s for one pass.
+**Result.** Conditions: Apple M3 Max, darwin-arm64, qwen3:8b on Ollama (`ollama --version` on the
+day: 0.40.1; the version is not recorded in the judgments), 80 queries, 1076 (query, document)
+pairs, no failed queries. Listwise ran at commit `131e590` and took 3906 s for two passes. That
+commit's run.ts did not yet write `conditions.mode`; `"mode": "listwise"` was added to
+`judgments.json` after the run, and `report.json` was regenerated from it. Pointwise ran at commit
+`c9c7e7c` and took 2796 s for one pass.
 
 | Check | listwise (pass 1) | pointwise |
 |---|---|---|
@@ -90,16 +94,20 @@ judge's grade is never shown. The labeler sees the same 900 characters the judge
 
 The listwise judge is not stable. Reordering the same documents changed 41% of the grades, and
 120 of them moved by 2 or more. The second order also graded lower overall: 601 zeros against 486.
-The pointwise judge cannot have this problem, and it does better on both label-free checks.
+Pointwise grading removes document order as a variable. Its stability across reruns was not
+measured. On the label-free checks it differs from listwise by 1–2 items (58 vs 56 of 59, 39 vs 38
+of 39), which is too small to call better. Pointwise is the mode used below only until kappa
+decides between the two.
 
-nDCG@10 with 95% bootstrap intervals over queries, from the pointwise grades:
+nDCG@10 with 95% bootstrap intervals over queries, from the pointwise grades. These are
+provisional: the judge has not yet been checked against hand labels.
 
 | Query set | bm25 | hybrid | full | full − bm25 |
 |---|---|---|---|---|
 | goldset (50) | 0.726 [0.657, 0.792] | 0.868 [0.819, 0.910] | 0.891 [0.858, 0.918] | +0.164 [0.098, 0.234] |
 | no answer key (27) | 0.716 [0.655, 0.776] | 0.794 [0.728, 0.855] | 0.823 [0.758, 0.878] | +0.107 [0.050, 0.163] |
 
-The listwise grades rank the backends in the same order. Their full − bm25 differences are
+The listwise grades (pass 1, one of the two orders) rank the backends in the same order. Their full − bm25 differences are
 +0.126 [0.063, 0.194] on the goldset and +0.168 [0.093, 0.248] on the open queries. On both
 query sets and with both judges, the interval for full − bm25 lies above zero.
 

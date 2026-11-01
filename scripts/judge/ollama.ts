@@ -61,7 +61,11 @@ export function ollamaChat(opts: OllamaOptions): Chat {
     }
     if (parsed.error) throw new Error(`ollama: ${parsed.error}`);
     // Truncation keeps the prompt just under the window, so anything at 95% of it is suspect.
-    if (typeof parsed.prompt_eval_count === "number" && parsed.prompt_eval_count >= numCtx * 0.95) {
+    // Without the count, truncation cannot be ruled out, so a reply without it is not trusted.
+    if (typeof parsed.prompt_eval_count !== "number") {
+      throw new Error(`ollama response has no prompt_eval_count, so prompt truncation cannot be checked: ${text.slice(0, 300)}`);
+    }
+    if (parsed.prompt_eval_count >= numCtx * 0.95) {
       throw new Error(`prompt filled the context (${parsed.prompt_eval_count} tokens, num_ctx ${numCtx}) — Ollama may have cut it`);
     }
     const content = parsed.message?.content;
