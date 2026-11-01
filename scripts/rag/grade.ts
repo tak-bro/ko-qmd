@@ -15,7 +15,6 @@
  * A question with a failed sentence is recorded under `errors` and gets no grades.
  */
 
-import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { arch, cpus, platform } from "node:os";
 import { join } from "node:path";
@@ -23,6 +22,7 @@ import { pathToFileURL } from "node:url";
 import type { SentenceGrade, Support } from "../../src/bench/rag-metrics.js";
 import { ollamaChat, type Chat } from "../judge/ollama.js";
 import type { Answer, Answers } from "./answer.js";
+import { ollamaVersion, sha256Text } from "./provenance.js";
 import type { Contexts, RetrievedChunk } from "./retrieve.js";
 
 export const SUPPORTS: readonly Support[] = ["full", "partial", "none"];
@@ -94,6 +94,8 @@ export async function gradeSentence(
   chat: Chat,
 ): Promise<SentenceGrade> {
   if (!sentence.citations.length) return UNCITED;
+  const outside = sentence.citations.find(n => !Number.isInteger(n) || n < 1 || n > chunks.length);
+  if (outside !== undefined) throw new Error(`citation ${outside} is outside the ${chunks.length} retrieved chunks — answers from other contexts?`);
   const cited = sentence.citations.map((n, i) => ({ n: i + 1, chunk: chunks[n - 1]! }));
   const local = cited.map(c => c.n);
   const base = userPrompt(question, sentence.text, cited);
@@ -120,7 +122,21 @@ export async function gradeAnswer(question: string, answer: Answer, chunks: read
 
 export interface Grades {
   description: string;
-  conditions: { model: string; think: boolean; answers: string; prompt: string; commit: string; date: string; os: string; cpu: string; rubric_sha256: string; seconds: number };
+  conditions: {
+    model: string;
+    think: boolean;
+    answers: string;
+    /** sha256 of the answers file graded — report.ts and agreement.ts match on it */
+    answers_sha256: string;
+    prompt: string;
+    ollama: string;
+    commit: string;
+    date: string;
+    os: string;
+    cpu: string;
+    rubric_sha256: string;
+    seconds: number;
+  };
   /** question id → one grade per answer sentence (empty when the answer abstained) */
   grades: Record<string, SentenceGrade[]>;
   errors: Record<string, string>;
@@ -138,8 +154,14 @@ async function main(argv: string[]): Promise<number> {
   const host = process.env.OLLAMA_HOST ?? "http://127.0.0.1:11434";
   const corpus = process.env.RAG_CORPUS ?? "test/fixtures/ko-vault";
   const rubric = readFileSync(join(corpus, "rag", "faithfulness.md"), "utf8");
-  const contexts = JSON.parse(readFileSync(contextsPath, "utf8")) as Contexts;
-  const answers = JSON.parse(readFileSync(answersPath, "utf8")) as Answers;
+  const contextsText = readFileSync(contextsPath, "utf8");
+  const answersText = readFileSync(answersPath, "utf8");
+  const contexts = JSON.parse(contextsText) as Contexts;
+  const answers = JSON.parse(answersText) as Answers;
+  if (answers.conditions.contexts_sha256 !== sha256Text(contextsText)) {
+    console.error(`${answersPath} was answered from other contexts than ${contextsPath} — rerun answer.ts`);
+    return 2;
+  }
   const thinkEnv = process.env.RAG_JUDGE_THINK ?? "0";
   if (thinkEnv !== "0" && thinkEnv !== "1") throw new Error(`RAG_JUDGE_THINK must be 0 or 1, got ${thinkEnv}`);
   const think = thinkEnv === "1";
@@ -151,12 +173,14 @@ async function main(argv: string[]): Promise<number> {
       model,
       think,
       answers: answersPath,
+      answers_sha256: sha256Text(answersText),
       prompt: answers.conditions.prompt,
+      ollama: await ollamaVersion(host),
       commit: process.env.RAG_COMMIT ?? "unknown",
       date: new Date().toISOString(),
       os: `${platform()}-${arch()}`,
       cpu: cpus()[0]?.model ?? "unknown",
-      rubric_sha256: createHash("sha256").update(rubric).digest("hex"),
+      rubric_sha256: sha256Text(rubric),
       seconds: 0,
     },
     grades: {},

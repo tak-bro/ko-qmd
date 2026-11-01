@@ -37,7 +37,12 @@ export interface QuestionOutcome {
 
 export const ANSWERABLE: ReadonlySet<QuestionType> = new Set(["single", "multi"]);
 
-/** Share of sentences fully supported by their cited chunks. NaN when nothing was answered. */
+/**
+ * Share of this answer's sentences fully supported by their cited chunks. NaN when nothing was
+ * answered. Run-level faithfulness is the mean of this over answered questions (a macro average).
+ * It does not ask whether the answer is right: a near-miss answer built from true but irrelevant
+ * sentences scores high.
+ */
 export function faithfulness(o: QuestionOutcome): number {
   if (o.abstained || o.sentences.length === 0) return Number.NaN;
   return o.sentences.filter(s => s.support === "full").length / o.sentences.length;
@@ -59,6 +64,16 @@ export function citesExpected(o: QuestionOutcome): number {
 export function contextRecall(o: QuestionOutcome): number {
   if (!ANSWERABLE.has(o.type)) return Number.NaN;
   return o.contextFiles.some(f => o.expectedFiles.includes(f)) ? 1 : 0;
+}
+
+/** 1 when an unanswerable (near-miss, off-corpus) question was refused, 0 when answered, NaN otherwise. */
+export function abstainUnanswerable(o: QuestionOutcome): number {
+  return ANSWERABLE.has(o.type) ? Number.NaN : o.abstained ? 1 : 0;
+}
+
+/** 1 when an answerable question was refused, 0 when answered, NaN otherwise. */
+export function abstainAnswerable(o: QuestionOutcome): number {
+  return ANSWERABLE.has(o.type) ? (o.abstained ? 1 : 0) : Number.NaN;
 }
 
 /** Mean over the defined values, NaN when none is defined. */
@@ -93,8 +108,6 @@ export interface RagSummary {
 }
 
 export function summarizeRun(outcomes: readonly QuestionOutcome[], options: BootstrapOptions = {}): RagSummary {
-  const abstainIf = (answerable: boolean) => (o: QuestionOutcome) =>
-    ANSWERABLE.has(o.type) === answerable ? (o.abstained ? 1 : 0) : Number.NaN;
   const all = outcomes.flatMap(o => o.sentences);
   return {
     questions: outcomes.length,
@@ -102,8 +115,8 @@ export function summarizeRun(outcomes: readonly QuestionOutcome[], options: Boot
     citation_precision: summarize(outcomes, citationPrecision, options),
     cites_expected: summarize(outcomes, citesExpected, options),
     context_recall: summarize(outcomes, contextRecall, options),
-    abstain_unanswerable: summarize(outcomes, abstainIf(false), options),
-    abstain_answerable: summarize(outcomes, abstainIf(true), options),
+    abstain_unanswerable: summarize(outcomes, abstainUnanswerable, options),
+    abstain_answerable: summarize(outcomes, abstainAnswerable, options),
     sentences: all.length,
     partial: all.filter(s => s.support === "partial").length,
     uncited: all.filter(s => s.uncited).length,
@@ -113,6 +126,9 @@ export function summarizeRun(outcomes: readonly QuestionOutcome[], options: Boot
 export interface PairedDiff extends Interval {
   /** Questions where both runs define the metric. */
   n: number;
+  /** Each run's mean over those same questions — the per-run summaries cover different subsets. */
+  before: number;
+  after: number;
 }
 
 /**
@@ -127,13 +143,19 @@ export function pairedDiff(
 ): PairedDiff {
   const afterById = new Map(after.map(o => [o.id, o]));
   const deltas: number[] = [];
+  const bs: number[] = [];
+  const as: number[] = [];
   for (const b of before) {
     const a = afterById.get(b.id);
     if (!a) throw new Error(`question ${b.id} is missing from the after run`);
     const vb = per(b);
     const va = per(a);
-    if (!Number.isNaN(vb) && !Number.isNaN(va)) deltas.push(va - vb);
+    if (!Number.isNaN(vb) && !Number.isNaN(va)) {
+      deltas.push(va - vb);
+      bs.push(vb);
+      as.push(va);
+    }
   }
-  if (deltas.length === 0) return { mean: Number.NaN, lo: Number.NaN, hi: Number.NaN, n: 0 };
-  return { ...pairedBootstrap(deltas, options), n: deltas.length };
+  if (deltas.length === 0) return { mean: Number.NaN, lo: Number.NaN, hi: Number.NaN, n: 0, before: Number.NaN, after: Number.NaN };
+  return { ...pairedBootstrap(deltas, options), n: deltas.length, before: definedMean(bs), after: definedMean(as) };
 }

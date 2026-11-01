@@ -22,6 +22,10 @@ export interface SentencePair {
 }
 
 export function pairSentences(judge: Grades, reference: Grades): SentencePair[] {
+  if (judge.conditions.answers_sha256 !== reference.conditions.answers_sha256) {
+    throw new Error(`judge and reference grade different answers files (${judge.conditions.answers} vs ${reference.conditions.answers})`);
+  }
+  if (judge.conditions.rubric_sha256 !== reference.conditions.rubric_sha256) throw new Error("judge and reference used different rubrics");
   const pairs: SentencePair[] = [];
   for (const [id, ref] of Object.entries(reference.grades)) {
     const j = judge.grades[id];

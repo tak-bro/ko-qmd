@@ -18,11 +18,12 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import {
+  abstainAnswerable,
+  abstainUnanswerable,
   citationPrecision,
   faithfulness,
   pairedDiff,
   summarizeRun,
-  ANSWERABLE,
   type MetricSummary,
   type PairedDiff,
   type QuestionOutcome,
@@ -30,6 +31,7 @@ import {
 } from "../../src/bench/rag-metrics.js";
 import type { Answers } from "./answer.js";
 import type { Grades } from "./grade.js";
+import { sha256Text } from "./provenance.js";
 import type { Contexts } from "./retrieve.js";
 
 export interface Run {
@@ -66,9 +68,6 @@ export function outcomes(contexts: Contexts, run: Run, skip: ReadonlySet<string>
   return out;
 }
 
-const abstainUnanswerable = (o: QuestionOutcome) => (ANSWERABLE.has(o.type) ? Number.NaN : o.abstained ? 1 : 0);
-const abstainAnswerable = (o: QuestionOutcome) => (ANSWERABLE.has(o.type) ? (o.abstained ? 1 : 0) : Number.NaN);
-
 export interface RagReport {
   runs: { prompt: string; model: string; judge: string; summary: RagSummary }[];
   errors: string[];
@@ -77,6 +76,7 @@ export interface RagReport {
 
 export function buildReport(contexts: Contexts, runs: readonly Run[]): RagReport {
   const skip = failedIds(runs);
+  if (contexts.questions.every(q => skip.has(q.id))) throw new Error(`every question failed in some run: ERRORS ${[...skip].sort().join(" ")}`);
   const joined = runs.map(r => outcomes(contexts, r, skip));
   const report: RagReport = {
     runs: runs.map((r, i) => ({ prompt: r.answers.conditions.prompt, model: r.answers.conditions.model, judge: r.grades.conditions.model, summary: summarizeRun(joined[i]!) })),
@@ -96,7 +96,8 @@ export function buildReport(contexts: Contexts, runs: readonly Run[]): RagReport
 
 const f3 = (v: number) => (Number.isFinite(v) ? v.toFixed(3) : "nan");
 const ci = (m: MetricSummary) => `${f3(m.value)} [${f3(m.lo)}, ${f3(m.hi)}] n=${m.n}`;
-const d = (x: PairedDiff) => `${x.mean >= 0 ? "+" : ""}${f3(x.mean)} [${f3(x.lo)}, ${f3(x.hi)}] n=${x.n}`;
+const d = (x: PairedDiff) =>
+  `${x.mean >= 0 ? "+" : ""}${f3(x.mean)} [${f3(x.lo)}, ${f3(x.hi)}] n=${x.n} (${f3(x.before)} -> ${f3(x.after)} on those)`;
 
 export function reportLines(r: RagReport): string[] {
   const lines: string[] = [];
@@ -129,10 +130,22 @@ export function main(argv: string[]): number {
     console.error("usage: tsx scripts/rag/report.ts <contexts.json> <answers-A.json> <grades-A.json> [<answers-B.json> <grades-B.json>] [--out report.json]");
     return 2;
   }
-  const read = <T>(p: string) => JSON.parse(readFileSync(p, "utf8")) as T;
-  const contexts = read<Contexts>(paths[0]!);
+  const contextsText = readFileSync(paths[0]!, "utf8");
+  const contexts = JSON.parse(contextsText) as Contexts;
   const runs: Run[] = [];
-  for (let i = 1; i < paths.length; i += 2) runs.push({ answers: read<Answers>(paths[i]!), grades: read<Grades>(paths[i + 1]!) });
+  for (let i = 1; i < paths.length; i += 2) {
+    const answersText = readFileSync(paths[i]!, "utf8");
+    const run: Run = { answers: JSON.parse(answersText) as Answers, grades: JSON.parse(readFileSync(paths[i + 1]!, "utf8")) as Grades };
+    if (run.answers.conditions.contexts_sha256 !== sha256Text(contextsText)) {
+      console.error(`${paths[i]} was answered from other contexts than ${paths[0]}`);
+      return 2;
+    }
+    if (run.grades.conditions.answers_sha256 !== sha256Text(answersText)) {
+      console.error(`${paths[i + 1]} grades another answers file than ${paths[i]}`);
+      return 2;
+    }
+    runs.push(run);
+  }
   const shas = new Set(runs.map(r => r.grades.conditions.rubric_sha256));
   if (shas.size > 1) {
     console.error("the two runs were graded on different rubrics");

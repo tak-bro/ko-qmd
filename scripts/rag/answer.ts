@@ -16,6 +16,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { arch, cpus, platform } from "node:os";
 import { pathToFileURL } from "node:url";
 import { ollamaChat, type Chat } from "../judge/ollama.js";
+import { ollamaVersion, sha256Text } from "./provenance.js";
 import type { Contexts, RetrievedChunk } from "./retrieve.js";
 
 export interface AnswerSentence {
@@ -94,6 +95,8 @@ export function parseAnswer(content: string, chunkCount: number): { answer: Answ
   const { unknown, sentences } = parsed as { unknown?: unknown; sentences?: unknown };
   if (typeof unknown !== "boolean") return { reason: "unknown is not a boolean" };
   if (!Array.isArray(sentences)) return { reason: "sentences is not an array" };
+  // An abstention keeps no sentences, so whatever the model wrote beside it is not validated.
+  if (unknown) return { answer: { unknown: true, sentences: [] } };
   const out: AnswerSentence[] = [];
   for (const s of sentences as unknown[]) {
     const { text, citations } = (s ?? {}) as { text?: unknown; citations?: unknown };
@@ -104,7 +107,6 @@ export function parseAnswer(content: string, chunkCount: number): { answer: Answ
     if (bad !== undefined) return { reason: `citation ${JSON.stringify(bad)} is not a document number 1-${chunkCount}` };
     out.push({ text: text.trim(), citations: [...new Set(nums as number[])] });
   }
-  if (unknown) return { answer: { unknown: true, sentences: [] } };
   if (!out.length) return { reason: "unknown is false but there are no sentences" };
   return { answer: { unknown: false, sentences: out } };
 }
@@ -134,7 +136,18 @@ export function renderAnswer(answer: Answer, chunks: readonly RetrievedChunk[]):
 
 export interface Answers {
   description: string;
-  conditions: { model: string; prompt: PromptVariant; commit: string; date: string; os: string; cpu: string; seconds: number };
+  conditions: {
+    model: string;
+    prompt: PromptVariant;
+    /** sha256 of the contexts.json the answers were made from */
+    contexts_sha256: string;
+    ollama: string;
+    commit: string;
+    date: string;
+    os: string;
+    cpu: string;
+    seconds: number;
+  };
   answers: Record<string, Answer>;
   errors: Record<string, string>;
 }
@@ -153,7 +166,8 @@ async function main(argv: string[]): Promise<number> {
   if (!isPromptVariant(variant)) throw new Error(`RAG_PROMPT must be one of ${Object.keys(PROMPTS).join(", ")}, got ${variant}`);
   const model = process.env.RAG_MODEL ?? "gemma3:4b";
   const host = process.env.OLLAMA_HOST ?? "http://127.0.0.1:11434";
-  const contexts = JSON.parse(readFileSync(contextsPath, "utf8")) as Contexts;
+  const contextsText = readFileSync(contextsPath, "utf8");
+  const contexts = JSON.parse(contextsText) as Contexts;
   const chat = ollamaChat({ host, model, schema: ANSWER_SCHEMA, seed: ANSWER_SEED, numCtx: ANSWER_NUM_CTX });
   const started = Date.now();
   const out: Answers = {
@@ -161,6 +175,8 @@ async function main(argv: string[]): Promise<number> {
     conditions: {
       model,
       prompt: variant,
+      contexts_sha256: sha256Text(contextsText),
+      ollama: await ollamaVersion(host),
       commit: process.env.RAG_COMMIT ?? "unknown",
       date: new Date().toISOString(),
       os: `${platform()}-${arch()}`,

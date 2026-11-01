@@ -86,6 +86,9 @@ describe("pairedDiff", () => {
     expect(d.n).toBe(2);
     expect(d.mean).toBeCloseTo((1 + 0.5) / 2);
     expect(d.lo).toBeGreaterThan(0);
+    // each run's mean over the same two questions, not over what each run answered
+    expect(d.before).toBeCloseTo(0.25);
+    expect(d.after).toBe(1);
   });
 
   test("a question missing from the after run throws", () => {

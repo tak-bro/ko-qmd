@@ -43,6 +43,11 @@ commit="$(git rev-parse --short HEAD)"
 # from an earlier run must not sit next to new ones — and the exit stays 2.
 rc=0
 args=()
+# Reference grades belong to the answers they were made for; new answers orphan them.
+if ls "$rag"/grades-*-reference.json "$rag/report-reference.json" >/dev/null 2>&1; then
+  echo "new answers: removing reference grades made for the old ones (git keeps them)" >&2
+  rm -f "$rag"/grades-*-reference.json "$rag/report-reference.json"
+fi
 for p in "${prompts[@]}"; do
   answers="$rag/answers-$p.json"
   grades="$rag/grades-$p.json"

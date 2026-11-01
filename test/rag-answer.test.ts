@@ -28,8 +28,9 @@ describe("parseAnswer", () => {
     expect(r).toEqual({ answer: { unknown: false, sentences: [{ text: "하나", citations: [1, 2] }] } });
   });
 
-  test("an abstention keeps no sentences even if the model wrote some", () => {
+  test("an abstention keeps no sentences even if the model wrote some, valid or not", () => {
     expect(parseAnswer('{"unknown":true,"sentences":[{"text":"아마도","citations":[1]}]}', 2)).toEqual({ answer: { unknown: true, sentences: [] } });
+    expect(parseAnswer('{"unknown":true,"sentences":[{"text":"x","citations":[9]}]}', 2)).toEqual({ answer: { unknown: true, sentences: [] } });
   });
 
   test.each([
@@ -104,6 +105,13 @@ describe("parseGrade", () => {
 });
 
 describe("gradeSentence", () => {
+  test("a citation outside the retrieved chunks throws before any judge call", async () => {
+    let calls = 0;
+    const chat = async () => (calls++, "");
+    await expect(gradeSentence("q", { text: "x", citations: [3] }, chunks, "rubric", chat)).rejects.toThrow(/citation 3 is outside the 2 retrieved chunks/);
+    expect(calls).toBe(0);
+  });
+
   test("an uncited sentence is unsupported without a judge call", async () => {
     let calls = 0;
     const chat = async () => (calls++, "");
