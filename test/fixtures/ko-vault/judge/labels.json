@@ -1,0 +1,356 @@
+{
+  "description": "Reference labels (0-3) on rubric.md, NOT human: graded by Claude Opus 5.5 (claude-opus-5-5) blind to the judge's grades and the answer key, at the user's request in place of hand labels. Per goldset query: top 2 of full + 3 random from the rest of the judge pool.",
+  "rubric_sha256": "18b9073765c63de94ad1cb34c186c2c185e03a46633afd7a79c64cfa11767bab",
+  "labels": {
+    "exa-02": {
+      "wiki/golden-dataset.md": 3,
+      "wiki/INDEX.md": 1,
+      "distractors/elo-rating.md": 0,
+      "distractors/unicode-normalization.md": 0,
+      "distractors/opengraph-metadata.md": 0
+    },
+    "exa-03": {
+      "distractors/spell-correction.md": 0,
+      "wiki/retrieval-augmented-generation.md": 1,
+      "distractors/checksum.md": 0,
+      "wiki/INDEX.md": 1,
+      "wiki/chunking-strategy.md": 3
+    },
+    "exa-04": {
+      "wiki/INDEX.md": 1,
+      "wiki/spaced-repetition.md": 3,
+      "distractors/regex-pattern.md": 0,
+      "distractors/continuous-integration.md": 0,
+      "distractors/regression-testing.md": 0
+    },
+    "ali-01": {
+      "wiki/INDEX.md": 1,
+      "distractors/suffix-array.md": 1,
+      "wiki/reciprocal-rank-fusion.md": 1,
+      "wiki/inverted-index.md": 3,
+      "distractors/forward-index.md": 1
+    },
+    "ali-03": {
+      "distractors/one-hot-encoding.md": 1,
+      "distractors/fine-tuning.md": 1,
+      "distractors/tool-calling.md": 0,
+      "wiki/chunking-strategy.md": 1,
+      "wiki/vector-embedding.md": 3
+    },
+    "ali-05": {
+      "wiki/retrieval-augmented-generation.md": 3,
+      "wiki/lint-automation.md": 0,
+      "wiki/reciprocal-rank-fusion.md": 1,
+      "wiki/golden-dataset.md": 1,
+      "wiki/topics/information-retrieval.md": 1
+    },
+    "ali-11": {
+      "wiki/zettelkasten.md": 1,
+      "distractors/method-of-loci.md": 1,
+      "distractors/regression-testing.md": 0,
+      "wiki/spaced-repetition.md": 3,
+      "wiki/topics/knowledge-operations.md": 1
+    },
+    "sem-01": {
+      "distractors/index-compression.md": 1,
+      "distractors/autoencoder.md": 0,
+      "distractors/forward-index.md": 1,
+      "wiki/inverted-index.md": 3,
+      "wiki/ngram-tokenization.md": 2
+    },
+    "sem-02": {
+      "wiki/vector-embedding.md": 3,
+      "distractors/one-hot-encoding.md": 1,
+      "wiki/chunking-strategy.md": 1,
+      "distractors/book-notes.md": 0,
+      "distractors/continuous-integration.md": 0
+    },
+    "sem-06": {
+      "distractors/continuous-integration.md": 0,
+      "wiki/spaced-repetition.md": 3,
+      "distractors/regression-testing.md": 0,
+      "distractors/pomodoro-technique.md": 1,
+      "distractors/semantic-versioning.md": 0
+    },
+    "sem-07": {
+      "distractors/document-summarization.md": 1,
+      "wiki/chunking-strategy.md": 3,
+      "distractors/cornell-notes.md": 0,
+      "wiki/meeting-notes-workflow.md": 1,
+      "wiki/korean-morphology.md": 1
+    },
+    "sem-08": {
+      "wiki/cross-encoder-reranking.md": 3,
+      "wiki/reciprocal-rank-fusion.md": 1,
+      "wiki/meeting-notes-workflow.md": 0,
+      "wiki/provenance-tracking.md": 0,
+      "distractors/forward-index.md": 1
+    },
+    "top-01": {
+      "wiki/topics/information-retrieval.md": 1,
+      "wiki/hybrid-search.md": 1,
+      "distractors/result-highlighting.md": 1,
+      "wiki/cross-encoder-reranking.md": 2,
+      "wiki/recall-at-k.md": 3
+    },
+    "top-02": {
+      "distractors/code-review.md": 1,
+      "wiki/append-only-archive.md": 2,
+      "distractors/audit-log.md": 1,
+      "distractors/semantic-versioning.md": 0,
+      "wiki/lint-automation.md": 3
+    },
+    "cro-01": {
+      "wiki/query-expansion.md": 1,
+      "wiki/reciprocal-rank-fusion.md": 3,
+      "wiki/chunking-strategy.md": 1,
+      "distractors/result-highlighting.md": 1,
+      "wiki/hybrid-search.md": 2
+    },
+    "cro-03": {
+      "wiki/ingest-pipeline.md": 3,
+      "wiki/append-only-archive.md": 2,
+      "wiki/meeting-notes-workflow.md": 1,
+      "distractors/result-highlighting.md": 0,
+      "wiki/provenance-tracking.md": 3
+    },
+    "ko-01": {
+      "distractors/audit-log.md": 0,
+      "distractors/search-operators.md": 0,
+      "wiki/korean-morphology.md": 3,
+      "distractors/search-log-analysis.md": 0,
+      "distractors/ab-testing.md": 0
+    },
+    "ko-02": {
+      "distractors/unicode-normalization.md": 1,
+      "wiki/ngram-tokenization.md": 1,
+      "distractors/one-hot-encoding.md": 0,
+      "wiki/korean-morphology.md": 3,
+      "distractors/regex-pattern.md": 0
+    },
+    "ko-06": {
+      "wiki/provenance-tracking.md": 3,
+      "distractors/click-through-rate.md": 0,
+      "wiki/INDEX.md": 1,
+      "distractors/result-highlighting.md": 0,
+      "distractors/suffix-array.md": 0
+    },
+    "ko-12": {
+      "wiki/INDEX.md": 1,
+      "wiki/cross-encoder-reranking.md": 1,
+      "wiki/retrieval-augmented-generation.md": 1,
+      "distractors/click-through-rate.md": 1,
+      "wiki/recall-at-k.md": 3
+    },
+    "ko-14": {
+      "distractors/context-window.md": 0,
+      "distractors/regex-pattern.md": 0,
+      "distractors/stopwords.md": 1,
+      "distractors/machine-translation.md": 0,
+      "wiki/korean-morphology.md": 3
+    },
+    "ali-13": {
+      "wiki/ingest-pipeline.md": 2,
+      "wiki/topics/knowledge-operations.md": 1,
+      "wiki/provenance-tracking.md": 3,
+      "wiki/append-only-archive.md": 2,
+      "wiki/INDEX.md": 1
+    },
+    "ali-14": {
+      "wiki/inverted-index.md": 3,
+      "wiki/bm25-ranking.md": 2,
+      "distractors/btree-index.md": 1,
+      "wiki/topics/information-retrieval.md": 1,
+      "distractors/pagerank.md": 1
+    },
+    "ali-16": {
+      "wiki/topics/information-retrieval.md": 1,
+      "wiki/INDEX.md": 1,
+      "wiki/ngram-tokenization.md": 3,
+      "distractors/character-encoding.md": 1,
+      "wiki/korean-morphology.md": 1
+    },
+    "ali-18": {
+      "wiki/INDEX.md": 1,
+      "wiki/spaced-repetition.md": 3,
+      "wiki/golden-dataset.md": 0,
+      "wiki/zettelkasten.md": 1,
+      "wiki/topics/knowledge-operations.md": 1
+    },
+    "hsh-01": {
+      "wiki/inverted-index.md": 3,
+      "distractors/autocomplete.md": 1,
+      "distractors/spell-correction.md": 1,
+      "distractors/search-operators.md": 1,
+      "distractors/suffix-array.md": 1
+    },
+    "hsh-03": {
+      "distractors/tf-idf.md": 2,
+      "distractors/stopwords.md": 1,
+      "distractors/result-highlighting.md": 1,
+      "distractors/machine-translation.md": 0,
+      "wiki/bm25-ranking.md": 3
+    },
+    "hsh-04": {
+      "distractors/load-testing.md": 0,
+      "distractors/document-summarization.md": 1,
+      "wiki/chunking-strategy.md": 3,
+      "distractors/ab-testing.md": 0,
+      "distractors/journaling.md": 0
+    },
+    "hsh-06": {
+      "distractors/search-operators.md": 1,
+      "distractors/korean-spacing-correction.md": 0,
+      "distractors/result-highlighting.md": 1,
+      "distractors/signed-commit.md": 0,
+      "wiki/query-expansion.md": 3
+    },
+    "hsh-10": {
+      "distractors/journaling.md": 1,
+      "distractors/cornell-notes.md": 1,
+      "distractors/method-of-loci.md": 1,
+      "distractors/mind-map.md": 1,
+      "wiki/zettelkasten.md": 3
+    },
+    "hmu-04": {
+      "distractors/click-model.md": 0,
+      "wiki/meeting-notes-workflow.md": 3,
+      "distractors/kanban-board.md": 1,
+      "wiki/decision-record.md": 3,
+      "distractors/audit-log.md": 1
+    },
+    "hmu-05": {
+      "wiki/zettelkasten.md": 3,
+      "distractors/book-notes.md": 1,
+      "distractors/kanban-board.md": 1,
+      "distractors/opengraph-metadata.md": 0,
+      "distractors/journaling.md": 1
+    },
+    "hmu-06": {
+      "distractors/autocomplete.md": 0,
+      "wiki/recall-at-k.md": 3,
+      "wiki/golden-dataset.md": 3,
+      "distractors/interleaving-practice.md": 0,
+      "wiki/decision-record.md": 1
+    },
+    "hmu-07": {
+      "wiki/zettelkasten.md": 1,
+      "wiki/provenance-tracking.md": 3,
+      "distractors/code-review.md": 0,
+      "distractors/journaling.md": 1,
+      "distractors/changelog.md": 0
+    },
+    "hmu-08": {
+      "wiki/spaced-repetition.md": 3,
+      "wiki/zettelkasten.md": 1,
+      "distractors/interleaving-practice.md": 1,
+      "distractors/outliner.md": 0,
+      "distractors/id3-tag.md": 0
+    },
+    "hneg-01": {
+      "wiki/bm25-ranking.md": 3,
+      "wiki/inverted-index.md": 1,
+      "wiki/reciprocal-rank-fusion.md": 1,
+      "distractors/stopwords.md": 1,
+      "distractors/search-operators.md": 1
+    },
+    "hneg-08": {
+      "distractors/audit-log.md": 1,
+      "wiki/topics/knowledge-operations.md": 1,
+      "wiki/zettelkasten.md": 1,
+      "wiki/decision-record.md": 1,
+      "wiki/provenance-tracking.md": 3
+    },
+    "hneg-09": {
+      "wiki/zettelkasten.md": 3,
+      "wiki/ingest-pipeline.md": 1,
+      "distractors/cornell-notes.md": 1,
+      "distractors/book-notes.md": 1,
+      "distractors/kanban-board.md": 1
+    },
+    "hneg-10": {
+      "distractors/bayesian-average.md": 1,
+      "wiki/inverted-index.md": 1,
+      "wiki/recall-at-k.md": 1,
+      "distractors/elo-rating.md": 1,
+      "wiki/reciprocal-rank-fusion.md": 3
+    },
+    "exa-08": {
+      "wiki/wikilink-graph.md": 3,
+      "wiki/INDEX.md": 1,
+      "distractors/result-highlighting.md": 0,
+      "distractors/pagerank.md": 1,
+      "wiki/provenance-tracking.md": 1
+    },
+    "exa-12": {
+      "wiki/TOPIC_MAP.md": 2,
+      "distractors/dependency-graph.md": 1,
+      "distractors/mind-map.md": 1,
+      "wiki/topics/knowledge-operations.md": 1,
+      "wiki/topic-map.md": 3
+    },
+    "ali-24": {
+      "distractors/book-notes.md": 1,
+      "wiki/meeting-notes-workflow.md": 3,
+      "distractors/changelog.md": 1,
+      "wiki/topics/knowledge-operations.md": 1,
+      "distractors/mind-map.md": 1
+    },
+    "ali-25": {
+      "distractors/suffix-array.md": 0,
+      "wiki/append-only-archive.md": 3,
+      "distractors/index-compression.md": 0,
+      "distractors/file-synchronization.md": 0,
+      "wiki/topics/knowledge-operations.md": 1
+    },
+    "sem-12": {
+      "wiki/frontmatter-metadata.md": 2,
+      "wiki/lint-automation.md": 3,
+      "distractors/autocomplete.md": 0,
+      "distractors/regex-pattern.md": 1,
+      "distractors/signed-commit.md": 1
+    },
+    "top-06": {
+      "distractors/pagerank.md": 2,
+      "distractors/search-pagination.md": 1,
+      "distractors/query-understanding.md": 2,
+      "wiki/topics/information-retrieval.md": 3,
+      "wiki/INDEX.md": 2
+    },
+    "hsh-13": {
+      "distractors/spell-correction.md": 0,
+      "distractors/ab-testing.md": 1,
+      "distractors/result-highlighting.md": 0,
+      "wiki/decision-record.md": 3,
+      "wiki/provenance-tracking.md": 1
+    },
+    "hsh-17": {
+      "distractors/outliner.md": 0,
+      "wiki/lint-automation.md": 3,
+      "wiki/query-expansion.md": 0,
+      "wiki/spaced-repetition.md": 0,
+      "distractors/load-testing.md": 1
+    },
+    "hmu-13": {
+      "wiki/decision-record.md": 3,
+      "distractors/pomodoro-technique.md": 0,
+      "wiki/meeting-notes-workflow.md": 1,
+      "distractors/autoencoder.md": 0,
+      "distractors/cornell-notes.md": 1
+    },
+    "hneg-11": {
+      "wiki/meeting-notes-workflow.md": 1,
+      "wiki/append-only-archive.md": 3,
+      "distractors/kanban-board.md": 0,
+      "distractors/query-caching.md": 0,
+      "wiki/topics/knowledge-operations.md": 1
+    },
+    "hneg-14": {
+      "wiki/wikilink-graph.md": 3,
+      "distractors/social-graph.md": 1,
+      "wiki/retrieval-augmented-generation.md": 0,
+      "distractors/pagerank.md": 1,
+      "wiki/provenance-tracking.md": 1
+    }
+  }
+}

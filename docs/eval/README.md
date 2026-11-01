@@ -51,8 +51,8 @@ queries instead of failing.
 **What.** A local model grades how relevant each retrieved document is to a query, on a 0–3 scale
 (`test/fixtures/ko-vault/judge/rubric.md`: 3 answers the query, 2 explains it in part, 1 same field
 but another concept, 0 unrelated). With those grades, nDCG@10 can be measured for queries that
-have no answer key. The judge is only trusted after it has been checked against hand labels on the
-same rubric.
+have no answer key. The judge is only trusted as far as it agrees with reference labels on the
+same rubric. The reference labels here come from a stronger model, not from people (see Kappa).
 
 **How.** `scripts/judge-ko.sh` runs three steps.
 
@@ -71,12 +71,12 @@ same rubric.
    - how many answer files the judge graded at least 2 (GOLD);
    - whether off-corpus pools got 0 (OFFCORPUS);
    - per-backend nDCG@10 against the pooled ideal, with 95% bootstrap intervals over queries;
-   - kappa against hand labels.
+   - kappa against the labels in `judge/labels.json`.
 
-Hand labels come from `scripts/judge/label.ts`. For each goldset query it shows 5 documents: the
-top 2 of `full` and 3 drawn at random from the rest of the pool. The order is shuffled, and the
+The label sample comes from `scripts/judge/label.ts`. For each goldset query it takes 5 documents:
+the top 2 of `full` and 3 drawn at random from the rest of the pool. The order is shuffled, and the
 judge's grade is never shown. The labeler sees the same 900 characters the judge saw. Only goldset
-queries are labeled, so kappa will not cover the judge's grades on the 27 open queries.
+queries are labeled, so kappa does not cover the judge's grades on the 27 open queries.
 
 **Result.** Conditions: Apple M3 Max, darwin-arm64, qwen3:8b on Ollama (`ollama --version` on the
 day: 0.40.1; the version is not recorded in the judgments), 80 queries, 1076 (query, document)
@@ -96,11 +96,11 @@ The listwise judge is not stable. Reordering the same documents changed 41% of t
 120 of them moved by 2 or more. The second order also graded lower overall: 601 zeros against 486.
 Pointwise grading removes document order as a variable. Its stability across reruns was not
 measured. On the label-free checks it differs from listwise by 1–2 items (58 vs 56 of 59, 39 vs 38
-of 39), which is too small to call better. Pointwise is the mode used below only until kappa
-decides between the two.
+of 39), which is too small to call better. Kappa below does not separate them either, so pointwise
+stays the reported mode because document order cannot move its grades.
 
-nDCG@10 with 95% bootstrap intervals over queries, from the pointwise grades. These are
-provisional: the judge has not yet been checked against hand labels.
+nDCG@10 with 95% bootstrap intervals over queries, from the pointwise grades. The judge is lenient
+(see Kappa), so read these as relative between backends rather than as absolute quality.
 
 | Query set | bm25 | hybrid | full | full − bm25 |
 |---|---|---|---|---|
@@ -111,12 +111,42 @@ The listwise grades (pass 1, one of the two orders) rank the backends in the sam
 +0.126 [0.063, 0.194] on the goldset and +0.168 [0.093, 0.248] on the open queries. On both
 query sets and with both judges, the interval for full − bm25 lies above zero.
 
-**Kappa: pending.** There are no hand labels yet (`judge/labels.json`). Until there are, these
-numbers depend on the judge's own label-free checks. Once labeling is done, rerun the report for
-both modes. The report needs no model.
+**Kappa.** The labels are **not human**. The plan called for hand labels; the maintainer asked
+for model labels instead. The 250 pairs were graded by Claude Opus 5.5 (`claude-opus-5-5`), five
+instances of 50 pairs each, reading only `rubric.md` and the pair text. They never saw the judge's
+grades, `queries.json` or the answer key. Kappa therefore measures how far the 8B judge agrees
+with a much larger model on the same rubric, not agreement with people. Intervals are 95% bootstrap
+over the 50 queries.
+
+| Judge | weighted kappa | Cohen kappa | exact agreement |
+|---|---|---|---|
+| pointwise | 0.708 [0.646, 0.764] | 0.376 [0.290, 0.464] | 0.556 |
+| listwise (pass 1) | 0.667 [0.576, 0.746] | 0.396 [0.312, 0.480] | 0.576 |
+
+The intervals overlap, so neither mode agrees measurably better. Weighted kappa is in the range
+usually called substantial; Cohen kappa is low because most disagreements are one grade apart.
+The pointwise confusion matrix (rows reference 0–3, columns judge 0–3) shows where:
+
+| ref \ judge | 0 | 1 | 2 | 3 |
+|---|---|---|---|---|
+| 0 | 40 | 22 | 1 | 1 |
+| 1 | 35 | 46 | 15 | 23 |
+| 2 | 0 | 3 | 3 | 8 |
+| 3 | 0 | 1 | 2 | 50 |
+
+- The judge rarely misses a relevant document: of 67 pairs the reference graded ≥ 2, it graded 63
+  at ≥ 2, and 50 of the 53 reference 3s got a 3.
+- It is lenient on near misses: of 119 pairs the reference graded 1 (same field, other concept), it
+  graded 38 at ≥ 2, 23 of them 3. These inflate the nDCG ideal and the gains alike.
+- The 0/1 line is loose in both directions (22 and 35 pairs). Index and topic pages that only
+  list links account for many of them, and the reference labelers flagged that line as ambiguous.
+  The gain gap between 0 and 1 is small, so this matters least for nDCG.
+
+The rubric and model were not changed after this measurement. A stricter rubric line for 1 versus
+3, or a larger judge, is the next lever if absolute nDCG values are needed. Rerun the report for
+both modes with:
 
 ```sh
-npx tsx scripts/judge/label.ts
 npx tsx scripts/judge/report.ts test/fixtures/ko-vault/judge/judgments.json test/fixtures/ko-vault/judge/queries.json test/fixtures/ko-vault/judge/labels.json test/fixtures/ko-vault/judge/report.json
 npx tsx scripts/judge/report.ts test/fixtures/ko-vault/judge/judgments-pointwise.json test/fixtures/ko-vault/judge/queries.json test/fixtures/ko-vault/judge/labels.json test/fixtures/ko-vault/judge/report-pointwise.json
 ```

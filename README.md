@@ -242,7 +242,9 @@ Qwen3-Embedding 기본값·질의 52 에서 bm25_r5 0.9519 · vector_r5 1.0000 �
 그래서 문서를 하나씩 채점하는 pointwise 방식(`JUDGE_MODE=pointwise`)을 추가했다. pointwise는 정답 문서 59개 중 58개를 2 이상으로,
 off-corpus 문서 39개를 모두 0으로 채점했다.
 pointwise 기준 정답 세트 nDCG@10은 bm25 0.726·hybrid 0.868·full 0.891이고, full − bm25는 +0.164 [0.098, 0.234]다(M3 Max).
-이 수치는 잠정값이다. 판정자를 사람 라벨과 맞춰 보는 kappa 검증을 아직 하지 않았다. 방법과 수치는 [docs/eval/README.md](docs/eval/README.md)에 있다.
+판정자는 기준 라벨 250쌍과 weighted kappa 0.708 [0.646, 0.764]로 일치했다. 기준 라벨은 사람이 아니라 Claude Opus 5.5가
+판정자 등급을 보지 않고 매긴 것이다. 판정자는 관련 문서를 거의 놓치지 않지만 같은 분야의 다른 개념 문서에 높은 등급을 주는
+경향이 있다. 그래서 nDCG는 절대값보다 backend 간 비교로 읽는다. 방법과 수치는 [docs/eval/README.md](docs/eval/README.md)에 있다.
 
 ### Electron 내장
 

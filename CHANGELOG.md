@@ -7,11 +7,13 @@
   on `test/fixtures/ko-vault/judge/rubric.md`. The pool is the union of the
   bm25/hybrid/full top 10 plus missed answers. The report gives nDCG@10 per
   backend with bootstrap intervals, a position-bias check and kappa against
-  hand labels (`scripts/judge/label.ts`). Listwise grading changed 41% of
+  labels sampled by `scripts/judge/label.ts`. Listwise grading changed 41% of
   grades when only the order changed, so `JUDGE_MODE=pointwise` grades one
-  document at a time. Provisional pointwise nDCG@10 on 50 goldset queries
-  (M3 Max; judge not yet validated against hand labels): bm25 0.726, hybrid
-  0.868, full 0.891. See `docs/eval/README.md`.
+  document at a time. Pointwise nDCG@10 on 50 goldset queries (M3 Max): bm25
+  0.726, hybrid 0.868, full 0.891. Against 250 reference labels by Claude
+  Opus 5.5 (model labels, not human), the pointwise judge's weighted kappa is
+  0.708 [0.646, 0.764]; it is lenient on same-field near misses. See
+  `docs/eval/README.md`.
 - CI gains a lex (BM25) evaluation gate, the `lex-gate` job. It runs
   `scripts/bench-lex-gate.sh`, which benches bm25 over the ko-vault goldset five
   times on fresh indexes with no model. It compares per-query recall@5 and

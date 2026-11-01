@@ -121,7 +121,48 @@
     }
   },
   "kappa": {
-    "status": "pending",
-    "labels": 0
+    "status": "measured",
+    "pairs": 250,
+    "queries": 50,
+    "unjudged": 0,
+    "cohen": {
+      "value": 0.39647908173722934,
+      "lo": 0.3120212814750264,
+      "hi": 0.47991308769821095,
+      "undefined_draws": 0
+    },
+    "weighted": {
+      "value": 0.6669693313102592,
+      "lo": 0.5756978385377176,
+      "hi": 0.7457684572100065,
+      "undefined_draws": 0
+    },
+    "exact_agreement": 0.576,
+    "confusion": [
+      [
+        43,
+        18,
+        1,
+        2
+      ],
+      [
+        42,
+        48,
+        4,
+        25
+      ],
+      [
+        3,
+        4,
+        4,
+        3
+      ],
+      [
+        1,
+        2,
+        1,
+        49
+      ]
+    ]
   }
 }
