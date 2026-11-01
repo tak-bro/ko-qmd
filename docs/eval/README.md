@@ -45,3 +45,70 @@ committed baseline serves both. A lex gate job takes about 40 s.
 The bigram row shows the WARN tier at work. Dropping the bigram tail lowers 5 queries and raises
 others, and the interval cannot tell the net change from zero. So the gate warns and names the 5
 queries instead of failing.
+
+## Stage 2 — LLM-as-judge relevance grading
+
+**What.** A local model grades how relevant each retrieved document is to a query, on a 0–3 scale
+(`test/fixtures/ko-vault/judge/rubric.md`: 3 answers the query, 2 explains it in part, 1 same field
+but another concept, 0 unrelated). With those grades, nDCG@10 can be measured for queries that
+have no answer key. The judge is only trusted after it has been checked against hand labels on the
+same rubric.
+
+**How.** `scripts/judge-ko.sh` runs three steps.
+
+1. `bench-ko.sh` retrieves the top 10 for 80 queries from bm25, hybrid and full (seam form, no
+   query expansion). The query set is `judge/queries.json`. It holds 50 goldset queries sampled by
+   type and 30 queries with no answer key; 3 of those 30 are off-corpus, such as "파스타 면 삶는 시간".
+2. `scripts/judge/run.ts` grades each query's pool: the union of the three top-10 lists, plus any
+   answer file all three missed. The judge is `qwen3:8b` on Ollama, with thinking off, temperature
+   0 and a fixed sampling seed. Each document is cut to 900 characters.
+   - **listwise** (default) puts the whole pool in one prompt. It runs twice, with the pool
+     shuffled into a different order each time and the sampling seed unchanged. Any grade that
+     moves between the two runs comes from document order alone.
+   - **pointwise** (`JUDGE_MODE=pointwise`) sends each document alone through the same prompt.
+3. `scripts/judge/report.ts` reports these checks:
+   - how many grades changed with the order (POSITION);
+   - how many answer files the judge graded at least 2 (GOLD);
+   - whether off-corpus pools got 0 (OFFCORPUS);
+   - per-backend nDCG@10 against the pooled ideal, with 95% bootstrap intervals over queries;
+   - kappa against hand labels.
+
+Hand labels come from `scripts/judge/label.ts`. For each goldset query it shows 5 documents: the
+top 2 of `full` and 3 drawn at random from the rest of the pool. The order is shuffled, and the
+judge's grade is never shown. The labeler sees the same 900 characters the judge saw.
+
+**Result.** Conditions: Apple M3 Max, darwin-arm64, qwen3:8b on Ollama 0.40.1, 80 queries,
+1076 (query, document) pairs, no failed queries. Listwise ran at commit `131e590` and took
+3906 s for two passes. Pointwise ran at commit `c9c7e7c` and took 2796 s for one pass.
+
+| Check | listwise (pass 1) | pointwise |
+|---|---|---|
+| Grades changed by reordering the pool | 0.409 of 1076 (weighted kappa 0.622 between the two orders) | — (no list) |
+| Answer files graded ≥ 2 | 56 / 59 | 58 / 59 |
+| Off-corpus documents graded 0 | 38 / 39 | 39 / 39 |
+| Agreement with the other mode (weighted kappa) | 0.635 (pass 2: 0.665) | — |
+
+The listwise judge is not stable. Reordering the same documents changed 41% of the grades, and
+120 of them moved by 2 or more. The second order also graded lower overall: 601 zeros against 486.
+The pointwise judge cannot have this problem, and it does better on both label-free checks.
+
+nDCG@10 with 95% bootstrap intervals over queries, from the pointwise grades:
+
+| Query set | bm25 | hybrid | full | full − bm25 |
+|---|---|---|---|---|
+| goldset (50) | 0.726 [0.657, 0.792] | 0.868 [0.819, 0.910] | 0.891 [0.858, 0.918] | +0.164 [0.098, 0.234] |
+| no answer key (27) | 0.716 [0.655, 0.776] | 0.794 [0.728, 0.855] | 0.823 [0.758, 0.878] | +0.107 [0.050, 0.163] |
+
+The listwise grades rank the backends in the same order. Their full − bm25 differences are
++0.126 [0.063, 0.194] on the goldset and +0.168 [0.093, 0.248] on the open queries. On both
+query sets and with both judges, the interval for full − bm25 lies above zero.
+
+**Kappa: pending.** There are no hand labels yet (`judge/labels.json`). Until there are, these
+numbers depend on the judge's own label-free checks. Once labeling is done, rerun the report for
+both modes. The report needs no model.
+
+```sh
+npx tsx scripts/judge/label.ts
+npx tsx scripts/judge/report.ts test/fixtures/ko-vault/judge/judgments.json test/fixtures/ko-vault/judge/queries.json test/fixtures/ko-vault/judge/labels.json test/fixtures/ko-vault/judge/report.json
+npx tsx scripts/judge/report.ts test/fixtures/ko-vault/judge/judgments-pointwise.json test/fixtures/ko-vault/judge/queries.json test/fixtures/ko-vault/judge/labels.json test/fixtures/ko-vault/judge/report-pointwise.json
+```
