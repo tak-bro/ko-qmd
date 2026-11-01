@@ -1388,6 +1388,9 @@ qmd bench src/bench/fixtures/example.json
 
 # JSON output for programmatic analysis
 qmd bench src/bench/fixtures/example.json --json
+
+# Run only some backends (repeatable or comma list) — bm25 needs no model
+qmd bench src/bench/fixtures/example.json --backend bm25
 ```
 
 > The example fixture (`src/bench/fixtures/example.json`) and its test corpus
