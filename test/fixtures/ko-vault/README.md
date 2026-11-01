@@ -92,8 +92,9 @@ results: `docs/eval/README.md`.
 - `report.json`: the report.
 
 `grades-<prompt>-reference.json` and `report-reference.json` hold reference grades by Claude Opus
-5.5, not people, for the committed answers only. New answers need new reference grades. Method and
-results: `docs/eval/README.md`.
+5.5, not people, for the committed answers only. Grades record the hash of the answers they grade,
+and `rag-ko.sh` removes the reference files when it writes new answers. Method and results:
+`docs/eval/README.md`.
 
 ## Lex CI gate — `lex-baseline.json`
 

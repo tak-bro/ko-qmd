@@ -158,8 +158,11 @@ and has a local model answer in sentences, each citing the chunks it rests on. I
 answer the question, the model says it does not know ("모른다"). `scripts/rag-ko.sh` measures three
 things on a fixed question set:
 
-- faithfulness: the share of answer sentences that their cited chunks fully support;
-- citation precision: the share of citations whose chunk alone supports its sentence;
+- faithfulness: per answer, the share of its sentences that their cited chunks fully support,
+  averaged over answered questions. It does not ask whether the answer is right: an answer to a
+  near-miss question built from true but beside-the-point sentences still scores high;
+- citation precision: per answer, the share of its citations whose chunk alone supports the
+  sentence, averaged the same way;
 - abstention: how often the model says it does not know, split into questions it should refuse
   and questions it should answer.
 
@@ -193,6 +196,10 @@ stays out of the `qmd` binary; whether it belongs there is a later decision.
    supports the sentence. A sentence without a citation counts as unsupported.
 5. `scripts/rag/report.ts` gives each metric with a 95% bootstrap interval over questions, and the
    grounded − baseline difference with a paired bootstrap over the questions both runs define.
+   Each answers file records the hash of the contexts it came from, and each grades file the hash
+   of the answers it graded. The report and `agreement.ts` refuse files whose hashes do not match.
+   These fields, and the Ollama version, were added to the committed files after the run, at the
+   review. The run's own code did not yet write them.
 
 The judge was checked before its numbers were used. Claude Opus 5.5 graded the same 77 sentences
 blind. Two instances took the sentences of both runs shuffled together; they read only the rubric
@@ -222,11 +229,13 @@ The confusion matrix shows two failures:
   and 2 full. One of them: asked for BM25's usual saturation value, which no note gives, the
   baseline answered "60", and the judge called that partial.
 
-Two changes to the judge were tried and neither fixed it:
+Two changes to the judge were tried:
 
-- Turning on qwen3:8b's thinking made it fail validation or time out on 3 of the first 9
-  questions, so that run was stopped.
-- Showing the cited chunks numbered from 1 moved kappa from 0.329 to 0.347.
+- Turning on qwen3:8b's thinking. The run failed on 3 of its first 9 questions and was stopped.
+  Two failures came from a numbering bug: a sentence citing chunk 4 alone showed the judge a lone
+  "[4]". The third was Node's 5-minute fetch timeout. The bug was fixed in `320397e`, but thinking
+  was not retried, so it remains untested.
+- Showing the cited chunks numbered from 1, which is that fix, moved kappa from 0.329 to 0.347.
 
 The first judge run is kept in commit `9688b5b`. Faithfulness below is therefore reported on the
 reference grades (`rag/report-reference.json`), with the judge's numbers alongside
@@ -242,9 +251,14 @@ reference grades (`rag/report-reference.json`), with the judge's numbers alongsi
 | "모른다" on near-miss + off-corpus (higher is better) | 0.333 (4 / 12) | 0.667 (8 / 12) | +0.333 [0.083, 0.583] |
 | "모른다" on answerable questions (lower is better) | 0.000 (0 / 32) | 0.375 (12 / 32) | +0.375 [0.219, 0.563] |
 
-The faithfulness intervals for the change contain zero under both graders, so this set cannot show
-that the stricter prompt makes answers more faithful. Part of the reason is that the comparison
-covers only the 24 questions both prompts answered.
+The baseline and grounded columns cover different questions: each run is averaged over the
+questions it chose to answer. So 0.792 against 0.667 is not the effect. On the 24 questions both
+prompts answered, reference faithfulness goes from 0.694 to 0.792, which is the +0.097 in the last
+column. The judge's figures on the same 24 go from 0.500 to 0.617. Grounded also dropped harder
+questions: on the 16 it refused, baseline's reference faithfulness was 0.625.
+
+The faithfulness intervals for the change contain zero under both graders. This set therefore
+cannot show that the stricter prompt makes answers more faithful.
 
 What the change does show is a trade:
 
@@ -256,12 +270,15 @@ What the change does show is a trade:
 For a user, the grounded prompt as written trades wrong answers for missing ones. The next lever is
 the abstention rule, which is too broad as worded, measured on this set again.
 
-Rerun everything, or new answers from the committed chunks, with the commands below. The reference
-grades belong to the committed answers. After new answers they no longer line up, and
-`agreement.ts` stops with a sentence-count mismatch.
+Rerun everything, or new answers from the committed chunks, with the first two commands below.
+The reference grades belong to the committed answers. `rag-ko.sh` removes them when it writes new
+answers; git keeps the old ones. The last two commands rebuild the reference report and the
+agreement from the committed files.
 
 ```sh
 bash scripts/rag-ko.sh
 RAG_SKIP_RETRIEVE=1 bash scripts/rag-ko.sh
-npx tsx scripts/rag/agreement.ts test/fixtures/ko-vault/rag/grades-baseline.json test/fixtures/ko-vault/rag/grades-baseline-reference.json test/fixtures/ko-vault/rag/grades-grounded.json test/fixtures/ko-vault/rag/grades-grounded-reference.json
+R=test/fixtures/ko-vault/rag
+npx tsx scripts/rag/report.ts $R/contexts.json $R/answers-baseline.json $R/grades-baseline-reference.json $R/answers-grounded.json $R/grades-grounded-reference.json --out $R/report-reference.json
+npx tsx scripts/rag/agreement.ts $R/grades-baseline.json $R/grades-baseline-reference.json $R/grades-grounded.json $R/grades-grounded-reference.json
 ```
