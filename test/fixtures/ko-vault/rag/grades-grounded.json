@@ -5,12 +5,12 @@
     "think": false,
     "answers": "test/fixtures/ko-vault/rag/answers-grounded.json",
     "prompt": "grounded",
-    "commit": "ded6b84",
-    "date": "2026-11-01T14:46:52.085Z",
+    "commit": "320397e",
+    "date": "2026-11-01T15:00:34.397Z",
     "os": "darwin-arm64",
     "cpu": "Apple M3 Max",
     "rubric_sha256": "c771e76844dc906e5b013d5743d1c6ce5335a33cbf3523ab61f022192306af7c",
-    "seconds": 58
+    "seconds": 49
   },
   "grades": {
     "rag-01": [

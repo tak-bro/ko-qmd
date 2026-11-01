@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+- RAG answers with chunk citations and a faithfulness evaluation (eval stage
+  3). `scripts/rag/ask.ts` answers from a qmd index with `[n]` citations, or
+  says it does not know. `scripts/rag-ko.sh` measures faithfulness, citation
+  precision and abstention on 44 ko-vault questions, 12 of them unanswerable.
+  `gemma3:4b` generates and `qwen3:8b` judges. A stricter prompt raised
+  abstention on unanswerable questions from 0.333 to 0.667, but it also
+  refused 12 of 32 answerable ones. Its faithfulness change, +0.097
+  [-0.125, 0.333] on reference grades, is not distinguishable from zero. The
+  judge agreed with Claude Opus 5.5 reference grades (model, not human) at
+  kappa 0.35 only, so faithfulness is reported on the reference grades. See
+  `docs/eval/README.md`.
 - LLM-as-judge relevance grading for the ko-vault fixture (`scripts/judge-ko.sh`,
   eval stage 2). A local Ollama model (`qwen3:8b`) grades each query's pool 0–3
   on `test/fixtures/ko-vault/judge/rubric.md`. The pool is the union of the
