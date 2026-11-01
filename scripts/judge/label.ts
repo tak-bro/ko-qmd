@@ -10,7 +10,9 @@
  * The judge's grades are never shown, and the labeler sees the same text the judge saw. Each label
  * is saved as soon as it is typed, and a rerun skips pairs already labeled.
  *
- * Keys: 0-3 grade · s skip for now · q save and quit. The rubric is printed once at start.
+ * Keys: 0-3 grade · s skip for now · q save and quit. Each pair gets its own screen: query and
+ * document title on top, the text in the middle, a one-line rubric reminder above the prompt.
+ * The full rubric is rubric.md.
  */
 
 import { createHash } from "node:crypto";
@@ -66,6 +68,27 @@ export interface LabelIO {
   ask(prompt: string): Promise<string | null>;
   print(text: string): void;
   save(labels: LabelFile): void;
+  /** Starts a fresh screen for the next pair; a no-op when output is not a terminal. */
+  clear?(): void;
+}
+
+/** One-line rubric reminder shown with every pair — the full text is rubric.md. */
+export const GRADE_HINT = "3 바로 그 주제 · 2 설명이 일부 있음 · 1 단어만 비슷한 다른 개념 · 0 무관";
+
+const RULE = "─".repeat(60);
+
+/** The screen for one pair: query first, then the text the judge saw, then the question again. */
+export function formatPair(pair: Pair, doc: { title: string; body: string }, n: number, total: number): string {
+  return [
+    `${RULE} ${n}/${total}`,
+    `질의  ${pair.query}`,
+    `문서  ${doc.title}  (${pair.file})`,
+    RULE,
+    doc.body,
+    RULE,
+    `질의 「${pair.query}」 에 문서 「${doc.title}」 는?`,
+    GRADE_HINT,
+  ].join("\n");
 }
 
 /** Walks the unlabeled pairs. Returns how many labels were added this run. */
@@ -74,10 +97,10 @@ export async function runLabeling(pairs: readonly Pair[], file: LabelFile, corpu
   io.print(`${pairs.length - todo.length}/${pairs.length} labeled, ${todo.length} to go`);
   let added = 0;
   for (const [i, pair] of todo.entries()) {
-    const doc = loadDoc(corpus, pair.file);
-    io.print(`\n[${i + 1}/${todo.length}] 질의: ${pair.query}\n--- ${pair.file}\n# ${doc.title}\n${doc.body}\n`);
+    io.clear?.();
+    io.print(formatPair(pair, loadDoc(corpus, pair.file), pairs.length - todo.length + i + 1, pairs.length));
     for (;;) {
-      const answer = await io.ask("등급 0-3 · s 건너뛰기 · q 저장 후 종료 > ");
+      const answer = await io.ask("0-3 · s 건너뛰기 · q 저장 후 종료 > ");
       if (answer === null) return added;
       const a = answer.trim().toLowerCase();
       if (a === "q") return added;
@@ -117,11 +140,13 @@ async function main(argv: string[]): Promise<number> {
   rl.on("close", () => {
     closed = true;
   });
-  console.log(rubric);
   const added = await runLabeling(labelPairs(judgments.pools, goldIds), file, corpus, {
     ask: async prompt => (closed ? null : rl.question(prompt).catch(() => null)),
     print: text => console.log(text),
     save: labels => writeFileSync(labelPath, `${JSON.stringify(labels, null, 2)}\n`),
+    clear: () => {
+      if (process.stdout.isTTY) console.clear();
+    },
   });
   rl.close();
   console.log(`\n+${added} labels → ${labelPath}`);

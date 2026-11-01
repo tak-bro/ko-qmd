@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { labelPairs, runLabeling, type LabelFile } from "../scripts/judge/label.js";
+import { formatPair, GRADE_HINT, labelPairs, runLabeling, type LabelFile } from "../scripts/judge/label.js";
 import type { Pool } from "../scripts/judge/pool.js";
 
 const CORPUS = "test/fixtures/ko-vault";
@@ -62,6 +62,31 @@ describe("labelPairs", () => {
 
   test("a pool without the backend's ranking throws", () => {
     expect(() => labelPairs(pools, new Set(["g1"]), "vector")).toThrow(/no vector ranking/);
+  });
+});
+
+describe("formatPair", () => {
+  test("puts the query on top, keeps the judge's text whole, and repeats the question with the grades", () => {
+    const doc = { title: "Golden Dataset", body: "별칭: 골드셋\n## Summary\n본문" };
+    const lines = formatPair({ id: "g1", query: "골드셋", file: "wiki/golden-dataset.md" }, doc, 3, 250).split("\n");
+    expect(lines[0]).toMatch(/ 3\/250$/);
+    expect(lines[1]).toBe("질의  골드셋");
+    expect(lines[2]).toBe("문서  Golden Dataset  (wiki/golden-dataset.md)");
+    expect(lines.join("\n")).toContain(doc.body);
+    expect(lines.at(-2)).toBe("질의 「골드셋」 에 문서 「Golden Dataset」 는?");
+    expect(lines.at(-1)).toBe(GRADE_HINT);
+  });
+
+  test("the counter continues from labels already made", async () => {
+    const pairs = labelPairs(pools, new Set(["g1"]));
+    const file = empty();
+    (file.labels.g1 = {})[pairs[0]!.file] = 2;
+    const printed: string[] = [];
+    let cleared = 0;
+    const io = { ask: async () => null, print: (t: string) => printed.push(t), save: () => {}, clear: () => cleared++ };
+    await runLabeling(pairs, file, CORPUS, io);
+    expect(printed[1]).toMatch(/ 2\/5\n/);
+    expect(cleared).toBe(1);
   });
 });
 
