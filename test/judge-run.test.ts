@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { ollamaChat, type FetchLike } from "../scripts/judge/ollama.js";
 import { buildPools, corpusPath, loadDoc } from "../scripts/judge/pool.js";
-import { judgeQuery, parseGrades, shuffled } from "../scripts/judge/run.js";
+import { exitCode, judgeAll, judgeQuery, parseGrades, shuffled } from "../scripts/judge/run.js";
 import type { BenchmarkResult } from "../src/bench/types.js";
 
 const docs = [
@@ -55,6 +55,36 @@ describe("judgeQuery", () => {
   });
 });
 
+describe("judgeAll", () => {
+  const pools = [
+    { id: "q1", query: "x", files: ["wiki/a.md", "wiki/b.md"], rankings: {} },
+    { id: "q2", query: "boom", files: ["wiki/c.md"], rankings: {} },
+  ];
+  const titles: Record<string, string> = { "wiki/a.md": "A", "wiki/b.md": "B", "wiki/c.md": "C" };
+  const load = (file: string) => ({ title: titles[file]!, body: "" });
+
+  test("a query that fails is recorded in errors with no grades, the others are graded, exit is 2", async () => {
+    const good = titleJudge();
+    const chat = async (system: string, user: string) => {
+      if (user.includes("boom")) throw new Error("ollama 500: out of memory");
+      return good(system, user);
+    };
+    const log: string[] = [];
+    const passes = await judgeAll(pools, [1, 2], "rubric", chat, load, l => log.push(l));
+    expect(passes.map(p => p.seed)).toEqual([1, 2]);
+    expect(passes[0]!.grades.q1).toEqual({ "wiki/a.md": 3, "wiki/b.md": 1 });
+    expect(passes[0]!.grades.q2).toBeUndefined();
+    expect(passes[1]!.errors.q2).toMatch(/out of memory/);
+    expect(log.filter(l => l.includes("ERROR"))).toHaveLength(2);
+    expect(exitCode(passes)).toBe(2);
+  });
+
+  test("every query graded in every pass exits 0", async () => {
+    const passes = await judgeAll(pools.slice(0, 1), [1], "rubric", titleJudge(), load);
+    expect(exitCode(passes)).toBe(0);
+  });
+});
+
 describe("parseGrades", () => {
   const ids = ["d1", "d2"];
   test("accepts every id graded once", () => {
@@ -99,13 +129,20 @@ describe("buildPools", () => {
       },
     ],
   }));
-  const querySet = { description: "", queries: [{ id: "q1", query: "x", type: "open", expected_files: [] }] };
+  const querySet = { description: "", queries: [{ id: "q1", query: "x", type: "open", expected_files: [] as string[] }] };
 
   test("unions backend rankings in first-seen order and keeps each ranking", () => {
     const [pool] = buildPools(bench, querySet, ["bm25", "full"]);
     expect(pool!.query).toBe("x");
     expect(pool!.files).toEqual(["wiki/a.md", "wiki/b.md", "wiki/c.md"]);
     expect(pool!.rankings.full).toEqual(["wiki/b.md", "wiki/c.md"]);
+  });
+
+  test("answer files no backend retrieved join the pool after the rankings, unranked", () => {
+    const gold = { description: "", queries: [{ id: "q1", query: "x", type: "exact", expected_files: ["wiki/b.md", "wiki/gold.md"] }] };
+    const [pool] = buildPools(bench, gold, ["bm25", "full"]);
+    expect(pool!.files).toEqual(["wiki/a.md", "wiki/b.md", "wiki/c.md", "wiki/gold.md"]);
+    expect(Object.values(pool!.rankings).flat()).not.toContain("wiki/gold.md");
   });
 
   test("a missing query, backend or failed backend stops the run", () => {
@@ -143,6 +180,15 @@ describe("ollamaChat", () => {
     expect(await chat("s", "u")).toBe('{"grades":[]}');
     expect(sent!.url).toBe("http://h:1/api/chat");
     expect(sent!.body).toMatchObject({ model: "m", stream: false, think: false, options: { temperature: 0, seed: 9 } });
+  });
+
+  test("a prompt that filled the context window throws instead of trusting the reply", async () => {
+    const full: FetchLike = async () =>
+      new Response(JSON.stringify({ message: { content: '{"grades":[]}' }, prompt_eval_count: 1000 }));
+    await expect(ollamaChat({ host: "h", model: "m", schema: {}, seed: 1, numCtx: 1024, fetchImpl: full })("s", "u")).rejects.toThrow(/filled the context \(1000 tokens, num_ctx 1024\)/);
+    const fits: FetchLike = async () =>
+      new Response(JSON.stringify({ message: { content: "ok" }, prompt_eval_count: 500 }));
+    expect(await ollamaChat({ host: "h", model: "m", schema: {}, seed: 1, numCtx: 1024, fetchImpl: fits })("s", "u")).toBe("ok");
   });
 
   test("an HTTP error or an error body throws with the server's message", async () => {

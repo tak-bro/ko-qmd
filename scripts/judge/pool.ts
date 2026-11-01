@@ -2,8 +2,9 @@
  * Judge pools: which documents the judge grades for each query, and the text it sees.
  *
  * A pool is the union of every backend's top-k for one query in a `qmd bench --json` result,
- * deduplicated in first-seen order. Grades are per document, so one pool serves every backend's
- * nDCG and a document two backends both return is graded once.
+ * deduplicated in first-seen order, plus the goldset answer files no backend returned. Grades are
+ * per document, so one pool serves every backend's nDCG, and an answer every backend missed still
+ * counts in the ideal ranking.
  */
 
 import { readFileSync } from "node:fs";
@@ -27,7 +28,7 @@ export interface QuerySet {
 export interface Pool {
   id: string;
   query: string;
-  /** Corpus-relative paths, e.g. `wiki/inverted-index.md`. */
+  /** Corpus-relative paths, e.g. `wiki/inverted-index.md`: every ranking's files, then unretrieved answers. */
   files: string[];
   /** Each backend's ranking, corpus-relative, top-k. */
   rankings: Record<string, string[]>;
@@ -64,9 +65,18 @@ export function buildPools(
         }
       }
     }
+    for (const f of q.expected_files) {
+      if (!seen.has(f)) {
+        seen.add(f);
+        files.push(f);
+      }
+    }
     return { id: q.id, query: q.query, files, rankings };
   });
 }
+
+/** Characters of each document the judge and the human labeler both see. */
+export const DOC_CHARS = 900;
 
 export interface DocText {
   title: string;
@@ -77,7 +87,7 @@ export interface DocText {
  * Title (first `# ` heading, else the file name) and body without frontmatter, cut to
  * `maxChars`. Frontmatter aliases stay: they are how the vault names the concept.
  */
-export function loadDoc(corpusDir: string, file: string, maxChars = 900): DocText {
+export function loadDoc(corpusDir: string, file: string, maxChars = DOC_CHARS): DocText {
   const raw = readFileSync(join(corpusDir, file), "utf8");
   let body = raw;
   let aliases: string[] = [];

@@ -8,10 +8,18 @@ const pools: Pool[] = [
   {
     id: "g1",
     query: "역색인",
-    files: [],
+    files: [
+      "wiki/inverted-index.md",
+      "wiki/bm25-ranking.md",
+      "distractors/forward-index.md",
+      "wiki/INDEX.md",
+      "wiki/hybrid-search.md",
+      "wiki/zettelkasten.md",
+      "distractors/suffix-array.md",
+    ],
     rankings: {
       full: ["wiki/inverted-index.md", "wiki/bm25-ranking.md", "distractors/forward-index.md", "wiki/INDEX.md", "wiki/hybrid-search.md", "wiki/zettelkasten.md"],
-      bm25: ["wiki/zettelkasten.md"],
+      bm25: ["wiki/zettelkasten.md", "distractors/suffix-array.md"],
     },
   },
   { id: "o1", query: "열린 질의", files: [], rankings: { full: ["wiki/bm25-ranking.md"] } },
@@ -30,11 +38,26 @@ function scripted(answers: string[]) {
 const empty = (): LabelFile => ({ description: "", rubric_sha256: "x", labels: {} });
 
 describe("labelPairs", () => {
-  test("takes the top 5 of full for the listed queries only, in a shuffled order", () => {
+  test("takes the top 2 of full plus 3 others from the pool, for the listed queries only", () => {
     const pairs = labelPairs(pools, new Set(["g1"]));
+    const files = pairs.map(p => p.file);
     expect(pairs.map(p => p.id)).toEqual(["g1", "g1", "g1", "g1", "g1"]);
-    expect(new Set(pairs.map(p => p.file))).toEqual(new Set(pools[0]!.rankings.full!.slice(0, 5)));
-    expect(pairs.map(p => p.file)).not.toEqual(pools[0]!.rankings.full!.slice(0, 5));
+    expect(new Set(files).size).toBe(5);
+    expect(files).toEqual(expect.arrayContaining(["wiki/inverted-index.md", "wiki/bm25-ranking.md"]));
+    for (const f of files) expect(pools[0]!.files).toContain(f);
+  });
+
+  test("the draws reach low ranks and files only another backend returned", () => {
+    const many = Array.from({ length: 20 }, (_, i) => ({ ...pools[0]!, id: `g${i}` }));
+    const drawn = new Set(labelPairs(many, new Set(many.map(p => p.id))).map(p => p.file));
+    expect(drawn).toContain("distractors/suffix-array.md");
+    expect(drawn).toContain("wiki/zettelkasten.md");
+  });
+
+  test("pairs are shuffled so the top hit is not always first", () => {
+    const many = Array.from({ length: 20 }, (_, i) => ({ ...pools[0]!, id: `g${i}` }));
+    const firsts = new Set(labelPairs(many, new Set(many.map(p => p.id))).filter((_, i) => i % 5 === 0).map(p => p.file));
+    expect(firsts.size).toBeGreaterThan(1);
   });
 
   test("a pool without the backend's ranking throws", () => {

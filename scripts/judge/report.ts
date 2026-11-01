@@ -29,12 +29,16 @@ interface MeanCI {
   n: number;
   /** Queries left out because their pool held no relevant document (nDCG undefined). */
   undefined: number;
+  /** Queries of the set the judge failed on in pass 1 (no grades, so no nDCG). */
+  failed: number;
 }
 
 interface KappaCI {
   value: number;
   lo: number;
   hi: number;
+  /** Resamples where kappa was undefined; left out of lo/hi. */
+  undefined_draws: number;
 }
 
 export interface Report {
@@ -43,7 +47,8 @@ export interface Report {
   graded_pairs: number;
   errors: Record<string, string>;
   position: { pairs: number; flip_rate: number; weighted_kappa: number } | null;
-  gold: { graded_relevant: number; total: number };
+  /** Goldset answer files: how many any backend retrieved, and how many the judge graded ≥ 2. */
+  gold: { retrieved: number; graded_relevant: number; total: number };
   off_corpus: { graded_zero: number; total: number };
   ndcg: Record<string, Record<string, MeanCI>>;
   ndcg_diff: Record<string, Record<string, { delta: number; lo: number; hi: number; n: number }>>;
@@ -53,6 +58,8 @@ export interface Report {
         status: "measured";
         pairs: number;
         queries: number;
+        /** Labels on queries the judge failed on — not compared. */
+        unjudged: number;
         cohen: KappaCI;
         weighted: KappaCI;
         exact_agreement: number;
@@ -66,11 +73,18 @@ const SETS: Record<string, (type: string, gold: boolean) => boolean> = {
   open: t => t === "open",
 };
 
-function meanCI(values: number[]): MeanCI {
+function meanCI(values: number[], failed: number): MeanCI {
   const defined = values.filter(v => !Number.isNaN(v));
-  if (defined.length === 0) return { mean: Number.NaN, lo: Number.NaN, hi: Number.NaN, n: 0, undefined: values.length };
+  const left = values.length - defined.length;
+  if (defined.length === 0) return { mean: Number.NaN, lo: Number.NaN, hi: Number.NaN, n: 0, undefined: left, failed };
   const ci = pairedBootstrap(defined);
-  return { mean: ci.mean, lo: ci.lo, hi: ci.hi, n: defined.length, undefined: values.length - defined.length };
+  return { mean: ci.mean, lo: ci.lo, hi: ci.hi, n: defined.length, undefined: left, failed };
+}
+
+function gradeOf(g: Grades, file: string, id: string): number {
+  const grade = g[file];
+  if (grade === undefined) throw new Error(`query ${id}: ${file} has no grade — judgments do not match their pools`);
+  return grade;
 }
 
 export function buildReport(judgments: Judgments, querySet: QuerySet, labels?: LabelFile): Report {
@@ -96,14 +110,17 @@ export function buildReport(judgments: Judgments, querySet: QuerySet, labels?: L
     if (a.length) position = { pairs: a.length, flip_rate: flipRate(a, b), weighted_kappa: weightedKappa(a, b) };
   }
 
-  const gold = { graded_relevant: 0, total: 0 };
+  const gold = { retrieved: 0, graded_relevant: 0, total: 0 };
+  const pools = new Map(judgments.pools.map(p => [p.id, p]));
   const offCorpus = { graded_zero: 0, total: 0 };
   for (const [id, g] of Object.entries(grades)) {
     const q = types.get(id);
     if (!q) continue;
+    const ranked = new Set(Object.values(pools.get(id)?.rankings ?? {}).flat());
     for (const f of q.expected_files) {
       gold.total++;
-      if ((g[f] ?? 0) >= 2) gold.graded_relevant++;
+      if (ranked.has(f)) gold.retrieved++;
+      if (gradeOf(g, f, id) >= 2) gold.graded_relevant++;
     }
     if (q.type === "off-corpus") {
       for (const grade of Object.values(g)) {
@@ -117,18 +134,20 @@ export function buildReport(judgments: Judgments, querySet: QuerySet, labels?: L
   const ndcgDiff: Report["ndcg_diff"] = {};
   const backends = judgments.conditions.backends;
   for (const [set, member] of Object.entries(SETS)) {
-    const pools = judgments.pools.filter(p => {
+    const inSet = judgments.pools.filter(p => {
       const q = types.get(p.id);
-      return q && grades[p.id] && member(q.type, q.expected_files.length > 0);
+      return q && member(q.type, q.expected_files.length > 0);
     });
+    const graded = inSet.filter(p => grades[p.id]);
+    const failed = inSet.length - graded.length;
     const perBackend: Record<string, number[]> = {};
     for (const b of backends) {
-      perBackend[b] = pools.map(p => {
+      perBackend[b] = graded.map(p => {
         const g: Grades = grades[p.id]!;
-        return ndcgAt((p.rankings[b] ?? []).map(f => g[f] ?? 0), Object.values(g), judgments.conditions.k);
+        return ndcgAt((p.rankings[b] ?? []).map(f => gradeOf(g, f, p.id)), Object.values(g), judgments.conditions.k);
       });
     }
-    ndcg[set] = Object.fromEntries(backends.map(b => [b, meanCI(perBackend[b]!)]));
+    ndcg[set] = Object.fromEntries(backends.map(b => [b, meanCI(perBackend[b]!, failed)]));
     ndcgDiff[set] = {};
     for (const b of backends.filter(x => x !== "bm25" && perBackend.bm25)) {
       const deltas: number[] = [];
@@ -147,26 +166,27 @@ export function buildReport(judgments: Judgments, querySet: QuerySet, labels?: L
   if (labels) {
     const byQuery: { human: number; judge: number }[][] = [];
     let total = 0;
+    let unjudged = 0;
     for (const [id, l] of Object.entries(labels.labels)) {
       const g = grades[id];
-      const pairs = Object.entries(l)
-        .filter(([f]) => g?.[f] !== undefined)
-        .map(([f, human]) => ({ human, judge: g![f]! }));
       total += Object.keys(l).length;
+      if (!g) {
+        unjudged += Object.keys(l).length;
+        continue;
+      }
+      const pairs = Object.entries(l).map(([f, human]) => ({ human, judge: gradeOf(g, f, id) }));
       if (pairs.length) byQuery.push(pairs);
     }
     const flat = byQuery.flat();
     if (flat.length === 0) {
       kappa = { status: "pending", labels: total };
     } else {
-      const h = flat.map(p => p.human);
-      const j = flat.map(p => p.judge);
       const ci = (fn: (a: number[], b: number[]) => number): KappaCI => {
         const r = bootstrapStatistic(byQuery, sample => {
           const s = sample.flat();
           return fn(s.map(p => p.human), s.map(p => p.judge));
         });
-        return { value: r.value, lo: r.lo, hi: r.hi };
+        return { value: r.value, lo: r.lo, hi: r.hi, undefined_draws: r.undefinedDraws };
       };
       const confusion = Array.from({ length: GRADES }, () => new Array<number>(GRADES).fill(0));
       for (const p of flat) confusion[p.human]![p.judge]!++;
@@ -174,6 +194,7 @@ export function buildReport(judgments: Judgments, querySet: QuerySet, labels?: L
         status: "measured",
         pairs: flat.length,
         queries: byQuery.length,
+        unjudged,
         cohen: ci(cohenKappa),
         weighted: ci(weightedKappa),
         exact_agreement: flat.filter(p => p.human === p.judge).length / flat.length,
@@ -204,12 +225,12 @@ export function reportLines(r: Report): string[] {
     r.position
       ? `POSITION flip=${f3(r.position.flip_rate)} wkappa=${f3(r.position.weighted_kappa)} pairs=${r.position.pairs} (pass seed ${r.conditions.seeds[0]} vs ${r.conditions.seeds[1]})`
       : "POSITION skipped (one pass)",
-    `GOLD graded>=2 ${r.gold.graded_relevant}/${r.gold.total}`,
+    `GOLD graded>=2 ${r.gold.graded_relevant}/${r.gold.total} retrieved=${r.gold.retrieved}`,
     `OFFCORPUS graded=0 ${r.off_corpus.graded_zero}/${r.off_corpus.total}`,
   ];
   for (const [set, byBackend] of Object.entries(r.ndcg)) {
     for (const [b, m] of Object.entries(byBackend)) {
-      lines.push(`NDCG set=${set} backend=${b} mean=${f3(m.mean)} [${f3(m.lo)}, ${f3(m.hi)}] n=${m.n} undefined=${m.undefined}`);
+      lines.push(`NDCG set=${set} backend=${b} mean=${f3(m.mean)} [${f3(m.lo)}, ${f3(m.hi)}] n=${m.n} undefined=${m.undefined} failed=${m.failed}`);
     }
     for (const [name, d] of Object.entries(r.ndcg_diff[set] ?? {})) {
       lines.push(`NDCG-DIFF set=${set} ${name} delta=${f3(d.delta)} [${f3(d.lo)}, ${f3(d.hi)}] n=${d.n}`);
@@ -219,12 +240,12 @@ export function reportLines(r: Report): string[] {
   lines.push(
     k.status === "pending"
       ? `KAPPA pending labels=${k.labels}`
-      : `KAPPA cohen=${f3(k.cohen.value)} [${f3(k.cohen.lo)}, ${f3(k.cohen.hi)}] weighted=${f3(k.weighted.value)} [${f3(k.weighted.lo)}, ${f3(k.weighted.hi)}] exact=${f3(k.exact_agreement)} pairs=${k.pairs} queries=${k.queries}`,
+      : `KAPPA cohen=${f3(k.cohen.value)} [${f3(k.cohen.lo)}, ${f3(k.cohen.hi)}] weighted=${f3(k.weighted.value)} [${f3(k.weighted.lo)}, ${f3(k.weighted.hi)}] exact=${f3(k.exact_agreement)} pairs=${k.pairs} queries=${k.queries} unjudged=${k.unjudged} undefined_draws=${k.cohen.undefined_draws + k.weighted.undefined_draws}`,
   );
   return lines;
 }
 
-function main(argv: string[]): number {
+export function main(argv: string[]): number {
   const [judgePath, queriesPath, labelPath, outPath] = argv;
   if (!judgePath || !queriesPath) {
     console.error("usage: tsx scripts/judge/report.ts <judgments.json> <queries.json> [labels.json] [out-report.json]");

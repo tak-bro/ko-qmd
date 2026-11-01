@@ -3,10 +3,12 @@
  *
  *   npx tsx scripts/judge/label.ts [judgments.json] [labels.json]
  *
- * Defaults: test/fixtures/ko-vault/judge/judgments.json and labels.json. The pairs are the top 5
- * of the `full` ranking for every goldset query (one with expected_files) in the judgments'
- * pools. The judge's grades are never shown. Each label is saved as soon as it is typed, and a
- * rerun skips pairs already labeled, so labeling can stop and resume at any point.
+ * Defaults: test/fixtures/ko-vault/judge/judgments.json and labels.json. For every goldset query
+ * (one with expected_files) the pairs are 5 documents of its judge pool: the top 2 of `full` and
+ * 3 drawn at random from the rest (lower ranks, bm25/hybrid-only hits, unretrieved answers). The
+ * rest of the pool sets the nDCG ideal too, so the judge is checked there, not only on top hits.
+ * The judge's grades are never shown, and the labeler sees the same text the judge saw. Each label
+ * is saved as soon as it is typed, and a rerun skips pairs already labeled.
  *
  * Keys: 0-3 grade · s skip for now · q save and quit. The rubric is printed once at start.
  */
@@ -33,17 +35,28 @@ export interface Pair {
 }
 
 export const LABEL_BACKEND = "full";
-export const LABEL_TOP = 5;
+export const LABEL_TOP = 2;
+export const LABEL_REST = 3;
 
-/** Pairs to label: top `top` of `backend` for each listed query, shuffled within the query. */
-export function labelPairs(pools: readonly Pool[], ids: ReadonlySet<string>, backend = LABEL_BACKEND, top = LABEL_TOP): Pair[] {
+/**
+ * Pairs to label per listed query: top `top` of `backend` plus `rest` seeded draws from the rest
+ * of the pool, shuffled together so the labeler cannot read the system's rank off the order.
+ */
+export function labelPairs(
+  pools: readonly Pool[],
+  ids: ReadonlySet<string>,
+  backend = LABEL_BACKEND,
+  top = LABEL_TOP,
+  rest = LABEL_REST,
+): Pair[] {
   const pairs: Pair[] = [];
   for (const [i, pool] of pools.entries()) {
     if (!ids.has(pool.id)) continue;
     const ranking = pool.rankings[backend];
     if (!ranking) throw new Error(`pool ${pool.id} has no ${backend} ranking`);
-    // Shuffled so the labeler cannot read the system's rank off the order.
-    for (const file of shuffled(ranking.slice(0, top), 1000 + i)) pairs.push({ id: pool.id, query: pool.query, file });
+    const head = ranking.slice(0, top);
+    const tail = shuffled(pool.files.filter(f => !head.includes(f)), 2000 + i).slice(0, rest);
+    for (const file of shuffled([...head, ...tail], 1000 + i)) pairs.push({ id: pool.id, query: pool.query, file });
   }
   return pairs;
 }
@@ -61,7 +74,7 @@ export async function runLabeling(pairs: readonly Pair[], file: LabelFile, corpu
   io.print(`${pairs.length - todo.length}/${pairs.length} labeled, ${todo.length} to go`);
   let added = 0;
   for (const [i, pair] of todo.entries()) {
-    const doc = loadDoc(corpus, pair.file, 2000);
+    const doc = loadDoc(corpus, pair.file);
     io.print(`\n[${i + 1}/${todo.length}] 질의: ${pair.query}\n--- ${pair.file}\n# ${doc.title}\n${doc.body}\n`);
     for (;;) {
       const answer = await io.ask("등급 0-3 · s 건너뛰기 · q 저장 후 종료 > ");
@@ -93,7 +106,7 @@ async function main(argv: string[]): Promise<number> {
 
   const file: LabelFile = existsSync(labelPath)
     ? (JSON.parse(readFileSync(labelPath, "utf8")) as LabelFile)
-    : { description: `Hand labels (0-3) on rubric.md: top ${LABEL_TOP} of ${LABEL_BACKEND} per goldset query`, rubric_sha256: rubricSha, labels: {} };
+    : { description: `Hand labels (0-3) on rubric.md: per goldset query, top ${LABEL_TOP} of ${LABEL_BACKEND} + ${LABEL_REST} random from the rest of the judge pool`, rubric_sha256: rubricSha, labels: {} };
   if (file.rubric_sha256 !== rubricSha) {
     console.error(`labels were made on another rubric (${file.rubric_sha256.slice(0, 8)} vs ${rubricSha.slice(0, 8)}) — relabel or restore the rubric`);
     return 2;

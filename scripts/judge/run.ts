@@ -6,7 +6,8 @@
  * <bench.json> is `qmd bench --json` over <queries.json> (scripts/judge-ko.sh runs it through
  * bench-ko.sh). For every query the judge grades the pool — the union of each backend's top 10 —
  * in one listwise prompt, once per seed in JUDGE_SEEDS. Each seed shuffles the pool into a
- * different order, so the second pass measures position bias.
+ * different order while Ollama's sampling seed stays fixed, so the second pass measures position
+ * bias alone.
  *
  * Env: JUDGE_MODEL (qwen3:8b) · OLLAMA_HOST (http://127.0.0.1:11434) · JUDGE_SEEDS (1,2)
  *      JUDGE_BACKENDS (bm25,hybrid,full) · JUDGE_CORPUS (test/fixtures/ko-vault) · JUDGE_COMMIT
@@ -155,6 +156,47 @@ export interface Judgments {
   passes: Pass[];
 }
 
+/** Ollama sampling seed, the same in every pass; JUDGE_SEEDS only reorders the pool. */
+export const SAMPLING_SEED = 42;
+
+/**
+ * Every pass over every pool. A query whose reply fails validation twice, or whose call throws,
+ * lands in that pass's `errors` and gets no grades.
+ */
+export async function judgeAll(
+  pools: readonly Pool[],
+  seeds: readonly number[],
+  rubric: string,
+  chat: Chat,
+  load: (file: string) => { title: string; body: string },
+  log: (line: string) => void = () => {},
+): Promise<Pass[]> {
+  const passes: Pass[] = [];
+  for (const seed of seeds) {
+    const pass: Pass = { seed, grades: {}, errors: {} };
+    for (const [i, pool] of pools.entries()) {
+      const docs = pool.files.map(file => ({ file, ...load(file) }));
+      try {
+        pass.grades[pool.id] = await judgeQuery(pool.query, docs, seed, rubric, chat);
+      } catch (err) {
+        pass.errors[pool.id] = err instanceof Error ? err.message : String(err);
+      }
+      log(`seed ${seed} ${i + 1}/${pools.length} ${pool.id} docs=${docs.length}${pass.errors[pool.id] ? ` ERROR ${pass.errors[pool.id]}` : ""}`);
+    }
+    passes.push(pass);
+  }
+  return passes;
+}
+
+export function countFailed(passes: readonly Pass[]): number {
+  return passes.reduce((n, p) => n + Object.keys(p.errors).length, 0);
+}
+
+/** 0 when every query was graded in every pass, 2 otherwise. */
+export function exitCode(passes: readonly Pass[]): 0 | 2 {
+  return countFailed(passes) ? 2 : 0;
+}
+
 function envList(name: string, fallback: string): string[] {
   const raw = process.env[name] ?? fallback;
   const items = raw.split(",").map(s => s.trim()).filter(Boolean);
@@ -184,23 +226,10 @@ async function main(argv: string[]): Promise<number> {
   const pools = buildPools(bench, querySet, backends, k);
 
   const started = Date.now();
-  const passes: Pass[] = [];
-  let failed = 0;
-  for (const seed of seeds) {
-    const chat = ollamaChat({ host, model, schema: GRADE_SCHEMA, seed });
-    const pass: Pass = { seed, grades: {}, errors: {} };
-    for (const [i, pool] of pools.entries()) {
-      const docs = pool.files.map(file => ({ file, ...loadDoc(corpus, file) }));
-      try {
-        pass.grades[pool.id] = await judgeQuery(pool.query, docs, seed, rubric, chat);
-      } catch (err) {
-        pass.errors[pool.id] = err instanceof Error ? err.message : String(err);
-        failed++;
-      }
-      console.error(`seed ${seed} ${i + 1}/${pools.length} ${pool.id} docs=${docs.length}${pass.errors[pool.id] ? " ERROR" : ""}`);
-    }
-    passes.push(pass);
-  }
+  // One sampling seed for every pass: only the order changes, so POSITION measures order alone.
+  const chat = ollamaChat({ host, model, schema: GRADE_SCHEMA, seed: SAMPLING_SEED });
+  const passes = await judgeAll(pools, seeds, rubric, chat, file => loadDoc(corpus, file), line => console.error(line));
+  const failed = countFailed(passes);
 
   const judgments: Judgments = {
     description: "LLM-as-judge grades (0-3) per query pool; see test/fixtures/ko-vault/judge/rubric.md",
@@ -221,7 +250,7 @@ async function main(argv: string[]): Promise<number> {
   };
   writeFileSync(outPath, `${JSON.stringify(judgments, null, 2)}\n`);
   console.error(`wrote ${outPath} (${pools.length} queries × ${seeds.length} seeds, ${failed} failed)`);
-  return failed ? 2 : 0;
+  return exitCode(passes);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -2,7 +2,12 @@
  * Minimal Ollama chat client for the judge: one non-streaming /api/chat call that asks for
  * JSON matching a schema. Thinking is off and temperature 0, so a rerun with the same seed
  * reproduces the grades as far as Ollama itself is deterministic.
+ *
+ * Ollama silently drops the start of a prompt longer than num_ctx, and the reply can still pass
+ * validation with the rubric gone. A prompt that fills the window is therefore an error.
  */
+
+export const DEFAULT_NUM_CTX = 32768;
 
 export type Chat = (system: string, user: string) => Promise<string>;
 
@@ -24,10 +29,12 @@ export interface OllamaOptions {
 interface ChatResponse {
   message?: { content?: string };
   error?: string;
+  prompt_eval_count?: number;
 }
 
 export function ollamaChat(opts: OllamaOptions): Chat {
   const doFetch: FetchLike = opts.fetchImpl ?? ((url, init) => fetch(url, init));
+  const numCtx = opts.numCtx ?? DEFAULT_NUM_CTX;
   return async (system, user) => {
     const res = await doFetch(`${opts.host.replace(/\/$/, "")}/api/chat`, {
       method: "POST",
@@ -41,7 +48,7 @@ export function ollamaChat(opts: OllamaOptions): Chat {
         stream: false,
         think: false,
         format: opts.schema,
-        options: { temperature: 0, seed: opts.seed, num_ctx: opts.numCtx ?? 16384 },
+        options: { temperature: 0, seed: opts.seed, num_ctx: numCtx },
       }),
     });
     const text = await res.text();
@@ -53,6 +60,10 @@ export function ollamaChat(opts: OllamaOptions): Chat {
       throw new Error(`ollama returned non-JSON: ${text.slice(0, 300)}`, { cause: err });
     }
     if (parsed.error) throw new Error(`ollama: ${parsed.error}`);
+    // Truncation keeps the prompt just under the window, so anything at 95% of it is suspect.
+    if (typeof parsed.prompt_eval_count === "number" && parsed.prompt_eval_count >= numCtx * 0.95) {
+      throw new Error(`prompt filled the context (${parsed.prompt_eval_count} tokens, num_ctx ${numCtx}) — Ollama may have cut it`);
+    }
     const content = parsed.message?.content;
     if (typeof content !== "string") throw new Error(`ollama response has no message.content: ${text.slice(0, 300)}`);
     return content;

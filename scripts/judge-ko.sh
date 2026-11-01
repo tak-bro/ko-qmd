@@ -28,5 +28,11 @@ fi
 [ -f "$bench" ] || { echo "no $bench — run without JUDGE_SKIP_BENCH first" >&2; exit 2; }
 
 commit="$(git rev-parse --short HEAD)"
-JUDGE_COMMIT="$commit" npx --no-install tsx scripts/judge/run.ts "$bench" "$judge/queries.json" "$judge/judgments.json" || exit 2
-npx --no-install tsx scripts/judge/report.ts "$judge/judgments.json" "$judge/queries.json" "$judge/labels.json" "$judge/report.json" || exit 2
+# A judge pass with failed queries still writes judgments.json, so the report runs anyway — a
+# stale report.json from an earlier run must not sit next to new judgments — and the exit stays 2.
+rc=0
+rm -f "$judge/judgments.json" "$judge/report.json"
+JUDGE_COMMIT="$commit" npx --no-install tsx scripts/judge/run.ts "$bench" "$judge/queries.json" "$judge/judgments.json" || rc=2
+[ -f "$judge/judgments.json" ] || exit 2
+npx --no-install tsx scripts/judge/report.ts "$judge/judgments.json" "$judge/queries.json" "$judge/labels.json" "$judge/report.json" || rc=2
+exit "$rc"
