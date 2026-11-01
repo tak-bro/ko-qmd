@@ -80,7 +80,12 @@ export function parseGrade(content: string, cited: readonly number[]): { grade: 
 
 export const UNCITED: SentenceGrade = { support: "none", citations: {}, uncited: true };
 
-/** Grades one sentence. One retry, told what was wrong; a second bad reply throws. */
+/**
+ * Grades one sentence. The judge sees the cited chunks numbered 1..m in citation order, not by
+ * their answer numbers — a sentence citing [4] alone showed the judge a lone "[4]", and it
+ * answered for documents that were not there. Verdicts are mapped back to the answer numbers.
+ * One retry, told what was wrong; a second bad reply throws.
+ */
 export async function gradeSentence(
   question: string,
   sentence: { text: string; citations: number[] },
@@ -89,13 +94,18 @@ export async function gradeSentence(
   chat: Chat,
 ): Promise<SentenceGrade> {
   if (!sentence.citations.length) return UNCITED;
-  const cited = sentence.citations.map(n => ({ n, chunk: chunks[n - 1]! }));
+  const cited = sentence.citations.map((n, i) => ({ n: i + 1, chunk: chunks[n - 1]! }));
+  const local = cited.map(c => c.n);
   const base = userPrompt(question, sentence.text, cited);
   let user = base;
   let reason = "";
   for (let attempt = 0; attempt < 2; attempt++) {
-    const result = parseGrade(await chat(systemPrompt(rubric), user), sentence.citations);
-    if ("grade" in result) return result.grade;
+    const result = parseGrade(await chat(systemPrompt(rubric), user), local);
+    if ("grade" in result) {
+      const citations: Record<string, boolean> = {};
+      for (const [i, n] of sentence.citations.entries()) citations[String(n)] = result.grade.citations[String(i + 1)]!;
+      return { ...result.grade, citations };
+    }
     reason = result.reason;
     user = `${base}\n\n이전 응답이 형식에 맞지 않았다(${reason}). 인용 문서마다 한 번씩 판정한다.`;
   }

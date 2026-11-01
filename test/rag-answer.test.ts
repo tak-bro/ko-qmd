@@ -111,11 +111,14 @@ describe("gradeSentence", () => {
     expect(calls).toBe(0);
   });
 
-  test("the judge sees only the cited chunks", async () => {
+  test("the judge sees only the cited chunks, renumbered from 1, and verdicts map back", async () => {
     let user = "";
-    const chat = async (_s: string, u: string) => ((user = u), '{"support":"full","citations":[{"n":2,"supports":true}]}');
-    await gradeSentence("q", { text: "비 문장", citations: [2] }, chunks, "rubric", chat);
-    expect(user).toContain("[2] B\n비 본문");
+    const chat = async (_s: string, u: string) => ((user = u), '{"support":"partial","citations":[{"n":1,"supports":true},{"n":2,"supports":false}]}');
+    const grade = await gradeSentence("q", { text: "문장", citations: [2, 1] }, chunks, "rubric", chat);
+    expect(user).toContain("[1] B\n비 본문\n\n[2] A\n에이 본문");
+    expect(grade.citations).toEqual({ "2": true, "1": false });
+    const lone = async (_s: string, u: string) => ((user = u), '{"support":"full","citations":[{"n":1,"supports":true}]}');
+    expect((await gradeSentence("q", { text: "비 문장", citations: [2] }, chunks, "rubric", lone)).citations).toEqual({ "2": true });
     expect(user).not.toContain("에이 본문");
   });
 
