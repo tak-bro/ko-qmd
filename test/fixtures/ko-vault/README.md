@@ -68,3 +68,12 @@ hard kinds:
 2. `RESULT-HARD hybrid_r1=<f> hybrid_mrr=<f> full_r1=<f> full_mrr=<f> n=<n> form=<seam|plain>` — the
    hard types pooled, weighted by query count. `n=0` (and `nan` values) while the fixture has no
    hard queries. This line feeds the dogfood hard gate, which needs `form=` to match its baseline.
+
+## Lex CI gate — `lex-baseline.json`
+
+`scripts/bench-lex-gate.sh` benches bm25 alone over this fixture (`qmd update` only, no model). It
+compares each query's recall@5 and reciprocal rank with `lex-baseline.json`. CI runs it as the
+`lex-gate` job. The verdict rules are in `src/bench/gate.ts`; the method and results are in
+`docs/eval/README.md`. If you change `ko-bench.json`'s queries on purpose, the gate reports a stale
+baseline. If you change the corpus or the lex path on purpose, it may report a drop. Either way,
+refresh the baseline in the same commit with `bash scripts/bench-lex-gate.sh --update-baseline`.

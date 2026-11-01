@@ -202,7 +202,8 @@ npm run build                    # dist/ — `bun build --compile` 은 쓰지 �
 
 - 브랜치: `develop` 이 작업 브랜치(PR 은 여기로), `main` 은 배포 브랜치다. 릴리스는 `/release <version>`(→ `v*` 태그 → `publish.yml` 이 npm 발행).
   절차와 CHANGELOG 규칙: [skills/release/SKILL.md](skills/release/SKILL.md).
-- CI 는 업스트림 매트릭스에 `windows-latest` 와 Electron 스모크 잡을 더했다.
+- CI 는 업스트림 매트릭스에 `windows-latest` 와 Electron 스모크 잡을 더했다. `lex-gate` 잡은 모델 없이 ko-vault
+  goldset 으로 bm25 recall@5·MRR 저하를 막는다(방법·결과: [docs/eval/README.md](docs/eval/README.md)).
 
 ### dogfood — 작업 트리 빌드를 이 머신 데몬에 올리기
 

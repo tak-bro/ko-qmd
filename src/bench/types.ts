@@ -67,6 +67,8 @@ export interface BackendResult {
   matched_files: string[];
   /** Expected files missing from the returned result set */
   unmatched_expected_files: string[];
+  /** Set when the backend threw; the scores above are then zeros, not a measurement */
+  error?: string;
 }
 
 export interface QueryResult {
