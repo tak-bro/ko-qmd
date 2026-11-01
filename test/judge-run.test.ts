@@ -79,6 +79,14 @@ describe("judgeAll", () => {
     expect(exitCode(passes)).toBe(2);
   });
 
+  test("pointwise sends each document alone and merges the grades", async () => {
+    const calls: string[] = [];
+    const passes = await judgeAll(pools.slice(0, 1), [0], "rubric", titleJudge(calls), load, undefined, "pointwise");
+    expect(passes[0]!.grades.q1).toEqual({ "wiki/a.md": 3, "wiki/b.md": 1 });
+    expect(calls).toHaveLength(2);
+    for (const c of calls) expect(c).toMatch(/문서 1개/);
+  });
+
   test("every query graded in every pass exits 0", async () => {
     const passes = await judgeAll(pools.slice(0, 1), [1], "rubric", titleJudge(), load);
     expect(exitCode(passes)).toBe(0);

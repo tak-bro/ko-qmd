@@ -221,7 +221,7 @@ const f3 = (x: number) => (Number.isNaN(x) ? "nan" : x.toFixed(3));
 
 export function reportLines(r: Report): string[] {
   const lines = [
-    `JUDGE model=${r.conditions.model} queries=${r.graded_queries} pairs=${r.graded_pairs} seconds=${r.conditions.seconds} errors=${Object.keys(r.errors).length}`,
+    `JUDGE model=${r.conditions.model} mode=${r.conditions.mode} queries=${r.graded_queries} pairs=${r.graded_pairs} seconds=${r.conditions.seconds} errors=${Object.keys(r.errors).length}`,
     r.position
       ? `POSITION flip=${f3(r.position.flip_rate)} wkappa=${f3(r.position.weighted_kappa)} pairs=${r.position.pairs} (pass seed ${r.conditions.seeds[0]} vs ${r.conditions.seeds[1]})`
       : "POSITION skipped (one pass)",

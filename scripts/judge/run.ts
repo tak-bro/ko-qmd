@@ -7,10 +7,12 @@
  * bench-ko.sh). For every query the judge grades the pool — the union of each backend's top 10 —
  * in one listwise prompt, once per seed in JUDGE_SEEDS. Each seed shuffles the pool into a
  * different order while Ollama's sampling seed stays fixed, so the second pass measures position
- * bias alone.
+ * bias alone. JUDGE_MODE=pointwise sends each document alone through the same prompt instead —
+ * no list, so no order to be biased by — and runs one pass.
  *
  * Env: JUDGE_MODEL (qwen3:8b) · OLLAMA_HOST (http://127.0.0.1:11434) · JUDGE_SEEDS (1,2)
- *      JUDGE_BACKENDS (bm25,hybrid,full) · JUDGE_CORPUS (test/fixtures/ko-vault) · JUDGE_COMMIT
+ *      JUDGE_MODE (listwise|pointwise) · JUDGE_BACKENDS (bm25,hybrid,full)
+ *      JUDGE_CORPUS (test/fixtures/ko-vault) · JUDGE_COMMIT
  * Exit: 0 every query graded · 2 a query failed validation twice, or bad input.
  * A failed query is recorded under `errors`, never filled with zeros.
  */
@@ -142,6 +144,7 @@ export interface Judgments {
   description: string;
   conditions: {
     model: string;
+    mode: JudgeMode;
     commit: string;
     date: string;
     os: string;
@@ -159,9 +162,19 @@ export interface Judgments {
 /** Ollama sampling seed, the same in every pass; JUDGE_SEEDS only reorders the pool. */
 export const SAMPLING_SEED = 42;
 
+export type JudgeMode = "listwise" | "pointwise";
+
+/** Pointwise: each document alone, through the same prompt and validation as a list of one. */
+async function judgePointwise(query: string, docs: readonly PoolDoc[], rubric: string, chat: Chat): Promise<Grades> {
+  const grades: Grades = {};
+  for (const doc of docs) Object.assign(grades, await judgeQuery(query, [doc], 0, rubric, chat));
+  return grades;
+}
+
 /**
  * Every pass over every pool. A query whose reply fails validation twice, or whose call throws,
- * lands in that pass's `errors` and gets no grades.
+ * lands in that pass's `errors` and gets no grades — in pointwise mode, one bad document fails
+ * its whole query.
  */
 export async function judgeAll(
   pools: readonly Pool[],
@@ -170,6 +183,7 @@ export async function judgeAll(
   chat: Chat,
   load: (file: string) => { title: string; body: string },
   log: (line: string) => void = () => {},
+  mode: JudgeMode = "listwise",
 ): Promise<Pass[]> {
   const passes: Pass[] = [];
   for (const seed of seeds) {
@@ -177,7 +191,10 @@ export async function judgeAll(
     for (const [i, pool] of pools.entries()) {
       const docs = pool.files.map(file => ({ file, ...load(file) }));
       try {
-        pass.grades[pool.id] = await judgeQuery(pool.query, docs, seed, rubric, chat);
+        pass.grades[pool.id] =
+          mode === "pointwise"
+            ? await judgePointwise(pool.query, docs, rubric, chat)
+            : await judgeQuery(pool.query, docs, seed, rubric, chat);
       } catch (err) {
         pass.errors[pool.id] = err instanceof Error ? err.message : String(err);
       }
@@ -214,7 +231,10 @@ async function main(argv: string[]): Promise<number> {
   const host = process.env.OLLAMA_HOST ?? "http://127.0.0.1:11434";
   const corpus = process.env.JUDGE_CORPUS ?? "test/fixtures/ko-vault";
   const backends = envList("JUDGE_BACKENDS", "bm25,hybrid,full");
-  const seeds = envList("JUDGE_SEEDS", "1,2").map(s => {
+  const mode = process.env.JUDGE_MODE ?? "listwise";
+  if (mode !== "listwise" && mode !== "pointwise") throw new Error(`JUDGE_MODE must be listwise or pointwise, got ${mode}`);
+  // Pointwise has no order to shuffle, so one pass; the seed is only a label.
+  const seeds = mode === "pointwise" ? [0] : envList("JUDGE_SEEDS", "1,2").map(s => {
     if (!/^\d+$/.test(s)) throw new Error(`JUDGE_SEEDS must be integers, got ${s}`);
     return Number(s);
   });
@@ -228,13 +248,14 @@ async function main(argv: string[]): Promise<number> {
   const started = Date.now();
   // One sampling seed for every pass: only the order changes, so POSITION measures order alone.
   const chat = ollamaChat({ host, model, schema: GRADE_SCHEMA, seed: SAMPLING_SEED });
-  const passes = await judgeAll(pools, seeds, rubric, chat, file => loadDoc(corpus, file), line => console.error(line));
+  const passes = await judgeAll(pools, seeds, rubric, chat, file => loadDoc(corpus, file), line => console.error(line), mode);
   const failed = countFailed(passes);
 
   const judgments: Judgments = {
     description: "LLM-as-judge grades (0-3) per query pool; see test/fixtures/ko-vault/judge/rubric.md",
     conditions: {
       model,
+      mode,
       commit: process.env.JUDGE_COMMIT ?? "unknown",
       date: new Date().toISOString(),
       os: `${platform()}-${arch()}`,

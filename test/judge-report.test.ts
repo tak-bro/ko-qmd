@@ -21,6 +21,7 @@ function judgments(): Judgments {
     description: "",
     conditions: {
       model: "m",
+      mode: "listwise",
       commit: "c",
       date: "d",
       os: "o",
@@ -170,7 +171,7 @@ describe("main", () => {
 describe("reportLines", () => {
   test("prints one line per measure, with KAPPA pending before labels", () => {
     const lines = reportLines(buildReport(judgments(), querySet));
-    expect(lines[0]).toBe("JUDGE model=m queries=4 pairs=7 seconds=5 errors=0");
+    expect(lines[0]).toBe("JUDGE model=m mode=listwise queries=4 pairs=7 seconds=5 errors=0");
     expect(lines.some(l => l.startsWith("POSITION flip=0.143"))).toBe(true);
     expect(lines.some(l => l.startsWith("NDCG set=goldset backend=full mean=1.000"))).toBe(true);
     expect(lines.some(l => l.startsWith("NDCG-DIFF set=goldset full-bm25"))).toBe(true);
