@@ -1,7 +1,7 @@
 /**
  * Minimal Ollama chat client for the judge: one non-streaming /api/chat call that asks for
- * JSON matching a schema. Thinking is off and temperature 0, so a rerun with the same seed
- * reproduces the grades as far as Ollama itself is deterministic.
+ * JSON matching a schema. Thinking is off unless `think` is set, and temperature is 0, so a rerun
+ * with the same seed reproduces the grades as far as Ollama itself is deterministic.
  *
  * Ollama silently drops the start of a prompt longer than num_ctx, and the reply can still pass
  * validation with the rubric gone. A prompt that fills the window is therefore an error.
@@ -23,6 +23,8 @@ export interface OllamaOptions {
   schema: object;
   seed: number;
   numCtx?: number;
+  /** Let a thinking model reason before the JSON reply (default off). The reasoning is not returned. */
+  think?: boolean;
   fetchImpl?: FetchLike;
 }
 
@@ -46,7 +48,7 @@ export function ollamaChat(opts: OllamaOptions): Chat {
           { role: "user", content: user },
         ],
         stream: false,
-        think: false,
+        think: opts.think ?? false,
         format: opts.schema,
         options: { temperature: 0, seed: opts.seed, num_ctx: numCtx },
       }),

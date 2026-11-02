@@ -150,3 +150,135 @@ both modes with:
 npx tsx scripts/judge/report.ts test/fixtures/ko-vault/judge/judgments.json test/fixtures/ko-vault/judge/queries.json test/fixtures/ko-vault/judge/labels.json test/fixtures/ko-vault/judge/report.json
 npx tsx scripts/judge/report.ts test/fixtures/ko-vault/judge/judgments-pointwise.json test/fixtures/ko-vault/judge/queries.json test/fixtures/ko-vault/judge/labels.json test/fixtures/ko-vault/judge/report-pointwise.json
 ```
+
+## Stage 3 — RAG answers with citations
+
+**What.** `scripts/rag/ask.ts` answers a question from a qmd index. It retrieves the top 5 chunks
+and has a local model answer in sentences, each citing the chunks it rests on. If the chunks do not
+answer the question, the model says it does not know ("모른다"). `scripts/rag-ko.sh` measures three
+things on a fixed question set:
+
+- faithfulness: per answer, the share of its sentences that their cited chunks fully support,
+  averaged over answered questions. It does not ask whether the answer is right: an answer to a
+  near-miss question built from true but beside-the-point sentences still scores high;
+- citation precision: per answer, the share of its citations whose chunk alone supports the
+  sentence, averaged the same way;
+- abstention: how often the model says it does not know, split into questions it should refuse
+  and questions it should answer.
+
+It compares one change, a stricter prompt, on the same questions and the same chunks. Generation
+stays out of the `qmd` binary; whether it belongs there is a later decision.
+
+**How.**
+
+1. The question set is `test/fixtures/ko-vault/rag/questions.json`, 44 questions over the fixture.
+   - 24 are answered by one note and 8 need two notes.
+   - 8 are near misses: the corpus covers the topic but not the fact asked, such as who first
+     proposed BM25. A grep over the whole corpus confirmed each fact is absent.
+   - 4 are off-corpus, such as cooking a stew.
+
+   Claude Opus 5.5 wrote the set after reading every note.
+2. `bench-ko.sh` builds the isolated index. `scripts/rag/retrieve.ts` then fetches the top 5 chunks
+   per question once, into `rag/contexts.json`. Retrieval is the `full` backend in seam form.
+   Fixture notes fit in one chunk each, so a chunk is a whole note. Chunk size was therefore not a
+   useful change to compare.
+3. `scripts/rag/answer.ts` answers each question with `gemma3:4b` on Ollama (temperature 0, seed 42).
+   The reply is JSON: a list of sentences with chunk numbers, or `unknown: true`. It runs once per
+   prompt, so both prompts see the same chunks:
+   - `baseline` asks for a concise answer with citations, and `unknown` when the documents cannot
+     answer.
+   - `grounded` adds four rules: use the documents only, write one claim per sentence, cite only
+     chunks that state the sentence, and abstain when the exact fact is missing even if the topic
+     is there.
+4. `scripts/rag/grade.ts` has `qwen3:8b` grade every cited sentence on
+   `rag/faithfulness.md`. The judge sees the question, the sentence and only the chunks it cites.
+   It returns support (full, partial or none) and, for each cited chunk, whether that chunk alone
+   supports the sentence. A sentence without a citation counts as unsupported.
+5. `scripts/rag/report.ts` gives each metric with a 95% bootstrap interval over questions, and the
+   grounded − baseline difference with a paired bootstrap over the questions both runs define.
+   Each answers file records the hash of the contexts it came from, and each grades file the hash
+   of the answers it graded. The report and `agreement.ts` refuse files whose hashes do not match.
+   These fields, and the Ollama version, were added to the committed files after the run, at the
+   review. The run's own code did not yet write them.
+
+The judge was checked before its numbers were used. Claude Opus 5.5 graded the same 77 sentences
+blind. Two instances took the sentences of both runs shuffled together; they read only the rubric
+and each sentence's cited chunks. They saw neither the judge's grades nor which prompt wrote the
+sentence. `scripts/rag/agreement.ts` compares the two sets of grades. These reference grades come
+from a model, not from people.
+
+**Result.** Conditions: Apple M3 Max, darwin-arm64, Ollama 0.40.1, one run each (temperature 0,
+seed 42). Answers came from `gemma3:4b` at commit `ded6b84`, about 140 s per prompt. Judge grades
+came from `qwen3:8b` at `320397e`, 90 s and 49 s. Retrieval used Qwen3-Embedding-0.6B and
+Qwen3-Reranker-0.6B (`models.yml`) and put an expected note in the top 5 for all 32 answerable
+questions.
+
+The judge agrees poorly with the reference grades:
+
+| Agreement over 77 sentences | value |
+|---|---|
+| Cohen kappa, full vs not full (what faithfulness counts) | 0.347 [0.154, 0.539] |
+| Cohen kappa, full / partial / none | 0.231 [0.088, 0.382] |
+| Per-citation verdicts that match | 80 of 89 |
+
+The confusion matrix shows two failures:
+
+- The judge marks paraphrases down to partial. Of 58 sentences the reference graded full, it
+  graded 20 partial.
+- It misses fabrications. Of 11 sentences the reference graded none, it graded 2 none, 7 partial
+  and 2 full. One of them: asked for BM25's usual saturation value, which no note gives, the
+  baseline answered "60", and the judge called that partial.
+
+Two changes to the judge were tried:
+
+- Turning on qwen3:8b's thinking. The run failed on 3 of its first 9 questions and was stopped.
+  Two failures came from a numbering bug: a sentence citing chunk 4 alone showed the judge a lone
+  "[4]". The third was Node's 5-minute fetch timeout. The bug was fixed in `320397e`, but thinking
+  was not retried, so it remains untested.
+- Showing the cited chunks numbered from 1, which is that fix, moved kappa from 0.329 to 0.347.
+
+The first judge run is kept in commit `9688b5b`. Faithfulness below is therefore reported on the
+reference grades (`rag/report-reference.json`), with the judge's numbers alongside
+(`rag/report.json`).
+
+| Metric | baseline | grounded | grounded − baseline |
+|---|---|---|---|
+| Faithfulness, reference grades | 0.667 [0.517, 0.806] (n=40) | 0.792 [0.615, 0.950] (n=24) | +0.097 [−0.125, 0.333] (n=24) |
+| Faithfulness, qwen3:8b judge | 0.444 [0.295, 0.593] | 0.617 [0.421, 0.808] | +0.117 [−0.042, 0.283] |
+| Citation precision, reference grades | 0.663 [0.522, 0.800] | 0.875 [0.727, 1.000] | +0.207 [0.000, 0.412] |
+| Citation precision, qwen3:8b judge | 0.722 [0.587, 0.848] | 0.896 [0.761, 1.000] | +0.172 [0.042, 0.325] |
+| Cites an expected note (no judge) | 0.906 (29 / 32) | 1.000 (20 / 20) | — |
+| "모른다" on near-miss + off-corpus (higher is better) | 0.333 (4 / 12) | 0.667 (8 / 12) | +0.333 [0.083, 0.583] |
+| "모른다" on answerable questions (lower is better) | 0.000 (0 / 32) | 0.375 (12 / 32) | +0.375 [0.219, 0.563] |
+
+The baseline and grounded columns cover different questions: each run is averaged over the
+questions it chose to answer. So 0.792 against 0.667 is not the effect. On the 24 questions both
+prompts answered, reference faithfulness goes from 0.694 to 0.792, which is the +0.097 in the last
+column. The judge's figures on the same 24 go from 0.500 to 0.617. Grounded also dropped harder
+questions: on the 16 it refused, baseline's reference faithfulness was 0.625.
+
+The faithfulness intervals for the change contain zero under both graders. This set therefore
+cannot show that the stricter prompt makes answers more faithful.
+
+What the change does show is a trade:
+
+- It refuses twice as many unanswerable questions. Baseline answered all 8 near misses; grounded
+  answered 4.
+- It refuses 12 of 32 questions the chunks do answer, against none for baseline.
+- Citation precision rises, but under the reference grades the interval only reaches zero.
+
+For a user, the grounded prompt as written trades wrong answers for missing ones. The next lever is
+the abstention rule, which is too broad as worded, measured on this set again.
+
+Rerun everything, or new answers from the committed chunks, with the first two commands below.
+The reference grades belong to the committed answers. `rag-ko.sh` removes them when it writes new
+answers; git keeps the old ones. The last two commands rebuild the reference report and the
+agreement from the committed files.
+
+```sh
+bash scripts/rag-ko.sh
+RAG_SKIP_RETRIEVE=1 bash scripts/rag-ko.sh
+R=test/fixtures/ko-vault/rag
+npx tsx scripts/rag/report.ts $R/contexts.json $R/answers-baseline.json $R/grades-baseline-reference.json $R/answers-grounded.json $R/grades-grounded-reference.json --out $R/report-reference.json
+npx tsx scripts/rag/agreement.ts $R/grades-baseline.json $R/grades-baseline-reference.json $R/grades-grounded.json $R/grades-grounded-reference.json
+```

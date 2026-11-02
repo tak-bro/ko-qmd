@@ -246,6 +246,16 @@ pointwise 기준 정답 세트 nDCG@10은 bm25 0.726·hybrid 0.868·full 0.891�
 판정자 등급을 보지 않고 매긴 것이다. 판정자는 관련 문서를 거의 놓치지 않지만 같은 분야의 다른 개념 문서에 높은 등급을 주는
 경향이 있다. 그래서 nDCG는 절대값보다 backend 간 비교로 읽는다. 방법과 수치는 [docs/eval/README.md](docs/eval/README.md)에 있다.
 
+### 인용 답변(RAG) 평가
+
+`npx tsx scripts/rag/ask.ts --index <index.sqlite> --config <index.yml> "질문"`은 검색한 청크 상위 5개로 답하고, 문장마다
+근거 청크 번호를 단다. 청크로 답할 수 없으면 "모른다"고 답한다. `bash scripts/rag-ko.sh`는 fixture 질문 44개(답 있음 32·
+주제는 있지만 사실이 없는 near-miss 8·무관 4)로 faithfulness·인용 정확도·"모른다" 비율을 잰다. 생성은 `gemma3:4b`, 판정은 `qwen3:8b`다.
+판정자는 Claude Opus 5.5 기준 등급(사람 아님)과 kappa 0.35로 일치해 믿기 어려웠다. 그래서 faithfulness는 기준 등급으로 보고한다.
+비교한 변경은 더 엄격한 프롬프트다. 이 프롬프트는 near-miss·무관 질문에서 "모른다"를 0.333에서 0.667로 올렸다.
+대신 답이 있는 질문 32개 중 12개도 거절했다. faithfulness 차이 +0.097 [−0.125, 0.333]은 0을 포함한다(M3 Max).
+방법과 수치는 [docs/eval/README.md](docs/eval/README.md)에 있다.
+
 ### Electron 내장
 
 앱은 SDK 를 워커(utilityProcess)에서 쓴다. CI `electron-smoke` 잡이 Electron 39(ABI 140)로 `better-sqlite3` 를 리빌드하고

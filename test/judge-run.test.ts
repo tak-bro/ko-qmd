@@ -188,6 +188,8 @@ describe("ollamaChat", () => {
     expect(await chat("s", "u")).toBe('{"grades":[]}');
     expect(sent!.url).toBe("http://h:1/api/chat");
     expect(sent!.body).toMatchObject({ model: "m", stream: false, think: false, options: { temperature: 0, seed: 9 } });
+    await ollamaChat({ host: "h", model: "m", schema: {}, seed: 9, think: true, fetchImpl })("s", "u");
+    expect(sent!.body).toMatchObject({ think: true });
   });
 
   test("a prompt that filled the context window throws instead of trusting the reply", async () => {

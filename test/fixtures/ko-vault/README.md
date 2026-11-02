@@ -80,6 +80,22 @@ can replace it via `npx tsx scripts/judge/label.ts`. A label file records the ru
 and the report refuses labels made on another rubric. If you edit `rubric.md`, relabel. Method and
 results: `docs/eval/README.md`.
 
+## RAG answers — `rag/`
+
+`scripts/rag-ko.sh` uses these files:
+
+- `rag/questions.json`: 44 questions (24 single-note, 8 two-note, 8 near-miss, 4 off-corpus),
+  written by Claude Opus 5.5. Near-miss facts were confirmed absent by grepping the corpus.
+- `rag/contexts.json`: the top 5 chunks retrieved per question.
+- `answers-<prompt>.json`: answers with chunk citations, per prompt.
+- `grades-<prompt>.json`: the `qwen3:8b` judge's grades on `rag/faithfulness.md`.
+- `report.json`: the report.
+
+`grades-<prompt>-reference.json` and `report-reference.json` hold reference grades by Claude Opus
+5.5, not people, for the committed answers only. Grades record the hash of the answers they grade,
+and `rag-ko.sh` removes the reference files when it writes new answers. Method and results:
+`docs/eval/README.md`.
+
 ## Lex CI gate — `lex-baseline.json`
 
 `scripts/bench-lex-gate.sh` benches bm25 alone over this fixture (`qmd update` only, no model). It

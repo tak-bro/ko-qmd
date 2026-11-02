@@ -1,0 +1,526 @@
+{
+  "description": "Answers by gemma3:4b with the baseline prompt (scripts/rag/answer.ts PROMPTS), from test/fixtures/ko-vault/rag/contexts.json.",
+  "conditions": {
+    "model": "gemma3:4b",
+    "prompt": "baseline",
+    "contexts_sha256": "eeb242d6ca086eb099fc61d5bf0fc7147c4a40448e997db80cdb9d29da83a2ce",
+    "ollama": "0.40.1",
+    "commit": "ded6b84",
+    "date": "2026-11-01T14:40:17.112Z",
+    "os": "darwin-arm64",
+    "cpu": "Apple M3 Max",
+    "seconds": 140
+  },
+  "answers": {
+    "rag-01": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "BM25에서 긴 문서가 단어를 우연히 많이 포함하는 효과를 누르는 길이 정규화 강도는 파라미터 b다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-02": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "BM25 공식은 2026년 9월 15일에 만들어졌으며, BM25 Ranking이라는 연구 프로젝트에서 나왔습니다. [1]",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-03": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "하이브리드 검색은 키워드 기반 BM25 결과와 벡터 유사도 결과를 합쳐 한 목록으로 돌려주는 검색 방식이다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-04": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "사백 점 차이는 승률 십 대 하나 정도로 약속되어 있어, 점수만 놓고도 대결 성격을 가늠할 수 있다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-05": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "여러 단어가 연달아 붙어 나오는지 확인하는 검색을 하려면 색인에 역색인에서 위치 정보를 함께 넣어둬야 한다.",
+          "citations": [
+            2,
+            4
+          ]
+        }
+      ]
+    },
+    "rag-06": {
+      "unknown": true,
+      "sentences": []
+    },
+    "rag-07": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "모델을 교체하면 이미 저장한 벡터를 모두 다시 계산해야 한다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-08": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "한국어 검색에서 형태소 분석기를 쓰는 것은 어절을 형태소로 나누거나 조사를 떼는 처리가 필요한 교착어를 다루기 때문에 장점이 있지만, 신조어와 외래어 표기에서 흔들리고 배포 크기가 크다는 단점이 있다. [1]",
+          "citations": [
+            1
+          ]
+        },
+        {
+          "text": "음절 단위로 잘라 색인하는 n-gram 토큰화는 사전 없이 부분 일치 검색을 가능하게 하며, 띄어쓰기가 달라도 같은 글자 조각이 생겨 복합어와 띄어 쓴 표현을 매치할 수 있다. 하지만 색인 크기가 커지고 unigram은 흔한 글자가 너무 많은 문서에 걸려 랭킹 변별력이 낮다. [2]",
+          "citations": [
+            2
+          ]
+        },
+        {
+          "text": "청킹 전략은 긴 문서를 검색과 임베딩에 알맞은 크기의 조각으로 나누는 규칙이며, 조각 크기에 따라 정밀도와 문맥 보존이 갈린다. 헤딩 경계로 자르면 의미 단위가 유지되고, 고정 토큰 수로 자르면 구현이 단순하다. [4]",
+          "citations": [
+            4
+          ]
+        }
+      ]
+    },
+    "rag-09": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "BM25의 반복어 포화 파라미터는 보통 60으로 두는 게 권장된다.",
+          "citations": [
+            2
+          ]
+        }
+      ]
+    },
+    "rag-10": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "타이핑 중에는 키워드 검색만 하고 제출할 때 하이브리드를 쓰는 식으로 나누는 설계가 흔하다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-11": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "상호 순위 융합에서 상수 k는 보통 60을 쓴다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-12": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "재정렬 모델을 붙인 검색 시스템을 평가할 때 착시를 조심해야 하며, 재현율@k 지표를 따로 측정해야 합니다. 리랭킹 전 단계의 재현율@k를 따로 기록해야 합니다.",
+          "citations": [
+            1,
+            2,
+            4
+          ]
+        }
+      ]
+    },
+    "rag-13": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "25분 집중법에서 4묶음을 채우면 십오 분에서 삼십 분의 긴 휴식으로 피로를 푼다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-14": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "순위 역수 합산 융합은 2026년 9월 15일에 처음 제안되었습니다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-15": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "크로스 인코더는 질의와 문서를 한 입력으로 이어 붙여 판단하므로 임베딩 거리보다 정밀하지만 느리다. 그래서 전체 코퍼스가 아니라 상위 30~60개 후보에만 적용한다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-16": {
+      "unknown": true,
+      "sentences": []
+    },
+    "rag-17": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "한국어 질의를 늘려서 검색할 때 제일 효과 좋은 변형은 쿼리 확장이다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-18": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "원본을 가리키는 값은 링크가 아니라 문자열로 적는데, 원본 폴더를 링크 그래프에 끌어들이지 않기 위해서다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-19": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "짧은 단어는 예외로 둘 때, 조사 목록으로 단어 끝을 잘라낼 때 발생할 수 있는 문제점을 해결하기 위해 길이 조건을 둔다.",
+          "citations": [
+            2,
+            5
+          ]
+        }
+      ]
+    },
+    "rag-20": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "독일 사회학자가 수만 장의 메모 상자로 논문을 써낸 방식에서 이름이 왔다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-21": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "두 글자씩 잘라 색인하면 어떤 검색어를 못 찾고, 그래서 흔히 어떻게 보완해?",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-22": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "기억의 궁전 암기법은 집이나 통근 경로처럼 눈감아도 그려지는 장소를 고르고, 외울 항목 하나하나를 장소의 지점에 배치하며, 가능한 한 터무니없고 생생한 이미지로 바꾸어 담는 세 단계로 진행된다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-23": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "회의록 작성 흐름은 녹음이나 받아쓰기 텍스트를 주제별로 정리하고 결정과 할 일을 분리해 남기는 절차다. 결정 중 오래 영향을 주는 것은 의사결정 기록으로 옮기고, 반복되는 개념은 wiki 문서로 승격한다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-24": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "검색 평가에서 상위 다섯 개까지만 보는 이유는 사람이 결과 목록에서 한눈에 훑는 범위가 대략 5 정도이기 때문이다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-25": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "망각 연구에서 복습 간격을 늘리는 방식이 출발했으며, 플래시카드 앱이 이 일정을 자동으로 계산한다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-26": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "담당자가 정답 문서를 하나에서 세 개까지 확정한다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-27": {
+      "unknown": true,
+      "sentences": []
+    },
+    "rag-28": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "긴 문서를 임베딩에 넣으면 뒷부분이 잘리게 된다.",
+          "citations": [
+            1
+          ]
+        },
+        {
+          "text": "헤딩 경계로 자르면 의미 단위가 유지되고, 고정 토큰 수로 자르면 구현이 단순하다.",
+          "citations": [
+            1
+          ]
+        },
+        {
+          "text": "짧은 wiki 문서는 대부분 헤딩 단위 청킹만으로 충분한 경우가 많다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-29": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "검색 기반 답변 생성에서 최종 답 품질을 좌우하는 요인과 조각을 너무 잘게 나눴을 때의 문제는 앞뒤 맥락이 사라져 답변 생성에 쓸 수 없다는 것입니다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-30": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "제텔카스텐에서 출처 메모와 영구 메모를 구분하여 읽은 내용 요약과 자기 생각을 섞지 않도록 합니다. (문서 2)",
+          "citations": [
+            2
+          ]
+        }
+      ]
+    },
+    "rag-31": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "조각 사이에 약간 겹치는 구간을 두면 경계에 걸친 문장을 놓치지 않는다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-32": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "들어오는 링크가 하나도 없는 고립 문서는 찾아가기 어려워 사실상 버려진다.",
+          "citations": [
+            2
+          ]
+        }
+      ]
+    },
+    "rag-33": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "평점이 개수가 적은 항목을 보정하면 신작이 손해를 보는데 이건 보완하기 위해 전체 평균 쪽으로 끌어당겨 왜곡을 줄이는 방식이다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-34": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "복습 간격을 넓혀가는 학습법과 여러 유형을 섞어 푸는 학습법은 인터리빙 학습과 Spaced Repetition을 혼합하는 것으로 보입니다. 인터리빙 학습은 여러 주제를 섞어서 공부하는 방식이고, Spaced Repetition은 기억이 흐려질 즈음에 다시 복습하도록 복습 간격을 점점 늘려가는 학습 방법입니다.",
+          "citations": [
+            2,
+            1
+          ]
+        }
+      ]
+    },
+    "rag-35": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "YAML에 따옴표 하나 빠뜨리면 파서가 블록 전체를 버리므로, 커밋 전 검증 스크립트로 구문을 확인한다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-36": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "한국어는 어간에 조사와 어미가 붙는 교착어라서, 검색에서는 어절을 형태소로 나누거나 조사를 떼는 처리가 필요하다.",
+          "citations": [
+            1
+          ]
+        },
+        {
+          "text": "두 음절 이하 단어에서 떼면 뜻이 망가지므로 길이 조건을 둔다.",
+          "citations": [
+            1
+          ]
+        },
+        {
+          "text": "불용어는 문장에서 너무 흔해 분석에 도움이 되지 않는 단어로, 목록을 만들어 걸러 내는 것이 전처리의 기본 단계다.",
+          "citations": [
+            4
+          ]
+        },
+        {
+          "text": "n-gram 토큰화는 텍스트를 연속된 n개 글자 조각으로 잘라 색인하는 방식으로, 사전 없이 부분 일치 검색을 가능하게 한다.",
+          "citations": [
+            5
+          ]
+        }
+      ]
+    },
+    "rag-37": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "원본은 절대 안 지운다는 규칙에도 예외가 있어?",
+          "citations": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ]
+        }
+      ]
+    },
+    "rag-38": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "받은편지함에 쌓인 자료를 하루 한 번 묶어서 처리한다. 먼저 중복 여부를 색인에서 확인하고, 기존 문서를 고칠지 새 문서를 만들지 정한다. 원본은 추가 전용 폴더로 옮기고, wiki 문서 프론트매터에 출처 경로를 남긴다. 작업 브랜치를 따로 만들어 변경을 모은 뒤 풀 리퀘스트로 사람이 검토한다. 실행마다 실행 기록 노트를 남겨 무엇을 처리했는지 추적한다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-39": {
+      "unknown": true,
+      "sentences": []
+    },
+    "rag-40": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "노트 링크가 끊어지는 원인은 파일 이름을 바꾸는 경우이며, 이를 자동으로 잡기 위해 린트 자동화가 사용된다.",
+          "citations": [
+            2,
+            5
+          ]
+        }
+      ]
+    },
+    "rag-41": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "사람이 봐야 하는 건 개인 데이터나 절대 경로 같은 항목으로, 아직 사람이 확인해야 하는 영역이다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-42": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "SQLite 내장 전문 검색은 역색인(Inverted Index)을 사용하며, Elasticsearch는 B-트리 인덱스(B-tree index)와 같은 구조를 사용합니다. 따라서 일반적으로 Elasticsearch가 SQLite 내장 전문 검색보다 성능이 뛰어납니다.",
+          "citations": [
+            1,
+            3
+          ]
+        }
+      ]
+    },
+    "rag-43": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "한 주제에 연결된 문서가 열 개를 넘으면 하위 주제로 나누는 것을 검토한다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-44": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "원문으로 답할 수 없기 때문에 원본 경로를 문자열로 적는 이유가 문서 2의 상세 내용에 설명되어 있다. 이는 원본 폴더를 링크 그래프에 끌어들이지 않기 위해서다.",
+          "citations": [
+            2
+          ]
+        }
+      ]
+    }
+  },
+  "errors": {}
+}
