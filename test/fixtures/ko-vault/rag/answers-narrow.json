@@ -1,0 +1,415 @@
+{
+  "description": "Answers by gemma3:4b with the narrow prompt (scripts/rag/answer.ts PROMPTS), from test/fixtures/ko-vault/rag/contexts.json.",
+  "conditions": {
+    "model": "gemma3:4b",
+    "prompt": "narrow",
+    "contexts_sha256": "eeb242d6ca086eb099fc61d5bf0fc7147c4a40448e997db80cdb9d29da83a2ce",
+    "ollama": "0.40.1",
+    "commit": "6d0db7f",
+    "date": "2026-11-02T00:55:34.249Z",
+    "os": "darwin-arm64",
+    "cpu": "Apple M3 Max",
+    "seconds": 113
+  },
+  "answers": {
+    "rag-01": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "파라미터 b는 긴 문서가 단어를 우연히 많이 포함하는 효과를 누르는 길이 정규화 강도다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-02": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "BM25는 단어 빈도와 문서 길이를 함께 보정해 질의와 문서의 관련도를 점수로 매기는 확률적 랭킹 함수다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-03": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "하이브리드 검색은 키워드 기반 BM25 결과와 벡터 유사도 결과를 합쳐 한 목록으로 돌려주는 검색 방식이다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-04": {
+      "unknown": true,
+      "sentences": []
+    },
+    "rag-05": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "여러 단어가 연달아 붙어 나오는지 확인하는 검색을 하려면 색인에 역색인에서 위치 정보를 함께 넣어둬야 한다.",
+          "citations": [
+            2
+          ]
+        }
+      ]
+    },
+    "rag-06": {
+      "unknown": true,
+      "sentences": []
+    },
+    "rag-07": {
+      "unknown": true,
+      "sentences": []
+    },
+    "rag-08": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "형태소 분석은 어절을 형태소로 나누거나 조사를 떼는 처리가 필요하다. citations: [1]",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-09": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "파라미터 k1은 보통 60으로 두는 게 권장된다.",
+          "citations": [
+            2
+          ]
+        }
+      ]
+    },
+    "rag-10": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "키워드 검색만 타이핑 중에는 하고, 제출할 때 하이브리드를 쓰는 방식으로 나누는 설계가 흔하다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-11": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "상수 k는 보통 60을 쓴다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-12": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "리랭킹 전 단계의 재현율도 따로 기록해야 한다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-13": {
+      "unknown": true,
+      "sentences": []
+    },
+    "rag-14": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "Reciprocal Rank Fusion은 2026년 9월 15일에 처음 제안되었습니다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-15": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "크로스 인코더는 질의와 문서를 한 입력으로 이어 붙여 판단하므로 임베딩 거리보다 정밀하지만 느리다. 그래서 전체 코퍼스가 아니라 상위 30~60개 후보에만 적용한다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-16": {
+      "unknown": true,
+      "sentences": []
+    },
+    "rag-17": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "쿼리 확장은 사용자가 입력한 질의를 동의어, 약어, 바꿔 쓴 문장으로 늘려 검색이 놓치는 문서를 줄이는 기법이다. 한국어 질의를 늘려서 검색할 때 제일 효과 좋은 변형은 조사나 어간을 떼어내는 형태소 분석을 활용하는 것이다. 특히, 한국어에서는 조사를 뗀 어간형과 영문 용어를 함께 넣는 것이 효과가 크다. [1, 2, 5]",
+          "citations": [
+            1,
+            2,
+            5
+          ]
+        }
+      ]
+    },
+    "rag-18": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "원본을 가리키는 값은 링크가 아니라 문자열로 적는데, 원본 폴더를 링크 그래프에 끌어들이지 않기 위해서다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-19": {
+      "unknown": true,
+      "sentences": []
+    },
+    "rag-20": {
+      "unknown": true,
+      "sentences": []
+    },
+    "rag-21": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "두 글자씩 잘라 색인하면 어떤 검색어를 못 찾고, 그래서 흔히 어떻게 보완해?",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-22": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "기억의 궁전은 외울 것을 익숙한 장소의 위치에 배치해 떠올리는 암기 기법이다. 방법은 세 단계로, 먼저 집이나 통근 경로처럼 눈감아도 그려지는 장소를 고른 다음, 외울 항목 하나하나를 장소의 지점에 배치하되, 가능한 한 터무니없고 생생한 이미지로 바꾸어 담고, 마지막으로 그 장소를 머릿속으로 걸으며 순서대로 꺼내 본다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-23": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "회의록 작성 흐름은 녹음이나 받아쓰기 텍스트를 주제별로 정리하고 결정과 할 일을 분리해 남기는 절차다. 결정 중 오래 영향을 주는 것은 의사결정 기록으로 옮기고, 반복되는 개념은 wiki 문서로 승격한다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-24": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "상위 다섯 개까지만 보는 근거는 검색 품질을 숫자로 비교하는 기본 지표인 Recall at K이다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-25": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "간격 반복 연구는 망각 곡선 연구에서 출발했고, 플래시카드 앱이 이 일정을 자동으로 계산한다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-26": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "담당자가 정답 문서를 하나에서 세 개까지 확정한다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-27": {
+      "unknown": true,
+      "sentences": []
+    },
+    "rag-28": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "긴 문서를 임베딩에 넣으면 뒷부분이 잘리게 된다.",
+          "citations": [
+            1
+          ]
+        },
+        {
+          "text": "헤딩 경계로 자르면 의미 단위가 유지되고, 고정 토큰 수로 자르면 구현이 단순하다.",
+          "citations": [
+            1
+          ]
+        },
+        {
+          "text": "조각 사이에 약간 겹치는 구간을 두면 경계에 걸친 문장을 놓치지 않는다.",
+          "citations": [
+            1
+          ]
+        },
+        {
+          "text": "조각이 너무 작으면 앞뒤 맥락이 사라져 답변 생성에 쓸 수 없다.",
+          "citations": [
+            1
+          ]
+        },
+        {
+          "text": "짧은 위키 문서는 대부분 헤딩 단위 청킹만으로 충분한 경우가 많다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-29": {
+      "unknown": true,
+      "sentences": []
+    },
+    "rag-30": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "독서 노트는 읽은 책에서 중요한 구절과 자신의 생각을 옮겨 적는 노트다. 읽는 동안만 머릿속에 있던 내용이 자기 것으로 남게 만드는 장치다. 양보다 자기 말이 중요하다. 책의 문장을 통째로 베끼기만 하면 나중에 무슨 생각을 했는지 떠오르지 않는다. 구절 아래 한 줄이라도 자기 해석을 덧붙여야 노트가 살아 있다.",
+          "citations": [
+            2
+          ]
+        }
+      ]
+    },
+    "rag-31": {
+      "unknown": true,
+      "sentences": []
+    },
+    "rag-32": {
+      "unknown": true,
+      "sentences": []
+    },
+    "rag-33": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "평점이 적은 항목을 보정하면 신작이 손해를 보는데, 이는 베이지안 평균을 사용하여 표본이 적은 항목을 전체 평균 쪽으로 당겨 왜곡을 줄이는 보정 방식이다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-34": {
+      "unknown": true,
+      "sentences": []
+    },
+    "rag-35": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "YAML에 따옴표 하나 빠뜨리면 파서가 블록 전체를 버리므로, 커밋 전 검증 스크립트로 구문을 확인한다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-36": {
+      "unknown": true,
+      "sentences": []
+    },
+    "rag-37": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "추가 전용 보관소는 한번 넣은 원본을 고치거나 지우지 않고 새 파일만 더하는 저장 규칙으로, 출처의 신뢰성을 지킨다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-38": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "받은편지함 폴더에 쌓인 자료를 하루 한 번 묶어서 처리한다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-39": {
+      "unknown": true,
+      "sentences": []
+    },
+    "rag-40": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "파일 이름을 바꾸면 기존 링크가 끊기므로 개명은 전체 치환과 함께 해야 한다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-41": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "개인 데이터나 절대 경로 같은 항목은 아직 사람이 확인해야 하는 영역으로 남아 있다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    },
+    "rag-42": {
+      "unknown": true,
+      "sentences": []
+    },
+    "rag-43": {
+      "unknown": true,
+      "sentences": []
+    },
+    "rag-44": {
+      "unknown": false,
+      "sentences": [
+        {
+          "text": "원본을 가리키는 값은 링크가 아니라 문자열로 적는데, 원본 폴더를 링크 그래프에 끌어들이지 않기 위해서다.",
+          "citations": [
+            1
+          ]
+        }
+      ]
+    }
+  },
+  "errors": {}
+}
