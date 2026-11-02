@@ -69,6 +69,17 @@ hard kinds:
    hard types pooled, weighted by query count. `n=0` (and `nan` values) while the fixture has no
    hard queries. This line feeds the dogfood hard gate, which needs `form=` to match its baseline.
 
+## LLM judge — `judge/`
+
+`scripts/judge-ko.sh` grades the bm25/hybrid/full top 10 for each query in `judge/queries.json`
+(50 goldset queries + 30 without an answer key) with a local Ollama model, on the 0–3 scale in
+`judge/rubric.md`. Outputs: `judgments.json` (listwise, two shuffled orders) and
+`judgments-pointwise.json` (`JUDGE_MODE=pointwise`), each with its `report*.json`. `judge/labels.json`
+holds 250 reference labels by Claude Opus 5.5, not people (its `description` says so); hand labels
+can replace it via `npx tsx scripts/judge/label.ts`. A label file records the rubric's hash,
+and the report refuses labels made on another rubric. If you edit `rubric.md`, relabel. Method and
+results: `docs/eval/README.md`.
+
 ## Lex CI gate — `lex-baseline.json`
 
 `scripts/bench-lex-gate.sh` benches bm25 alone over this fixture (`qmd update` only, no model). It

@@ -234,6 +234,18 @@ Qwen3-Embedding 기본값·질의 52 에서 bm25_r5 0.9519 · vector_r5 1.0000 �
 (exact 5·alias 4·semantic 3·topical 2·cross-domain 1, 저커버리지 토픽과 topics/ 입구 보강)과 hard 15건
 (sem-hard 5·multi 5·neg 5)을 더한 셋이다. hard 45 기준의 RESULT 참조선은 BASELINE.md 2026-10-10 절에 있다.
 
+### LLM 판정자 평가
+
+`bash scripts/judge-ko.sh`는 로컬 Ollama 모델(`qwen3:8b`)에게 검색 결과의 관련도를 0~3으로 매기게 한다. 그 등급으로
+정답 세트가 없는 질의에서도 nDCG@10을 잰다. 대상은 bm25·hybrid·full 상위 10의 합집합이고, 질의는 80개(정답 세트 50·정답 없음 30)다.
+판정자를 쓰기 전에 두 가지를 점검했다. 목록 하나를 통째로 채점하는 listwise 방식은 문서 순서만 섞어도 등급의 41%가 바뀌었다.
+그래서 문서를 하나씩 채점하는 pointwise 방식(`JUDGE_MODE=pointwise`)을 추가했다. pointwise는 정답 문서 59개 중 58개를 2 이상으로,
+off-corpus 문서 39개를 모두 0으로 채점했다.
+pointwise 기준 정답 세트 nDCG@10은 bm25 0.726·hybrid 0.868·full 0.891이고, full − bm25는 +0.164 [0.098, 0.234]다(M3 Max).
+판정자는 기준 라벨 250쌍과 weighted kappa 0.708 [0.646, 0.764]로 일치했다. 기준 라벨은 사람이 아니라 Claude Opus 5.5가
+판정자 등급을 보지 않고 매긴 것이다. 판정자는 관련 문서를 거의 놓치지 않지만 같은 분야의 다른 개념 문서에 높은 등급을 주는
+경향이 있다. 그래서 nDCG는 절대값보다 backend 간 비교로 읽는다. 방법과 수치는 [docs/eval/README.md](docs/eval/README.md)에 있다.
+
 ### Electron 내장
 
 앱은 SDK 를 워커(utilityProcess)에서 쓴다. CI `electron-smoke` 잡이 Electron 39(ABI 140)로 `better-sqlite3` 를 리빌드하고

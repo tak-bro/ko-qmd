@@ -92,7 +92,7 @@ export const DEFAULT_BOOTSTRAP = { iters: 10_000, seed: 20261031, alpha: 0.05 } 
 const EPSILON = 1e-9;
 
 /** mulberry32 — small seeded PRNG so a CI rerun draws the same resamples. */
-function mulberry32(seed: number): () => number {
+export function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
     a = (a + 0x6d2b79f5) >>> 0;
