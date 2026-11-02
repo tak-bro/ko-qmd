@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { answerQuestion, parseAnswer, PROMPTS, renderAnswer, userPrompt } from "../scripts/rag/answer.js";
-import { gradeAnswer, gradeSentence, parseGrade, UNCITED } from "../scripts/rag/grade.js";
+import { gradeAnswer, gradeSentence, parseGrade, stripInlineCitations, UNCITED } from "../scripts/rag/grade.js";
 import { toChunks } from "../scripts/rag/retrieve.js";
 import type { HybridQueryResult } from "../src/index.js";
 
@@ -137,6 +137,14 @@ describe("gradeSentence", () => {
     const lone = async (_s: string, u: string) => ((user = u), '{"support":"full","citations":[{"n":1,"supports":true}]}');
     expect((await gradeSentence("q", { text: "비 문장", citations: [2] }, chunks, "rubric", lone)).citations).toEqual({ "2": true });
     expect(user).not.toContain("에이 본문");
+  });
+
+  test("inline citation markers in the sentence are not shown to the judge", async () => {
+    let user = "";
+    const chat = async (_s: string, u: string) => ((user = u), '{"support":"full","citations":[{"n":1,"supports":true}]}');
+    await gradeSentence("q", { text: "비 문장이다. [2]", citations: [2] }, chunks, "rubric", chat);
+    expect(user).toContain("판정할 문장: 비 문장이다.\n");
+    expect(stripInlineCitations("가 [1, 2, 5] 나[3].")).toBe("가 나.");
   });
 
   test("gradeAnswer grades every sentence in order and throws after two bad replies", async () => {

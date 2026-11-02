@@ -80,11 +80,18 @@ export function parseGrade(content: string, cited: readonly number[]): { grade: 
 
 export const UNCITED: SentenceGrade = { support: "none", citations: {}, uncited: true };
 
+/** Removes bracketed citation lists such as "[3]" or "[1, 2, 5]" from a sentence. */
+export function stripInlineCitations(text: string): string {
+  return text.replace(/\s*\[\d+(?:\s*,\s*\d+)*\]/g, "").trim();
+}
+
 /**
  * Grades one sentence. The judge sees the cited chunks numbered 1..m in citation order, not by
  * their answer numbers — a sentence citing [4] alone showed the judge a lone "[4]", and it
  * answered for documents that were not there. Verdicts are mapped back to the answer numbers.
- * One retry, told what was wrong; a second bad reply throws.
+ * Inline markers the model wrote into the text ("… [1, 2, 5]") are dropped for the same reason:
+ * they leak the answer numbers past the renumbering. One retry, told what was wrong; a second bad
+ * reply throws.
  */
 export async function gradeSentence(
   question: string,
@@ -98,7 +105,7 @@ export async function gradeSentence(
   if (outside !== undefined) throw new Error(`citation ${outside} is outside the ${chunks.length} retrieved chunks — answers from other contexts?`);
   const cited = sentence.citations.map((n, i) => ({ n: i + 1, chunk: chunks[n - 1]! }));
   const local = cited.map(c => c.n);
-  const base = userPrompt(question, sentence.text, cited);
+  const base = userPrompt(question, stripInlineCitations(sentence.text), cited);
   let user = base;
   let reason = "";
   for (let attempt = 0; attempt < 2; attempt++) {
