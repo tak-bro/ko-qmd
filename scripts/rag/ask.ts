@@ -4,11 +4,11 @@
  *   tsx scripts/rag/ask.ts --index <index.sqlite> --config <index.yml> [--collection <name>] "질문"
  *
  * Retrieves the top RAG_K chunks the way retrieve.ts does (`full` backend, seam form), answers with
- * the `grounded` prompt (RAG_PROMPT overrides) on RAG_MODEL through Ollama, and prints the answer
+ * the `narrow` prompt (RAG_PROMPT overrides) on RAG_MODEL through Ollama, and prints the answer
  * with [n] markers and the cited sources — or "모른다" when the chunks do not answer it.
  * `--json` prints the chunks and the structured answer instead.
  *
- * Env: RAG_MODEL (gemma3:4b) · RAG_PROMPT (grounded) · RAG_K (5) · OLLAMA_HOST
+ * Env: RAG_MODEL (gemma3:4b) · RAG_PROMPT (narrow) · RAG_K (5) · OLLAMA_HOST
  */
 
 import { parseArgs } from "node:util";
@@ -29,7 +29,7 @@ async function main(argv: string[]): Promise<number> {
     console.error('usage: tsx scripts/rag/ask.ts --index <index.sqlite> --config <index.yml> [--collection <name>] [--json] "질문"');
     return 2;
   }
-  const variant = process.env.RAG_PROMPT ?? "grounded";
+  const variant = process.env.RAG_PROMPT ?? "narrow";
   if (!isPromptVariant(variant)) throw new Error(`unknown RAG_PROMPT ${variant}`);
   const k = Number(process.env.RAG_K ?? DEFAULT_K);
   if (!Number.isInteger(k) || k < 1) throw new Error(`RAG_K must be a positive integer, got ${process.env.RAG_K}`);
