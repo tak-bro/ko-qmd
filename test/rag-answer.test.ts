@@ -16,6 +16,15 @@ describe("answer prompts", () => {
     expect(PROMPTS.baseline).not.toMatch(/상식이나 배경지식/);
   });
 
+  test("narrow differs from grounded only in the abstain rule", () => {
+    const grounded = PROMPTS.grounded.split("\n");
+    const narrow = PROMPTS.narrow.split("\n");
+    const abstain = grounded.filter(l => l.includes("주제가 비슷한 문서가 있어도"));
+    expect(abstain).toHaveLength(1);
+    expect(narrow.filter(l => !grounded.includes(l))).toHaveLength(2);
+    expect(grounded.filter(l => !narrow.includes(l))).toEqual(abstain);
+  });
+
   test("user prompt numbers the chunks from 1", () => {
     expect(userPrompt("질문?", chunks)).toBe("질문: 질문?\n\n문서:\n[1] A\n에이 본문\n\n[2] B\n비 본문");
     expect(userPrompt("질문?", [])).toMatch(/검색된 문서 없음/);
