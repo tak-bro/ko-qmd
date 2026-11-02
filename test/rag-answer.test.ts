@@ -16,7 +16,7 @@ describe("answer prompts", () => {
     expect(PROMPTS.baseline).not.toMatch(/상식이나 배경지식/);
   });
 
-  test("narrow differs from grounded only in the abstain rule", () => {
+  test("narrow replaces grounded's abstain rule with a paraphrase rule and a narrower abstain rule", () => {
     const grounded = PROMPTS.grounded.split("\n");
     const narrow = PROMPTS.narrow.split("\n");
     const abstain = grounded.filter(l => l.includes("주제가 비슷한 문서가 있어도"));
@@ -144,7 +144,12 @@ describe("gradeSentence", () => {
     const chat = async (_s: string, u: string) => ((user = u), '{"support":"full","citations":[{"n":1,"supports":true}]}');
     await gradeSentence("q", { text: "비 문장이다. [2]", citations: [2] }, chunks, "rubric", chat);
     expect(user).toContain("판정할 문장: 비 문장이다.\n");
-    expect(stripInlineCitations("가 [1, 2, 5] 나[3].")).toBe("가 나.");
+    expect(stripInlineCitations("가다. [1, 2, 5]")).toBe("가다.");
+    expect(stripInlineCitations("가다 [1], 나다[3].")).toBe("가다, 나다.");
+    expect(stripInlineCitations("필요하다. citations: [1]")).toBe("필요하다.");
+    expect(stripInlineCitations("배열 a[0] 의 값")).toBe("배열 a[0] 의 값");
+    expect(stripInlineCitations("가[1]나")).toBe("가[1]나");
+    expect(stripInlineCitations("[2]")).toBe("[2]");
   });
 
   test("gradeAnswer grades every sentence in order and throws after two bad replies", async () => {

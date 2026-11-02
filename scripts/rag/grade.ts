@@ -80,9 +80,14 @@ export function parseGrade(content: string, cited: readonly number[]): { grade: 
 
 export const UNCITED: SentenceGrade = { support: "none", citations: {}, uncited: true };
 
-/** Removes bracketed citation lists such as "[3]" or "[1, 2, 5]" from a sentence. */
+/**
+ * Removes citation markers such as "[3]", "[1, 2, 5]" or "citations: [1]" that end a sentence or
+ * clause (before punctuation or the end of the text). Brackets inside a phrase, like "a[0]", stay.
+ * A sentence that is nothing but a marker is returned unchanged rather than emptied.
+ */
 export function stripInlineCitations(text: string): string {
-  return text.replace(/\s*\[\d+(?:\s*,\s*\d+)*\]/g, "").trim();
+  const stripped = text.replace(/\s*(?:citations\s*:\s*)?\[\d+(?:\s*,\s*\d+)*\](?=\s*(?:[.,;:!?]|$))/g, "").trim();
+  return stripped || text;
 }
 
 /**

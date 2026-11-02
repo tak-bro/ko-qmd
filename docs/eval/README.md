@@ -284,7 +284,7 @@ Conditions: same machine, contexts and models as above, one run. Answers by `gem
 document 5. The judge no longer sees inline markers (`stripInlineCitations` in `scripts/rag/grade.ts`).
 Four baseline sentences carry such markers and were graded before the fix. Reference grades for
 the 32 cited sentences come from one Claude Opus 5.5 instance, blind to the judge and to the prompt,
-the same way as above (`rag/grades-narrow-reference.json`, report in `rag/report-narrow-reference.json`).
+the same way as above (`rag/grades-narrow-reference.json`, report in `rag/report-grounded-narrow-reference.json`).
 
 | Metric, paired | grounded → narrow | narrow − grounded | narrow − baseline |
 |---|---|---|---|
@@ -315,7 +315,7 @@ bash scripts/rag-ko.sh
 RAG_SKIP_RETRIEVE=1 bash scripts/rag-ko.sh
 R=test/fixtures/ko-vault/rag
 npx tsx scripts/rag/report.ts $R/contexts.json $R/answers-baseline.json $R/grades-baseline-reference.json $R/answers-grounded.json $R/grades-grounded-reference.json --out $R/report-reference.json
-npx tsx scripts/rag/report.ts $R/contexts.json $R/answers-grounded.json $R/grades-grounded-reference.json $R/answers-narrow.json $R/grades-narrow-reference.json --out $R/report-narrow-reference.json
+npx tsx scripts/rag/report.ts $R/contexts.json $R/answers-grounded.json $R/grades-grounded-reference.json $R/answers-narrow.json $R/grades-narrow-reference.json --out $R/report-grounded-narrow-reference.json
 npx tsx scripts/rag/agreement.ts $R/grades-baseline.json $R/grades-baseline-reference.json $R/grades-grounded.json $R/grades-grounded-reference.json
 npx tsx scripts/rag/agreement.ts $R/grades-narrow.json $R/grades-narrow-reference.json
 ```
