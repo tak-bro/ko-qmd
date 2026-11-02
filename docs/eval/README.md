@@ -275,13 +275,15 @@ the abstention rule, which is too broad as worded, measured on this set again.
 
 **Narrowing the abstention rule.** Most of the 12 answerable questions grounded refused name the
 topic in everyday words instead of the note's term: "체스 레이팅" for Elo, "25분 집중법" for Pomodoro. The `narrow` prompt is grounded
-with only the abstain rule replaced. It answers when a chunk describes the same thing under another
-name, and abstains only when the asked fact (a number, name or reason) is in no chunk.
+with its abstain rule replaced by two rules. One says to answer when a chunk describes the same thing
+under another name. The other says to abstain only when the asked fact (a number, name or reason) is
+in no chunk.
 
 Conditions: same machine, contexts and models as above, one run. Answers by `gemma3:4b` at
-`6d0db7f` (113 s). Judge grades by `qwen3:8b` at `e194677`, after a fix: a sentence ending in its own
+`6d0db7f` (113 s). Judge grades by `qwen3:8b` at `585a9e7` (43 s), after a fix: a sentence ending in its own
 "[1, 2, 5]" showed the judge the answer numbers past the renumbering, and the judge replied for
-document 5. The judge no longer sees inline markers (`stripInlineCitations` in `scripts/rag/grade.ts`).
+document 5. The judge no longer sees markers that end a sentence or clause (`stripInlineCitations`
+in `scripts/rag/grade.ts`).
 Four baseline sentences carry such markers and were graded before the fix. Reference grades for
 the 32 cited sentences come from one Claude Opus 5.5 instance, blind to the judge and to the prompt,
 the same way as above (`rag/grades-narrow-reference.json`, report in `rag/report-grounded-narrow-reference.json`).
@@ -289,7 +291,7 @@ the same way as above (`rag/grades-narrow-reference.json`, report in `rag/report
 | Metric, paired | grounded → narrow | narrow − grounded | narrow − baseline |
 |---|---|---|---|
 | Faithfulness, reference grades | 0.783 → 0.826 (n=23) | +0.043 [−0.130, 0.217] | +0.190 [0.024, 0.357] (n=28) |
-| Faithfulness, qwen3:8b judge | 0.643 → 0.635 (n=23) | −0.009 [−0.174, 0.157] | — |
+| Faithfulness, qwen3:8b judge | 0.643 → 0.678 (n=23) | +0.035 [−0.113, 0.183] | — |
 | Citation precision, reference grades | 0.870 → 0.841 (n=23) | −0.029 [−0.159, 0.101] | +0.225 [0.054, 0.398] (n=28) |
 | "모른다" on near-miss + off-corpus | 8 / 12 → 8 / 12 | +0.000 [−0.250, 0.250] | +0.333 [0.083, 0.583] |
 | "모른다" on answerable questions | 12 / 32 → 8 / 32 | −0.125 [−0.250, −0.031] | +0.250 [0.094, 0.406] |
@@ -302,18 +304,23 @@ the same way as above (`rag/grades-narrow-reference.json`, report in `rag/report
 - Against baseline, narrow is the first prompt whose faithfulness interval excludes zero:
   +0.190 [0.024, 0.357] on the 28 questions both answered. It also refuses 8 of 32 answerable
   questions, which baseline never did.
-- The judge agrees with the reference on these 32 sentences at kappa_full 0.310 [0.071, 0.582],
+- The judge agrees with the reference on these 32 sentences at kappa_full 0.345 [0.080, 0.636],
   in line with the 0.347 above.
 
 Rerun everything, or new answers from the committed chunks, with the first two commands below.
-The reference grades belong to the committed answers. `rag-ko.sh` removes a variant's reference
-grades when it writes new answers for that variant; git keeps the old ones. The other commands
-rebuild the reference reports and the agreement from the committed files.
+The narrow run answered and graded narrow alone against the committed grounded files, with the
+next three commands. The reference grades belong to the committed answers. `rag-ko.sh` removes a
+variant's reference grades, and every reference report built from them, when it writes new answers
+for that variant; git keeps the old ones. The last four commands rebuild the reference reports and
+the agreement from the committed files.
 
 ```sh
 bash scripts/rag-ko.sh
 RAG_SKIP_RETRIEVE=1 bash scripts/rag-ko.sh
 R=test/fixtures/ko-vault/rag
+RAG_PROMPT=narrow npx tsx scripts/rag/answer.ts $R/contexts.json $R/answers-narrow.json
+npx tsx scripts/rag/grade.ts $R/contexts.json $R/answers-narrow.json $R/grades-narrow.json
+npx tsx scripts/rag/report.ts $R/contexts.json $R/answers-grounded.json $R/grades-grounded.json $R/answers-narrow.json $R/grades-narrow.json --out $R/report-grounded-narrow.json
 npx tsx scripts/rag/report.ts $R/contexts.json $R/answers-baseline.json $R/grades-baseline-reference.json $R/answers-grounded.json $R/grades-grounded-reference.json --out $R/report-reference.json
 npx tsx scripts/rag/report.ts $R/contexts.json $R/answers-grounded.json $R/grades-grounded-reference.json $R/answers-narrow.json $R/grades-narrow-reference.json --out $R/report-grounded-narrow-reference.json
 npx tsx scripts/rag/agreement.ts $R/grades-baseline.json $R/grades-baseline-reference.json $R/grades-grounded.json $R/grades-grounded-reference.json

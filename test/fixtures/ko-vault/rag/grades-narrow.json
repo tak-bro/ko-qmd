@@ -7,12 +7,12 @@
     "answers_sha256": "a5f5aecad8dd48a1f274820ef91797ab621b2563d5362f5b8dff2ab40d22e863",
     "prompt": "narrow",
     "ollama": "0.40.1",
-    "commit": "e194677",
-    "date": "2026-11-02T00:59:31.915Z",
+    "commit": "585a9e7",
+    "date": "2026-11-02T01:09:46.738Z",
     "os": "darwin-arm64",
     "cpu": "Apple M3 Max",
     "rubric_sha256": "c771e76844dc906e5b013d5743d1c6ce5335a33cbf3523ab61f022192306af7c",
-    "seconds": 69
+    "seconds": 43
   },
   "grades": {
     "rag-01": [
@@ -56,7 +56,7 @@
     "rag-07": [],
     "rag-08": [
       {
-        "support": "partial",
+        "support": "full",
         "citations": {
           "1": true
         },
