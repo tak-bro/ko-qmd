@@ -254,7 +254,8 @@ pointwise 기준 정답 세트 nDCG@10은 bm25 0.726·hybrid 0.868·full 0.891�
 판정자는 Claude Opus 5.5 기준 등급(사람 아님)과 kappa 0.35로 일치해 믿기 어려웠다. 그래서 faithfulness는 기준 등급으로 보고한다.
 비교한 변경은 더 엄격한 프롬프트다. 이 프롬프트는 near-miss·무관 질문에서 "모른다"를 0.333에서 0.667로 올렸다.
 대신 답이 있는 질문 32개 중 12개도 거절했다. faithfulness 차이 +0.097 [−0.125, 0.333]은 0을 포함한다(M3 Max).
-방법과 수치는 [docs/eval/README.md](docs/eval/README.md)에 있다.
+거절 규칙만 좁힌 `narrow` 프롬프트(`ask.ts` 기본값)는 답 있는 질문 거절을 12개에서 8개로 줄이고, 답 없는 질문 거절은
+8/12로 유지했다. baseline 대비 faithfulness는 +0.190 [0.024, 0.357]이다. 방법과 수치는 [docs/eval/README.md](docs/eval/README.md)에 있다.
 
 ### Electron 내장
 

@@ -233,8 +233,11 @@ Two changes to the judge were tried:
 
 - Turning on qwen3:8b's thinking. The run failed on 3 of its first 9 questions and was stopped.
   Two failures came from a numbering bug: a sentence citing chunk 4 alone showed the judge a lone
-  "[4]". The third was Node's 5-minute fetch timeout. The bug was fixed in `320397e`, but thinking
-  was not retried, so it remains untested.
+  "[4]". The third was Node's 5-minute fetch timeout. The bug was fixed in `320397e`. Thinking was
+  retried at `e194677` on the baseline answers and failed the same way on the second question: on
+  one sentence qwen3:8b generated past 6,000 thinking tokens at about 36 tokens/s and hit the
+  5-minute timeout. The retry was stopped. At that pace grading all 109 sentences would take hours
+  and keep timing out, so thinking with this model is not a usable judge here.
 - Showing the cited chunks numbered from 1, which is that fix, moved kappa from 0.329 to 0.347.
 
 The first judge run is kept in commit `9688b5b`. Faithfulness below is therefore reported on the
@@ -270,15 +273,49 @@ What the change does show is a trade:
 For a user, the grounded prompt as written trades wrong answers for missing ones. The next lever is
 the abstention rule, which is too broad as worded, measured on this set again.
 
+**Narrowing the abstention rule.** Most of the 12 answerable questions grounded refused name the
+topic in everyday words instead of the note's term: "체스 레이팅" for Elo, "25분 집중법" for Pomodoro. The `narrow` prompt is grounded
+with only the abstain rule replaced. It answers when a chunk describes the same thing under another
+name, and abstains only when the asked fact (a number, name or reason) is in no chunk.
+
+Conditions: same machine, contexts and models as above, one run. Answers by `gemma3:4b` at
+`6d0db7f` (113 s). Judge grades by `qwen3:8b` at `e194677`, after a fix: a sentence ending in its own
+"[1, 2, 5]" showed the judge the answer numbers past the renumbering, and the judge replied for
+document 5. The judge no longer sees inline markers (`stripInlineCitations` in `scripts/rag/grade.ts`).
+Four baseline sentences carry such markers and were graded before the fix. Reference grades for
+the 32 cited sentences come from one Claude Opus 5.5 instance, blind to the judge and to the prompt,
+the same way as above (`rag/grades-narrow-reference.json`, report in `rag/report-narrow-reference.json`).
+
+| Metric, paired | grounded → narrow | narrow − grounded | narrow − baseline |
+|---|---|---|---|
+| Faithfulness, reference grades | 0.783 → 0.826 (n=23) | +0.043 [−0.130, 0.217] | +0.190 [0.024, 0.357] (n=28) |
+| Faithfulness, qwen3:8b judge | 0.643 → 0.635 (n=23) | −0.009 [−0.174, 0.157] | — |
+| Citation precision, reference grades | 0.870 → 0.841 (n=23) | −0.029 [−0.159, 0.101] | +0.225 [0.054, 0.398] (n=28) |
+| "모른다" on near-miss + off-corpus | 8 / 12 → 8 / 12 | +0.000 [−0.250, 0.250] | +0.333 [0.083, 0.583] |
+| "모른다" on answerable questions | 12 / 32 → 8 / 32 | −0.125 [−0.250, −0.031] | +0.250 [0.094, 0.406] |
+
+- Narrow answers four answerable questions grounded refused (rag-15, 21, 35, 40). The reference
+  grades every sentence of those four answers full.
+- It keeps the unanswerable refusals at 8 of 12, but not the same 8. It answers near-miss rag-02 and
+  refuses near-miss rag-31.
+- It still refuses 8 answerable questions, all among the 12 grounded refused.
+- Against baseline, narrow is the first prompt whose faithfulness interval excludes zero:
+  +0.190 [0.024, 0.357] on the 28 questions both answered. It also refuses 8 of 32 answerable
+  questions, which baseline never did.
+- The judge agrees with the reference on these 32 sentences at kappa_full 0.310 [0.071, 0.582],
+  in line with the 0.347 above.
+
 Rerun everything, or new answers from the committed chunks, with the first two commands below.
-The reference grades belong to the committed answers. `rag-ko.sh` removes them when it writes new
-answers; git keeps the old ones. The last two commands rebuild the reference report and the
-agreement from the committed files.
+The reference grades belong to the committed answers. `rag-ko.sh` removes a variant's reference
+grades when it writes new answers for that variant; git keeps the old ones. The other commands
+rebuild the reference reports and the agreement from the committed files.
 
 ```sh
 bash scripts/rag-ko.sh
 RAG_SKIP_RETRIEVE=1 bash scripts/rag-ko.sh
 R=test/fixtures/ko-vault/rag
 npx tsx scripts/rag/report.ts $R/contexts.json $R/answers-baseline.json $R/grades-baseline-reference.json $R/answers-grounded.json $R/grades-grounded-reference.json --out $R/report-reference.json
+npx tsx scripts/rag/report.ts $R/contexts.json $R/answers-grounded.json $R/grades-grounded-reference.json $R/answers-narrow.json $R/grades-narrow-reference.json --out $R/report-narrow-reference.json
 npx tsx scripts/rag/agreement.ts $R/grades-baseline.json $R/grades-baseline-reference.json $R/grades-grounded.json $R/grades-grounded-reference.json
+npx tsx scripts/rag/agreement.ts $R/grades-narrow.json $R/grades-narrow-reference.json
 ```
