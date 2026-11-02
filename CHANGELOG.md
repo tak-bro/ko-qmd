@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- RAG eval: a `narrow` answer prompt (`RAG_PROMPT=narrow`) answers questions
+  that name a note's topic in other words, and abstains only when the asked
+  fact is in no chunk. On the 44 ko-vault questions (M3 Max, gemma3:4b, one
+  run, reference grades by Claude Opus 5.5, not people) it refuses 8 of 32
+  answerable questions against grounded's 12. It keeps 8 of 12 unanswerable
+  refusals. Faithfulness against baseline is +0.190 [0.024, 0.357]. The
+  faithfulness judge no longer sees inline "[n]" markers in the sentence it
+  grades, and `rag-ko.sh` keeps the reference grades of variants it does not
+  answer again. See `docs/eval/README.md`.
 - RAG answers with chunk citations and a faithfulness evaluation (eval stage
   3). `scripts/rag/ask.ts` answers from a qmd index with `[n]` citations, or
   says it does not know. `scripts/rag-ko.sh` measures faithfulness, citation

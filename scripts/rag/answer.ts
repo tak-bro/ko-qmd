@@ -7,7 +7,7 @@
  * and a before/after comparison isolates the prompt. The model replies in JSON: a list of
  * sentences, each citing chunk numbers, or `unknown: true` with no sentences ("모른다").
  *
- * Env: RAG_MODEL (gemma3:4b) · RAG_PROMPT (baseline|grounded) · OLLAMA_HOST · RAG_COMMIT
+ * Env: RAG_MODEL (gemma3:4b) · RAG_PROMPT (baseline|grounded|narrow) · OLLAMA_HOST · RAG_COMMIT
  * Exit: 0 every question answered or abstained · 2 a reply failed validation twice, or bad input.
  * A failed question is recorded under `errors`, never filled in.
  */
@@ -53,6 +53,9 @@ const FORMAT =
 /**
  * The two prompts compared in stage 3. `grounded` is `baseline` plus four rules: documents only,
  * one claim per sentence, cite only chunks that state the sentence, and abstain on near misses.
+ * `narrow` is `grounded` with the abstain rule narrowed: grounded refused 12 of 32 answerable
+ * questions, all asked in other words than the note uses, so narrow answers a paraphrase and
+ * abstains only when the asked fact is in no chunk.
  */
 export const PROMPTS = {
   baseline: [
@@ -68,6 +71,17 @@ export const PROMPTS = {
     "- 한 문장에는 주장 하나만 쓴다.",
     "- citations 에는 그 문장의 내용이 실제로 적힌 문서 번호만 넣는다. 관련만 있는 문서는 넣지 않는다.",
     "- 질문이 묻는 바로 그 내용이 문서에 없으면, 주제가 비슷한 문서가 있어도 unknown 을 true 로 하고 sentences 를 비운다.",
+    FORMAT,
+  ].join("\n"),
+  narrow: [
+    "너는 검색된 문서로 질문에 답하는 도우미다. 아래 문서를 참고해 한국어로 간결하게 답한다.",
+    "문장마다 근거가 된 문서 번호를 citations 에 단다. 문서로 답할 수 없으면 unknown 을 true 로 한다.",
+    "규칙:",
+    "- 문서에 적힌 내용만 쓴다. 상식이나 배경지식으로 내용을 보태지 않는다.",
+    "- 한 문장에는 주장 하나만 쓴다.",
+    "- citations 에는 그 문장의 내용이 실제로 적힌 문서 번호만 넣는다. 관련만 있는 문서는 넣지 않는다.",
+    "- 질문은 문서와 다른 말로 물을 수 있다. 문서가 같은 대상을 다른 이름이나 표현으로 설명하면 그 문서로 답한다.",
+    "- 질문이 묻는 사실(수치·이름·이유)이 어느 문서에도 적혀 있지 않을 때만 unknown 을 true 로 하고 sentences 를 비운다. 주제만 같은 문서로 답을 지어내지 않는다.",
     FORMAT,
   ].join("\n"),
 } as const;

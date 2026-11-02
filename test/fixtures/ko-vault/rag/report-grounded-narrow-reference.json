@@ -1,0 +1,145 @@
+{
+  "runs": [
+    {
+      "prompt": "grounded",
+      "model": "gemma3:4b",
+      "judge": "claude-opus-5-5 (reference)",
+      "summary": {
+        "questions": 44,
+        "faithfulness": {
+          "value": 0.7916666666666666,
+          "lo": 0.6153846153846154,
+          "hi": 0.95,
+          "undefinedDraws": 0,
+          "n": 24
+        },
+        "citation_precision": {
+          "value": 0.875,
+          "lo": 0.7272727272727273,
+          "hi": 1,
+          "undefinedDraws": 0,
+          "n": 24
+        },
+        "cites_expected": {
+          "value": 1,
+          "lo": 1,
+          "hi": 1,
+          "undefinedDraws": 0,
+          "n": 20
+        },
+        "context_recall": {
+          "value": 1,
+          "lo": 1,
+          "hi": 1,
+          "undefinedDraws": 0,
+          "n": 32
+        },
+        "abstain_unanswerable": {
+          "value": 0.6666666666666666,
+          "lo": 0.375,
+          "hi": 0.9166666666666666,
+          "undefinedDraws": 0,
+          "n": 12
+        },
+        "abstain_answerable": {
+          "value": 0.375,
+          "lo": 0.21212121212121213,
+          "hi": 0.5454545454545454,
+          "undefinedDraws": 0,
+          "n": 32
+        },
+        "sentences": 30,
+        "partial": 2,
+        "uncited": 0
+      }
+    },
+    {
+      "prompt": "narrow",
+      "model": "gemma3:4b",
+      "judge": "claude-opus-5-5 (reference)",
+      "summary": {
+        "questions": 44,
+        "faithfulness": {
+          "value": 0.8571428571428571,
+          "lo": 0.7142857142857143,
+          "hi": 0.9666666666666667,
+          "undefinedDraws": 0,
+          "n": 28
+        },
+        "citation_precision": {
+          "value": 0.8690476190476192,
+          "lo": 0.738095238095238,
+          "hi": 0.9743589743589743,
+          "undefinedDraws": 0,
+          "n": 28
+        },
+        "cites_expected": {
+          "value": 0.9583333333333334,
+          "lo": 0.8571428571428571,
+          "hi": 1,
+          "undefinedDraws": 0,
+          "n": 24
+        },
+        "context_recall": {
+          "value": 1,
+          "lo": 1,
+          "hi": 1,
+          "undefinedDraws": 0,
+          "n": 32
+        },
+        "abstain_unanswerable": {
+          "value": 0.6666666666666666,
+          "lo": 0.38461538461538464,
+          "hi": 0.9166666666666666,
+          "undefinedDraws": 0,
+          "n": 12
+        },
+        "abstain_answerable": {
+          "value": 0.25,
+          "lo": 0.10714285714285714,
+          "hi": 0.4074074074074074,
+          "undefinedDraws": 0,
+          "n": 32
+        },
+        "sentences": 32,
+        "partial": 1,
+        "uncited": 0
+      }
+    }
+  ],
+  "errors": [],
+  "diff": {
+    "faithfulness": {
+      "mean": 0.043478260869565216,
+      "lo": -0.13043478260869565,
+      "hi": 0.21739130434782608,
+      "n": 23,
+      "before": 0.782608695652174,
+      "after": 0.8260869565217391
+    },
+    "citation_precision": {
+      "mean": -0.028985507246376815,
+      "lo": -0.15942028985507248,
+      "hi": 0.10144927536231883,
+      "n": 23,
+      "before": 0.8695652173913043,
+      "after": 0.8405797101449275
+    },
+    "abstain_unanswerable": {
+      "mean": 0,
+      "lo": -0.25,
+      "hi": 0.25,
+      "n": 12,
+      "before": 0.6666666666666666,
+      "after": 0.6666666666666666
+    },
+    "abstain_answerable": {
+      "mean": -0.125,
+      "lo": -0.25,
+      "hi": -0.03125,
+      "n": 32,
+      "before": 0.375,
+      "after": 0.25
+    }
+  }
+}

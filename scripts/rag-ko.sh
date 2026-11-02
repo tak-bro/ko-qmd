@@ -12,9 +12,12 @@
 # 3. For each variant in RAG_PROMPTS: scripts/rag/answer.ts (RAG_MODEL) → rag/answers-<v>.json, then
 #    scripts/rag/grade.ts (RAG_JUDGE_MODEL) → rag/grades-<v>.json.
 # 4. scripts/rag/report.ts prints RUN / FAITH / CITE / GOLDCITE / CONTEXT / ABSTAIN per variant and
-#    DIFF (second − first) and writes rag/report.json.
+#    DIFF (second − first) and writes rag/report.json (rag/report-<a>-<b>.json for another pair).
 #
-# Env: RAG_PROMPTS (baseline,grounded) · RAG_MODEL (gemma3:4b) · RAG_JUDGE_MODEL (qwen3:8b) · RAG_K (5)
+# Re-answering one variant against committed answers of another is not done here — call answer.ts,
+# grade.ts and report.ts directly (docs/eval/README.md shows the commands for the narrow run).
+#
+# Env: RAG_PROMPTS (baseline,grounded; any of baseline, grounded, narrow) · RAG_MODEL (gemma3:4b) · RAG_JUDGE_MODEL (qwen3:8b) · RAG_K (5)
 #      OLLAMA_HOST
 # Exit: 0 · 2 a step failed (bench, retrieval, a reply that failed validation twice, bad input).
 set -euo pipefail
@@ -43,11 +46,25 @@ commit="$(git rev-parse --short HEAD)"
 # from an earlier run must not sit next to new ones — and the exit stays 2.
 rc=0
 args=()
-# Reference grades belong to the answers they were made for; new answers orphan them.
-if ls "$rag"/grades-*-reference.json "$rag/report-reference.json" >/dev/null 2>&1; then
-  echo "new answers: removing reference grades made for the old ones (git keeps them)" >&2
-  rm -f "$rag"/grades-*-reference.json "$rag/report-reference.json"
-fi
+# Reports are named after the variants they compare: report.json for the default baseline,grounded
+# pair, report-<a>-<b>.json (or report-<a>.json) for any other.
+pair="$(IFS=-; echo "${prompts[*]}")"
+if [ "$pair" = baseline-grounded ]; then report="$rag/report.json"; else report="$rag/report-$pair.json"; fi
+# Reference grades belong to the answers they were made for; new answers orphan them, and every
+# reference report built from them. Other variants' answers and reference grades stay valid.
+for p in "${prompts[@]}"; do
+  if [ -f "$rag/grades-$p-reference.json" ]; then
+    echo "new $p answers: removing reference grades made for the old ones (git keeps them)" >&2
+    rm -f "$rag/grades-$p-reference.json"
+  fi
+  for f in "$rag"/report*-reference.json; do
+    [ -f "$f" ] || continue
+    name="$(basename "$f" -reference.json)"
+    variants="${name#report}"
+    [ -n "$variants" ] || variants="-baseline-grounded"
+    case "$variants-" in *"-$p-"*) rm -f "$f" ;; esac
+  done
+done
 for p in "${prompts[@]}"; do
   answers="$rag/answers-$p.json"
   grades="$rag/grades-$p.json"
@@ -58,6 +75,6 @@ for p in "${prompts[@]}"; do
   [ -f "$grades" ] || exit 2
   args+=("$answers" "$grades")
 done
-rm -f "$rag/report.json"
-npx --no-install tsx scripts/rag/report.ts "$contexts" "${args[@]}" --out "$rag/report.json" || rc=2
+rm -f "$report"
+npx --no-install tsx scripts/rag/report.ts "$contexts" "${args[@]}" --out "$report" || rc=2
 exit "$rc"

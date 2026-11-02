@@ -87,14 +87,14 @@ results: `docs/eval/README.md`.
 - `rag/questions.json`: 44 questions (24 single-note, 8 two-note, 8 near-miss, 4 off-corpus),
   written by Claude Opus 5.5. Near-miss facts were confirmed absent by grepping the corpus.
 - `rag/contexts.json`: the top 5 chunks retrieved per question.
-- `answers-<prompt>.json`: answers with chunk citations, per prompt.
+- `answers-<prompt>.json`: answers with chunk citations, per prompt (`baseline`, `grounded`, `narrow`).
 - `grades-<prompt>.json`: the `qwen3:8b` judge's grades on `rag/faithfulness.md`.
-- `report.json`: the report.
+- `report.json`: the report, baseline against grounded. `report-grounded-narrow.json`: grounded against narrow.
 
-`grades-<prompt>-reference.json` and `report-reference.json` hold reference grades by Claude Opus
-5.5, not people, for the committed answers only. Grades record the hash of the answers they grade,
-and `rag-ko.sh` removes the reference files when it writes new answers. Method and results:
-`docs/eval/README.md`.
+`grades-<prompt>-reference.json`, `report-reference.json` and `report-grounded-narrow-reference.json` hold
+reference grades by Claude Opus 5.5, not people, for the committed answers only. Grades record the
+hash of the answers they grade, and `rag-ko.sh` removes a prompt's reference grades when it writes
+new answers for that prompt. Method and results: `docs/eval/README.md`.
 
 ## Lex CI gate — `lex-baseline.json`
 

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { answerQuestion, parseAnswer, PROMPTS, renderAnswer, userPrompt } from "../scripts/rag/answer.js";
-import { gradeAnswer, gradeSentence, parseGrade, UNCITED } from "../scripts/rag/grade.js";
+import { gradeAnswer, gradeSentence, parseGrade, stripInlineCitations, UNCITED } from "../scripts/rag/grade.js";
 import { toChunks } from "../scripts/rag/retrieve.js";
 import type { HybridQueryResult } from "../src/index.js";
 
@@ -14,6 +14,15 @@ describe("answer prompts", () => {
     for (const line of PROMPTS.baseline.split("\n")) expect(PROMPTS.grounded).toContain(line);
     expect(PROMPTS.grounded).toMatch(/상식이나 배경지식/);
     expect(PROMPTS.baseline).not.toMatch(/상식이나 배경지식/);
+  });
+
+  test("narrow replaces grounded's abstain rule with a paraphrase rule and a narrower abstain rule", () => {
+    const grounded = PROMPTS.grounded.split("\n");
+    const narrow = PROMPTS.narrow.split("\n");
+    const abstain = grounded.filter(l => l.includes("주제가 비슷한 문서가 있어도"));
+    expect(abstain).toHaveLength(1);
+    expect(narrow.filter(l => !grounded.includes(l))).toHaveLength(2);
+    expect(grounded.filter(l => !narrow.includes(l))).toEqual(abstain);
   });
 
   test("user prompt numbers the chunks from 1", () => {
@@ -128,6 +137,19 @@ describe("gradeSentence", () => {
     const lone = async (_s: string, u: string) => ((user = u), '{"support":"full","citations":[{"n":1,"supports":true}]}');
     expect((await gradeSentence("q", { text: "비 문장", citations: [2] }, chunks, "rubric", lone)).citations).toEqual({ "2": true });
     expect(user).not.toContain("에이 본문");
+  });
+
+  test("inline citation markers in the sentence are not shown to the judge", async () => {
+    let user = "";
+    const chat = async (_s: string, u: string) => ((user = u), '{"support":"full","citations":[{"n":1,"supports":true}]}');
+    await gradeSentence("q", { text: "비 문장이다. [2]", citations: [2] }, chunks, "rubric", chat);
+    expect(user).toContain("판정할 문장: 비 문장이다.\n");
+    expect(stripInlineCitations("가다. [1, 2, 5]")).toBe("가다.");
+    expect(stripInlineCitations("가다 [1], 나다[3].")).toBe("가다, 나다.");
+    expect(stripInlineCitations("필요하다. citations: [1]")).toBe("필요하다.");
+    expect(stripInlineCitations("배열 a[0] 의 값")).toBe("배열 a[0] 의 값");
+    expect(stripInlineCitations("가[1]나")).toBe("가[1]나");
+    expect(stripInlineCitations("[2]")).toBe("[2]");
   });
 
   test("gradeAnswer grades every sentence in order and throws after two bad replies", async () => {
