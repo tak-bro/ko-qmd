@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- `qmd grep` (and the MCP `grep` tool) matches CRLF notes like LF notes:
+  an end-anchored pattern such as `끝$` now matches, and the returned line
+  text no longer ends in a carriage return. Line numbers are unchanged.
 - `qmd update` and SDK `update()` no longer empty a collection whose root
   directory is missing (a macOS volume that is not mounted, a moved or
   renamed folder). The scan saw zero files and deactivated every document;
