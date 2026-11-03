@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+- `qmd update` and SDK `update()` no longer empty a collection whose root
+  directory is missing (a macOS volume that is not mounted, a moved or
+  renamed folder). The scan saw zero files and deactivated every document;
+  the root is now reported as skipped (`⚠ Skipped unreadable file: <root>
+  (ENOENT)`) and the index is left as it was. An empty mount point that is
+  still a directory is not caught. To drop a collection on purpose, use
+  `qmd collection remove`.
 - Relevance judge: `scripts/judge/pool.ts` reads CRLF notes (a Windows
   checkout or a Windows-authored vault) and a leading BOM like LF notes. The
   frontmatter was kept in the judged text and the aliases were lost, which
