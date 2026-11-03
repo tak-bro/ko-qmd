@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { ollamaChat, type FetchLike } from "../scripts/judge/ollama.js";
 import { buildPools, corpusPath, loadDoc } from "../scripts/judge/pool.js";
@@ -174,6 +177,22 @@ describe("loadDoc", () => {
     expect(d.body).toMatch(/^별칭: BM25 랭킹, BM25\n/);
     expect(d.body).not.toMatch(/created:/);
     expect(d.body).not.toMatch(/topics\/information-retrieval/);
+  });
+
+  test("a CRLF note (Windows checkout) loads the same as its LF original", () => {
+    const lf = readFileSync("test/fixtures/ko-vault/wiki/bm25-ranking.md", "utf8").replace(/\r\n/g, "\n");
+    const dir = mkdtempSync(join(tmpdir(), "qmd-judge-crlf-"));
+    try {
+      mkdirSync(join(dir, "wiki"));
+      writeFileSync(join(dir, "wiki/lf.md"), lf);
+      writeFileSync(join(dir, "wiki/crlf.md"), `\uFEFF${lf.replace(/\n/g, "\r\n")}`);
+      const want = loadDoc(dir, "wiki/lf.md");
+      const got = loadDoc(dir, "wiki/crlf.md");
+      expect(got.title).toBe(want.title);
+      expect(got.body).toBe(want.body);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

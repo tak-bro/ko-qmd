@@ -88,7 +88,9 @@ export interface DocText {
  * `maxChars`. Frontmatter aliases stay: they are how the vault names the concept.
  */
 export function loadDoc(corpusDir: string, file: string, maxChars = DOC_CHARS): DocText {
-  const raw = readFileSync(join(corpusDir, file), "utf8");
+  // A Windows checkout or a Windows-authored vault has CRLF lines (and maybe a BOM); the
+  // frontmatter, alias and blank-line patterns below are written for LF.
+  const raw = readFileSync(join(corpusDir, file), "utf8").replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
   let body = raw;
   let aliases: string[] = [];
   const fm = raw.match(/^---\n([\s\S]*?)\n---\n?/);

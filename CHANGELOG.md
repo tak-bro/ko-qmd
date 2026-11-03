@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+- `qmd grep` (and the MCP `grep` tool) matches CRLF notes like LF notes:
+  an end-anchored pattern such as `끝$` now matches, and the returned line
+  text no longer ends in a carriage return. Line numbers are unchanged.
+- `qmd update` and SDK `update()` no longer empty a collection whose root
+  directory is missing (a macOS volume that is not mounted, a moved or
+  renamed folder). The scan saw zero files and deactivated every document;
+  the root is now reported as skipped (`⚠ Skipped unreadable file: <root>
+  (ENOENT)`) and the index is left as it was. An empty mount point that is
+  still a directory is not caught. To drop a collection on purpose, use
+  `qmd collection remove`.
+- Relevance judge: `scripts/judge/pool.ts` reads CRLF notes (a Windows
+  checkout or a Windows-authored vault) and a leading BOM like LF notes. The
+  frontmatter was kept in the judged text and the aliases were lost, which
+  also failed `test/judge-run.test.ts` on the Windows CI job (run
+  41372458709, hidden by `continue-on-error`).
 - RAG eval: a `narrow` answer prompt (`RAG_PROMPT=narrow`) answers questions
   that name a note's topic in other words, and abstains only when the asked
   fact is in no chunk. On the 44 ko-vault questions (M3 Max, gemma3:4b, one

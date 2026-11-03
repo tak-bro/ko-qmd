@@ -219,7 +219,9 @@ export const grepDocuments = (
 
       const lines: GrepLine[] = [];
       let matchCount = 0;
-      const bodyLines = (row.body ?? "").split("\n");
+      // CRLF bodies are stored as written; split on either ending so `$` anchors and the
+      // returned text hold no trailing "\r". Line numbers stay the ones `get` uses.
+      const bodyLines = (row.body ?? "").split(/\r?\n/);
       for (let i = 0; i < bodyLines.length; i++) {
         const text = bodyLines[i]!;
         if (!lineMatches(text, pattern)) continue;
