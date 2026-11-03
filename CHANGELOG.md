@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- Relevance judge: `scripts/judge/pool.ts` reads CRLF notes (a Windows
+  checkout or a Windows-authored vault) and a leading BOM like LF notes. The
+  frontmatter was kept in the judged text and the aliases were lost, which
+  also failed `test/judge-run.test.ts` on the Windows CI job (run
+  41372458709, hidden by `continue-on-error`).
 - RAG eval: a `narrow` answer prompt (`RAG_PROMPT=narrow`) answers questions
   that name a note's topic in other words, and abstains only when the asked
   fact is in no chunk. On the 44 ko-vault questions (M3 Max, gemma3:4b, one
