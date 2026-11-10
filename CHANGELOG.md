@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- CI: `docs/vault-search/WINDOWS.md` lists the Windows test failures of
+  develop `f2694b1` (21 files; `test/metadata-search.test.ts` passes now).
 - `qmd grep` (and the MCP `grep` tool) matches CRLF notes like LF notes:
   an end-anchored pattern such as `끝$` now matches, and the returned line
   text no longer ends in a carriage return. Line numbers are unchanged.
