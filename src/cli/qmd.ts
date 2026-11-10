@@ -2335,14 +2335,6 @@ export function resolveEmbedModelForCli(): string {
   return ensureModelsConfiguredForCli().embed;
 }
 
-export function resolveGenerateModelForCli(): string {
-  return ensureModelsConfiguredForCli().generate;
-}
-
-export function resolveRerankModelForCli(): string {
-  return ensureModelsConfiguredForCli().rerank;
-}
-
 function resolveModelsForCli(): { embed: string; generate: string; rerank: string } {
   return ensureModelsConfiguredForCli();
 }

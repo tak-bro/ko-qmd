@@ -1487,10 +1487,6 @@ export function syncConfigToDb(db: Database, config: CollectionConfig): void {
 }
 
 
-export function isSqliteVecAvailable(): boolean {
-  return _sqliteVecAvailable === true;
-}
-
 function ensureVecTableInternal(db: Database, dimensions: number): void {
   if (!_sqliteVecAvailable) {
     throw createSqliteVecUnavailableError(
