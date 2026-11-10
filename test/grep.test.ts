@@ -161,9 +161,10 @@ describe("grepDocuments", () => {
   });
 
   test("reaching the limit on the last document read is not a stop", () => {
-    // old.md and note.md match; note.md is the last of the four documents read.
-    const result = grep("TODO", { limit: 2 });
-    expect(result.files.map(f => f.displayPath)).toEqual(["docs/archive/old.md", "docs/journals/note.md"]);
+    // Every document has a "# " heading, so the fourth match is the last document read
+    // whatever order the scan indexed them in.
+    const result = grep("# ", { limit: 4 });
+    expect(result.files).toHaveLength(4);
     expect(result.scanned).toBe(4);
     expect(result.truncated).toBe(false);
   });
