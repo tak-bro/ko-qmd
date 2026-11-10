@@ -49,6 +49,18 @@ describe("parseTimeSpec", () => {
     expect(() => parseTimeSpec("last tuesday", NOW)).toThrow(/not a time/);
     expect(() => parseTimeSpec("", NOW)).toThrow(/empty/);
   });
+
+  test("rejects a day the calendar does not have instead of rolling into the next month", () => {
+    // `--since 2026-31-01` (day and month swapped) must not quietly become a 2028 filter.
+    expect(() => parseTimeSpec("2026-02-31", NOW)).toThrow(/not a date/);
+    expect(() => parseTimeSpec("2026-31-01", NOW)).toThrow(/not a date/);
+    expect(() => parseTimeSpec("2026-00-10", NOW)).toThrow(/not a date/);
+    expect(() => parseTimeSpec("2027-02-29", NOW)).toThrow(/not a date/);
+    expect(() => parseTimeSpec("2026-02-31T10:00:00Z", NOW)).toThrow(/not a date/);
+    expect(() => parseTimeSpec("2026-02-31 10:00", NOW)).toThrow(/not a date/);
+    expect(new Date(parseTimeSpec("2028-02-29", NOW)).getDate()).toBe(29);
+    expect(parseTimeSpec("2028-02-29T10:00:00Z", NOW)).toBe("2028-02-29T10:00:00.000Z");
+  });
 });
 
 describe("compilePathMatcher", () => {

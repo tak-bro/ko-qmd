@@ -120,4 +120,16 @@ describe("formatRerankDoc", () => {
     expect(formatRerankDoc(`${block350}BODY`, bare)).toBe(`${block350}BODY`);
     expect(formatRerankDoc(`---\n${"z".repeat(342)}\n---\nBODY`, bare)).toBe("BODY");
   });
+
+  test("an empty frontmatter block ends at its own fence, not at a later rule in the body", () => {
+    const bare = { ...meta, title: "" };
+    const body = `LEAD ${"x".repeat(400)}\n\n---\n\nLATER`;
+    expect(formatRerankDoc(`---\n---\n${body}`, bare)).toBe(`---\n---\n${body}`);
+  });
+
+  test("a closing fence counts only at the start of a line", () => {
+    const bare = { ...meta, title: "" };
+    const block = `---\nsep: x---\n${"src: y\n".repeat(60)}---\n`;
+    expect(formatRerankDoc(`${block}BODY`, bare)).toBe("BODY");
+  });
 });

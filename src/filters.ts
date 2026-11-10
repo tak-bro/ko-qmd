@@ -33,6 +33,15 @@ const SPAN_MS: Record<string, number> = {
 };
 
 /**
+ * Whether year-month-day names a real day; `new Date` would roll `02-31` into March.
+ * `Date.UTC` reads years 0-99 as 1900-1999, so those years fail here too.
+ */
+const isCalendarDate = (year: number, month: number, day: number): boolean => {
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+};
+
+/**
  * A point in time, from either a span back from now (`7d`, `3h`, `2w`, `6mo`) or a date
  * (`2026-09-01`, `2026-09-01T10:00:00Z`). Throws on anything else — a filter that silently
  * means "no filter" is worse than an error, because the result still looks like an answer.
@@ -53,9 +62,13 @@ export const parseTimeSpec = (spec: string, now: Date = new Date()): string => {
   const bareDate = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
   if (bareDate) {
     const [, y, mo, d] = bareDate;
-    const date = new Date(Number(y), Number(mo) - 1, Number(d));
-    if (Number.isNaN(date.getTime())) throw new Error(`not a date: '${spec}'`);
-    return date.toISOString();
+    if (!isCalendarDate(Number(y), Number(mo), Number(d))) throw new Error(`not a date: '${spec}'`);
+    return new Date(Number(y), Number(mo) - 1, Number(d)).toISOString();
+  }
+
+  const datePrefix = /^(\d{4})-(\d{2})-(\d{2})[Tt ]/.exec(trimmed);
+  if (datePrefix && !isCalendarDate(Number(datePrefix[1]), Number(datePrefix[2]), Number(datePrefix[3]))) {
+    throw new Error(`not a date: '${spec}'`);
   }
 
   const parsed = new Date(trimmed);

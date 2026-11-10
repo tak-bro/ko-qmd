@@ -49,6 +49,8 @@ describe("parseAnswer", () => {
     ['{"unknown":false,"sentences":[{"text":"x","citations":[3]}]}', /citation 3 is not a document number 1-2/],
     ['{"unknown":false,"sentences":[{"text":"x","citations":[1.5]}]}', /citation 1.5/],
     ['{"unknown":false,"sentences":[{"text":"x"}]}', /lacks text or citations/],
+    ["null", /reply is not an object/],
+    ['{"unknown":false,"sentences":{}}', /sentences is not an array/],
   ])("rejects %s", (reply, reason) => {
     const r = parseAnswer(reply, 2);
     expect("reason" in r && r.reason).toMatch(reason);
@@ -107,6 +109,8 @@ describe("parseGrade", () => {
     ['{"support":"full","citations":[{"n":1}]}', /no boolean supports/],
     ['{"support":"full","citations":[{"n":1,"supports":true}]}', /missing citations 2/],
     ["[]", /not full, partial or none/],
+    ["not json", /reply is not JSON/],
+    ['{"support":"full","citations":{}}', /citations is not an array/],
   ])("rejects %s", (reply, reason) => {
     const r = parseGrade(reply, [1, 2]);
     expect("reason" in r && r.reason).toMatch(reason);

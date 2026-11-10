@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+- Rerank input: a note that opens with an empty frontmatter block (`---`
+  twice) keeps its lead. The block used to run on to the next `---` rule in
+  the body, and when that span passed 350 characters the reranker saw only
+  the text after the rule. A `---` at the end of a frontmatter value no
+  longer closes the block either.
+- `--since` / `--until` (CLI, and `since` / `until` on the MCP `query` and
+  `grep` tools) reject a date the calendar does not have, such as
+  `2026-02-31` or a swapped `2026-31-01`, with `not a date`. They used to
+  roll it into a later month and search from there.
+- `qmd grep` (and the MCP `grep` tool) no longer says it stopped at the
+  limit when the limit-th match was the last document read; `--json`
+  `truncated` is false then.
+- Relevance judge: a note that cannot be read (renamed or deleted after the
+  bench) now fails only its query, recorded under that pass's `errors`.
+  It used to abort `scripts/judge/run.ts` before any judgments were written.
+- CI: `docs/vault-search/WINDOWS.md` lists the Windows test failures of
+  develop `f2694b1` (21 files; `test/metadata-search.test.ts` passes now).
 - `qmd grep` (and the MCP `grep` tool) matches CRLF notes like LF notes:
   an end-anchored pattern such as `끝$` now matches, and the returned line
   text no longer ends in a carriage return. Line numbers are unchanged.

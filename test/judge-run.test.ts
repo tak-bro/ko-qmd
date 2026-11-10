@@ -82,6 +82,17 @@ describe("judgeAll", () => {
     expect(exitCode(passes)).toBe(2);
   });
 
+  test("a document that cannot be read fails its query, not the run", async () => {
+    const unreadable = (file: string) => {
+      if (file === "wiki/c.md") throw new Error("ENOENT: wiki/c.md");
+      return load(file);
+    };
+    const passes = await judgeAll(pools, [1], "rubric", titleJudge(), unreadable);
+    expect(passes[0]!.grades.q1).toEqual({ "wiki/a.md": 3, "wiki/b.md": 1 });
+    expect(passes[0]!.errors.q2).toMatch(/ENOENT: wiki\/c.md/);
+    expect(exitCode(passes)).toBe(2);
+  });
+
   test("pointwise sends each document alone and merges the grades", async () => {
     const calls: string[] = [];
     const passes = await judgeAll(pools.slice(0, 1), [0], "rubric", titleJudge(calls), load, undefined, "pointwise");

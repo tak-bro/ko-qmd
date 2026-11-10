@@ -7,10 +7,10 @@ from a new one.
 
 ## Snapshot
 
-develop `f092e86` — [CI run 38684652771](https://github.com/tak-bro/ko-qmd/actions/runs/38684652771), `Node 22 (windows-latest)`:
+develop `f2694b1` — [CI run 41652228369](https://github.com/tak-bro/ko-qmd/actions/runs/41652228369), `Node 22 (windows-latest)`:
 
-- test files: **22 failed** | 71 passed | 1 skipped (94)
-- tests: **88 failed** | 1808 passed | 197 skipped (2093)
+- test files: **21 failed** | 82 passed | 1 skipped (104)
+- tests: **86 failed** | 1959 passed | 197 skipped (2242)
 
 Failing test files:
 
@@ -27,7 +27,6 @@ Failing test files:
 - test/mcp-pid.test.ts
 - test/mcp-stdio-lifecycle.test.ts
 - test/mcp.test.ts
-- test/metadata-search.test.ts
 - test/package.test.ts
 - test/path-fidelity.test.ts
 - test/query-log.test.ts

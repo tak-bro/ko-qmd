@@ -13,7 +13,8 @@
  * Env: JUDGE_MODEL (qwen3:8b) · OLLAMA_HOST (http://127.0.0.1:11434) · JUDGE_SEEDS (1,2)
  *      JUDGE_MODE (listwise|pointwise) · JUDGE_BACKENDS (bm25,hybrid,full)
  *      JUDGE_CORPUS (test/fixtures/ko-vault) · JUDGE_COMMIT
- * Exit: 0 every query graded · 2 a query failed validation twice, or bad input.
+ * Exit: 0 every query graded · 2 a query failed (a reply invalid twice, a call that threw, a note
+ *       that cannot be read), or bad input.
  * A failed query is recorded under `errors`, never filled with zeros.
  */
 
@@ -172,9 +173,9 @@ async function judgePointwise(query: string, docs: readonly PoolDoc[], rubric: s
 }
 
 /**
- * Every pass over every pool. A query whose reply fails validation twice, or whose call throws,
- * lands in that pass's `errors` and gets no grades — in pointwise mode, one bad document fails
- * its whole query.
+ * Every pass over every pool. A query whose reply fails validation twice, whose call throws, or
+ * one of whose notes cannot be read lands in that pass's `errors` and gets no grades — in
+ * pointwise mode, one bad document fails its whole query.
  */
 export async function judgeAll(
   pools: readonly Pool[],
@@ -189,8 +190,9 @@ export async function judgeAll(
   for (const seed of seeds) {
     const pass: Pass = { seed, grades: {}, errors: {} };
     for (const [i, pool] of pools.entries()) {
-      const docs = pool.files.map(file => ({ file, ...load(file) }));
       try {
+        // Inside the try: a note that cannot be read fails this query, not the whole run.
+        const docs = pool.files.map(file => ({ file, ...load(file) }));
         pass.grades[pool.id] =
           mode === "pointwise"
             ? await judgePointwise(pool.query, docs, rubric, chat)
@@ -198,7 +200,7 @@ export async function judgeAll(
       } catch (err) {
         pass.errors[pool.id] = err instanceof Error ? err.message : String(err);
       }
-      log(`seed ${seed} ${i + 1}/${pools.length} ${pool.id} docs=${docs.length}${pass.errors[pool.id] ? ` ERROR ${pass.errors[pool.id]}` : ""}`);
+      log(`seed ${seed} ${i + 1}/${pools.length} ${pool.id} docs=${pool.files.length}${pass.errors[pool.id] ? ` ERROR ${pass.errors[pool.id]}` : ""}`);
     }
     passes.push(pass);
   }

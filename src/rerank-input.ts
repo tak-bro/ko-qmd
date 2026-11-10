@@ -77,7 +77,9 @@ export const LONG_FRONTMATTER_CHARS = 350;
 const stripLongFrontmatter = (text: string): string => {
   if (!/^---\r?\n/.test(text)) return text;
   // Tolerate CRLF fences; scan up to 100_000 chars so a missing closing fence returns fast.
-  const m = text.match(/^---\r?\n[\s\S]{1,100000}?---\r?\n/);
+  // The closing fence starts a line, and `??` tries the empty block first so `---\n---\n`
+  // ends there instead of at a later `---` rule in the body.
+  const m = text.match(/^---\r?\n(?:[\s\S]{0,100000}?\n)??---\r?\n/);
   return m && m[0].length > LONG_FRONTMATTER_CHARS ? text.slice(m[0].length) : text;
 };
 

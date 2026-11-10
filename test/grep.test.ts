@@ -160,6 +160,15 @@ describe("grepDocuments", () => {
     expect(result.truncated).toBe(true);
   });
 
+  test("reaching the limit on the last document read is not a stop", () => {
+    // Every document has a "# " heading, so the fourth match is the last document read
+    // whatever order the scan indexed them in.
+    const result = grep("# ", { limit: 4 });
+    expect(result.files).toHaveLength(4);
+    expect(result.scanned).toBe(4);
+    expect(result.truncated).toBe(false);
+  });
+
   test("caps reported lines per file but still counts the matches", () => {
     const result = grep("todo", { maxLinesPerFile: 1 });
     const note = result.files.find(f => f.displayPath === "docs/journals/note.md")!;
