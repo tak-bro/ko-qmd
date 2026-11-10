@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- `qmd grep` (and the MCP `grep` tool) no longer says it stopped at the
+  limit when the limit-th match was the last document read; `--json`
+  `truncated` is false then.
 - Relevance judge: a note that cannot be read (renamed or deleted after the
   bench) now fails only its query, recorded under that pass's `errors`.
   It used to abort `scripts/judge/run.ts` before any judgments were written.

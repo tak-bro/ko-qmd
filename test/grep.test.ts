@@ -160,6 +160,14 @@ describe("grepDocuments", () => {
     expect(result.truncated).toBe(true);
   });
 
+  test("reaching the limit on the last document read is not a stop", () => {
+    // old.md and note.md match; note.md is the last of the four documents read.
+    const result = grep("TODO", { limit: 2 });
+    expect(result.files.map(f => f.displayPath)).toEqual(["docs/archive/old.md", "docs/journals/note.md"]);
+    expect(result.scanned).toBe(4);
+    expect(result.truncated).toBe(false);
+  });
+
   test("caps reported lines per file but still counts the matches", () => {
     const result = grep("todo", { maxLinesPerFile: 1 });
     const note = result.files.find(f => f.displayPath === "docs/journals/note.md")!;
