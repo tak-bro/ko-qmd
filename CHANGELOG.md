@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- Rerank input: a note that opens with an empty frontmatter block (`---`
+  twice) keeps its lead. The block used to run on to the next `---` rule in
+  the body, and when that span passed 350 characters the reranker saw only
+  the text after the rule. A `---` at the end of a frontmatter value no
+  longer closes the block either.
 - `--since` / `--until` (CLI, and `since` / `until` on the MCP `query` and
   `grep` tools) reject a date the calendar does not have, such as
   `2026-02-31` or a swapped `2026-31-01`, with `not a date`. They used to
