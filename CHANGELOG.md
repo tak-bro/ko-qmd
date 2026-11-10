@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- `--since` / `--until` (CLI, and `since` / `until` on the MCP `query` and
+  `grep` tools) reject a date the calendar does not have, such as
+  `2026-02-31` or a swapped `2026-31-01`, with `not a date`. They used to
+  roll it into a later month and search from there.
 - `qmd grep` (and the MCP `grep` tool) no longer says it stopped at the
   limit when the limit-th match was the last document read; `--json`
   `truncated` is false then.
