@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Relevance judge: a note that cannot be read (renamed or deleted after the
+  bench) now fails only its query, recorded under that pass's `errors`.
+  It used to abort `scripts/judge/run.ts` before any judgments were written.
 - CI: `docs/vault-search/WINDOWS.md` lists the Windows test failures of
   develop `f2694b1` (21 files; `test/metadata-search.test.ts` passes now).
 - `qmd grep` (and the MCP `grep` tool) matches CRLF notes like LF notes:
