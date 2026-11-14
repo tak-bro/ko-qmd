@@ -3,10 +3,12 @@ import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -164,6 +166,19 @@ describe("skills/release/scripts/release-context.sh (#796)", () => {
     expect(result.stdout).not.toMatch(/pre-push hook/);
     expect(result.stdout).not.toMatch(/^Done\.$/m);
     expect(existsSync(hook)).toBe(true);
+  });
+
+  // A symlink into the checkout dangles once a release worktree is removed, and git then
+  // skips the pre-push check silently.
+  // Creating a symlink on Windows needs a privilege CI runners lack.
+  test.skipIf(process.platform === "win32")("installs the pre-push hook as a copy, replacing a dangling symlink", () => {
+    const root = makeReleaseFixture();
+    const hook = join(root, ".git", "hooks", "pre-push");
+    symlinkSync(join(root, "gone-worktree", "scripts", "pre-push"), hook);
+    const result = runContext(root, "2.6.4");
+    expect(result.status, result.stderr).toBe(0);
+    expect(lstatSync(hook).isSymbolicLink()).toBe(false);
+    expect(readFileSync(hook, "utf8")).toBe(readFileSync(join(root, "scripts", "pre-push"), "utf8"));
   });
 
   test("shows a dirty working tree", () => {
