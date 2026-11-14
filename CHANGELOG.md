@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.8.3-ko.13] - 2026-11-14
+
 - Release tooling: `skills/release/scripts/install-hooks.sh` installs the
   pre-push hook as a copy instead of a symlink. The hooks dir is shared by
   every worktree, so a link made from a release worktree dangled once that
