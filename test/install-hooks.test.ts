@@ -3,10 +3,12 @@ import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -57,6 +59,22 @@ describe("scripts/install-hooks.mjs", () => {
       expect(result.stdout).toMatch(/Installed git hooks: pre-push/);
       const installed = join(root, ".git", "hooks", "pre-push");
       expect(existsSync(installed)).toBe(true);
+      expect(readFileSync(installed, "utf8")).toBe(readFileSync(prePushSrc, "utf8"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // A hook symlinked into a since-removed worktree used to make copyFileSync fail with ENOENT.
+  // Creating a symlink on Windows needs a privilege CI runners lack.
+  test.skipIf(process.platform === "win32")("replaces a dangling pre-push symlink with a copy", () => {
+    const root = makeFixture(true);
+    try {
+      const installed = join(root, ".git", "hooks", "pre-push");
+      symlinkSync(join(root, "gone-worktree", "scripts", "pre-push"), installed);
+      const result = runInstallHooks(root);
+      expect(result.status, result.stderr).toBe(0);
+      expect(lstatSync(installed).isSymbolicLink()).toBe(false);
       expect(readFileSync(installed, "utf8")).toBe(readFileSync(prePushSrc, "utf8"));
     } finally {
       rmSync(root, { recursive: true, force: true });
