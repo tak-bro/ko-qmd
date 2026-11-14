@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.8.3-ko.12] - 2026-11-14
+
 - `qmd mcp --http`: fix a memory leak in long-running daemons. The HTTP
   bridge buffered every `/mcp` response to the end, so a
   `subscriptions/listen` stream (which stays open) was never sent and was
@@ -86,6 +88,9 @@
 - `qmd bench --backend <name>` runs a subset of the bm25, vector, hybrid and
   full backends (repeatable or a comma list). `--backend bm25` needs no
   embedding or reranker model.
+
+## [2.8.3-ko.11] - 2026-10-31
+
 - Rerank now caps each document at 256 tokens by default
   (`DEFAULT_RERANK_MAX_DOC_TOKENS` in `src/llm.ts`); `QMD_RERANK_MAX_DOC_TOKENS=0`
   restores whole chunks, and an unset or invalid value takes the default. Replaying

@@ -10,7 +10,12 @@ if [[ -z "$REPO_ROOT" ]]; then
   exit 1
 fi
 
-HOOKS_DIR="$REPO_ROOT/.git/hooks"
+GIT_COMMON_DIR=$(git -C "$REPO_ROOT" rev-parse --git-common-dir)
+case "$GIT_COMMON_DIR" in
+  /*) : ;;
+  *) GIT_COMMON_DIR="$REPO_ROOT/$GIT_COMMON_DIR" ;;
+esac
+HOOKS_DIR="$GIT_COMMON_DIR/hooks"
 SOURCE="$REPO_ROOT/scripts/pre-push"
 
 if [[ ! -f "$SOURCE" ]]; then
