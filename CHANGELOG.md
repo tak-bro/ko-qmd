@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- `qmd mcp --http`: fix a memory leak in long-running daemons. The HTTP
+  bridge buffered every `/mcp` response to the end, so a
+  `subscriptions/listen` stream (which stays open) was never sent and was
+  never released when its client left. Every dead listener kept collecting
+  15-second keep-alive frames: one daemon reached 9.2 GB after 6 days and
+  hit the SDK's 1024-subscription cap, after which new listens were
+  refused. Responses now stream to the socket, and a client disconnect
+  closes the SDK stream (`/health` `listens` drops back). Under Bun 1.3 the
+  HTTP server gets no signal when a client hangs up on a POST, so a daemon
+  run with Bun still keeps dead listeners; run the daemon with Node.
 - Rerank input: a note that opens with an empty frontmatter block (`---`
   twice) keeps its lead. The block used to run on to the next `---` rule in
   the body, and when that span passed 350 characters the reranker saw only
