@@ -10,6 +10,9 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFileSync } from "node:fs";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { join, dirname, sep } from "node:path";
 import { fileURLToPath } from "url";
 import { createMcpHandler, McpServer, ResourceTemplate } from "@modelcontextprotocol/server";
@@ -1921,9 +1924,17 @@ export async function startMcpHttpServer(
           : (nodeReq.method || "GET");
         const hostHeader = typeof nodeReq.headers.host === "string" ? nodeReq.headers.host : `localhost:${port}`;
         const url = `http://${hostHeader}${pathname}`;
+        // ko-qmd: the SDK closes a subscriptions/listen stream only on request.signal
+        // abort. Bun 1.3 emits only the socket's "close" on a hang-up (none for a POST).
+        const disconnect = new AbortController();
+        const onClose = () => disconnect.abort();
+        const socket = nodeReq.socket;
+        nodeRes.on("close", onClose);
+        socket.on("close", onClose);
         const request = new Request(url, {
           method: nodeReq.method || "GET",
           headers: nodeHeadersToWeb(nodeReq),
+          signal: disconnect.signal,
           ...(rawBody !== undefined ? { body: rawBody } : {}),
         });
         const isListen = label === "subscriptions/listen";
@@ -1936,8 +1947,20 @@ export async function startMcpHttpServer(
           );
 
           nodeRes.writeHead(response.status, Object.fromEntries(response.headers));
-          nodeRes.end(Buffer.from(await response.arrayBuffer()));
+          // An SSE body never ends, so it must be streamed, not buffered.
+          if (response.body) {
+            try {
+              await pipeline(Readable.fromWeb(response.body as WebReadableStream), nodeRes);
+            } catch (err) {
+              // A client hanging up mid-stream is the normal end of a listen.
+              if (!disconnect.signal.aborted) throw err;
+            }
+          } else {
+            nodeRes.end();
+          }
         } finally {
+          nodeRes.off("close", onClose);
+          socket.off("close", onClose);
           openMcp.inflight--;
           if (isListen) openMcp.listens--;
         }
