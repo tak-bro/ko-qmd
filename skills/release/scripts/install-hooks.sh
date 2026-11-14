@@ -23,21 +23,18 @@ if [[ ! -f "$SOURCE" ]]; then
   exit 1
 fi
 
-# Install pre-push hook
-if [[ -L "$HOOKS_DIR/pre-push" ]] && [[ "$(readlink "$HOOKS_DIR/pre-push")" == "$SOURCE" ]]; then
-  echo "pre-push hook: already installed (symlink)"
-elif [[ -f "$HOOKS_DIR/pre-push" ]]; then
-  # Existing hook that isn't our symlink — back it up
-  BACKUP="$HOOKS_DIR/pre-push.backup.$(date +%s)"
+# Install pre-push hook as a copy, not a symlink: the hooks dir is shared by
+# every worktree, and a link into one dangles once that worktree is removed.
+HOOK="$HOOKS_DIR/pre-push"
+if [[ -f "$HOOK" && ! -L "$HOOK" ]] && ! cmp -s "$SOURCE" "$HOOK"; then
+  # Existing hook that isn't ours — back it up
+  BACKUP="$HOOK.backup.$(date +%s)"
   echo "pre-push hook: backing up existing hook to $(basename "$BACKUP")"
-  mv "$HOOKS_DIR/pre-push" "$BACKUP"
-  ln -sf "$SOURCE" "$HOOKS_DIR/pre-push"
-  echo "pre-push hook: installed (symlink → scripts/pre-push)"
-else
-  ln -sf "$SOURCE" "$HOOKS_DIR/pre-push"
-  echo "pre-push hook: installed (symlink → scripts/pre-push)"
+  mv "$HOOK" "$BACKUP"
 fi
+rm -f "$HOOK"
+cp "$SOURCE" "$HOOK"
+echo "pre-push hook: installed (copy of scripts/pre-push)"
 
-# Ensure the source is executable
-chmod +x "$SOURCE"
+chmod +x "$HOOK"
 echo "Done."

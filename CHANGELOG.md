@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+- Release tooling: `skills/release/scripts/install-hooks.sh` installs the
+  pre-push hook as a copy instead of a symlink. The hooks dir is shared by
+  every worktree, so a link made from a release worktree dangled once that
+  worktree was removed, and git then pushed without running the tag check.
+  `scripts/install-hooks.mjs` (the `prepare` script) now replaces such a
+  dangling link instead of failing with `ENOENT`.
+
 ## [2.8.3-ko.12] - 2026-11-14
 
 - `qmd mcp --http`: fix a memory leak in long-running daemons. The HTTP
