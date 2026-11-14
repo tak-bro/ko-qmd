@@ -1,4 +1,4 @@
-import { isBun, openDatabase } from "../db.js";
+import { isBun } from "../db.js";
 import type { Database, SQLiteValue } from "../db.js";
 import fastGlob from "fast-glob";
 import { spawn as nodeSpawn } from "child_process";
@@ -26,33 +26,24 @@ import {
   listCollections,
   removeCollection,
   renameCollection,
-  findSimilarFiles,
   findDocument,
   resolveCommaListName,
   matchFilesByGlob,
   getHashesNeedingEmbedding,
-  clearAllEmbeddings,
-  insertEmbedding,
-  getStatus,
   hashContent,
   extractTitle,
   formatDocForEmbedding,
   getEmbeddingFingerprint,
   chunkDocumentByTokens,
   clearCache,
-  getCacheKey,
-  getCachedResult,
-  setCachedResult,
   getIndexHealth,
   parseVirtualPath,
   buildVirtualPath,
   isVirtualPath,
   isDocid,
   resolveVirtualPath,
-  toVirtualPath,
   insertContent,
   insertDocument,
-  findActiveDocument,
   findOrMigrateLegacyDocument,
   updateDocumentTitle,
   updateDocument,
@@ -62,9 +53,6 @@ import {
   countOrphanedVectors,
   previewCleanup,
   runCleanup,
-  getCollectionsWithoutContext,
-  getTopLevelPathsWithoutContext,
-  handelize,
   escapeLikePattern,
   hybridQuery,
   vectorSearchQuery,
@@ -88,16 +76,13 @@ import {
   generateEmbeddings,
   maybeAdoptLegacyEmbeddingFingerprint,
   syncConfigToDb,
-  type ReindexResult,
   type ChunkStrategy,
 } from "../store.js";
 import { syncDocumentMetadata, countDocumentsPendingMetadata } from "../metadata-store.js";
 import type { DocumentMetadata } from "../metadata.js";
 import { parseMetadataFilter, type MetadataFilter } from "../metadata-filter.js";
-import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_MODEL_CACHE_DIR, resolveEmbedModel, resolveGenerateModel, resolveRerankModel, resolveModels, inspectGgufFile, isDarwinMetalMitigationActive } from "../llm.js";
+import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_MODEL_CACHE_DIR, resolveModels, inspectGgufFile, isDarwinMetalMitigationActive } from "../llm.js";
 import {
-  formatSearchResults,
-  formatDocuments,
   escapeXml,
   escapeCSV,
   type OutputFormat,
@@ -297,11 +282,6 @@ function setIndexName(name: string | null): void {
   closeDb();
 }
 
-function ensureVecTable(_db: Database, dimensions: number): void {
-  // Store owns the DB; ignore `_db` and ensure vec table on the active store
-  getStore().ensureVecTable(dimensions);
-}
-
 // Terminal colors (respects NO_COLOR env)
 const useColor = !process.env.NO_COLOR && process.stdout.isTTY;
 const c = {
@@ -434,43 +414,6 @@ function checkIndexHealth(db: Database, model: string = resolveEmbedModelForCli(
     process.stderr.write(`${c.dim}Tip: Index last updated ${daysStale} days ago. Run 'qmd update' to refresh.${c.reset}\n`);
   }
 }
-
-// Compute unique display path for a document
-// Always include at least parent folder + filename, add more parent dirs until unique
-function computeDisplayPath(
-  filepath: string,
-  collectionPath: string,
-  existingPaths: Set<string>
-): string {
-  // Get path relative to collection (include collection dir name)
-  const collectionDir = collectionPath.replace(/\/$/, '');
-  const collectionName = collectionDir.split('/').pop() || '';
-
-  let relativePath: string;
-  if (filepath.startsWith(collectionDir + '/')) {
-    // filepath is under collection: use collection name + relative path
-    relativePath = collectionName + filepath.slice(collectionDir.length);
-  } else {
-    // Fallback: just use the filepath
-    relativePath = filepath;
-  }
-
-  const parts = relativePath.split('/').filter(p => p.length > 0);
-
-  // Always include at least parent folder + filename (minimum 2 parts if available)
-  // Then add more parent dirs until unique
-  const minParts = Math.min(2, parts.length);
-  for (let i = parts.length - minParts; i >= 0; i--) {
-    const candidate = parts.slice(i).join('/');
-    if (!existingPaths.has(candidate)) {
-      return candidate;
-    }
-  }
-
-  // Absolute fallback: use full path (should be unique)
-  return filepath;
-}
-
 
 function formatTimeAgo(date: Date): string {
   const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
@@ -2335,14 +2278,6 @@ export function resolveEmbedModelForCli(): string {
   return ensureModelsConfiguredForCli().embed;
 }
 
-export function resolveGenerateModelForCli(): string {
-  return ensureModelsConfiguredForCli().generate;
-}
-
-export function resolveRerankModelForCli(): string {
-  return ensureModelsConfiguredForCli().rerank;
-}
-
 function resolveModelsForCli(): { embed: string; generate: string; rerank: string } {
   return ensureModelsConfiguredForCli();
 }
@@ -2469,48 +2404,6 @@ export async function vectorIndex(
   }
 }
 
-// Sanitize a term for FTS5: remove punctuation except apostrophes
-function sanitizeFTS5Term(term: string): string {
-  // Remove all non-alphanumeric except apostrophes (for contractions like "don't")
-  return term.replace(/[^\w']/g, '').trim();
-}
-
-// Build FTS5 query: phrase-aware with fallback to individual terms
-function buildFTS5Query(query: string): string {
-  // Sanitize the full query for phrase matching
-  const sanitizedQuery = query.replace(/[^\w\s']/g, '').trim();
-
-  const terms = query
-    .split(/\s+/)
-    .map(sanitizeFTS5Term)
-    .filter(term => term.length >= 2); // Skip single chars and empty
-
-  if (terms.length === 0) return "";
-  if (terms.length === 1) return `"${terms[0]!.replace(/"/g, '""')}"`;
-
-  // Strategy: exact phrase OR proximity match OR individual terms
-  // Exact phrase matches rank highest, then close proximity, then any term
-  const phrase = `"${sanitizedQuery.replace(/"/g, '""')}"`;
-  const quotedTerms = terms.map(t => `"${t.replace(/"/g, '""')}"`);
-
-  // FTS5 NEAR syntax: NEAR(term1 term2, distance)
-  const nearPhrase = `NEAR(${quotedTerms.join(' ')}, 10)`;
-  const orTerms = quotedTerms.join(' OR ');
-
-  // Exact phrase > proximity > any term
-  return `(${phrase}) OR (${nearPhrase}) OR (${orTerms})`;
-}
-
-// Normalize BM25 score to 0-1 range using sigmoid
-function normalizeBM25(score: number): number {
-  // BM25 scores are negative in SQLite (lower = better)
-  // Typical range: -15 (excellent) to -2 (weak match)
-  // Map to 0-1 where higher is better
-  const absScore = Math.abs(score);
-  // Sigmoid-ish normalization: maps ~2-15 range to ~0.1-0.95
-  return 1 / (1 + Math.exp(-(absScore - 5) / 3));
-}
-
 /**
  * `--path` / `--since` / `--until` into a filter, or nothing when none were given.
  *
@@ -2606,15 +2499,6 @@ export function formatScore(score: number): string {
 
 function formatExplainNumber(value: number): string {
   return value.toFixed(4);
-}
-
-// Shorten directory path for display - relative to $HOME (used for context paths, not documents)
-function shortPath(dirpath: string): string {
-  const home = homedir();
-  if (dirpath.startsWith(home)) {
-    return '~' + dirpath.slice(home.length);
-  }
-  return dirpath;
 }
 
 type EmptySearchReason = "no_results" | "min_score";
@@ -3562,6 +3446,8 @@ const CLI_OPTIONS: ParseArgsOptionsConfig = {
       until: { type: "string" },                 // only documents modified at/before this
       // Chunking options
       "chunk-strategy": { type: "string" },  // "regex" (default) or "auto" (AST for code files)
+      // Bench options
+      backend: { type: "string", multiple: true },  // bench: run only these backends (repeatable or comma list)
       // MCP HTTP transport options
       http: { type: "boolean" },
       daemon: { type: "boolean" },
@@ -4097,7 +3983,7 @@ function showHelp(): void {
   console.log("  qmd skills list/get/path      - List and retrieve bundled runtime skills");
   console.log("  qmd skill show/install        - Show or install the QMD skill");
   console.log("  qmd mcp                       - Start the MCP server (stdio transport for AI agents)");
-  console.log("  qmd bench <fixture.json>      - Run search quality benchmarks against a fixture file");
+  console.log("  qmd bench <fixture.json>      - Run search quality benchmarks against a fixture file (--backend bm25 = lex only)");
   console.log("");
   console.log("Collections & context:");
   console.log("  qmd collection add/list/remove/rename/show   - Manage indexed folders");
@@ -5313,22 +5199,34 @@ if (isMain) {
     case "bench": {
       const fixturePath = cli.args[0];
       if (!fixturePath) {
-        console.error("Usage: qmd bench <fixture.json> [--json] [-c collection]");
+        console.error("Usage: qmd bench <fixture.json> [--json] [-c collection] [--backend bm25,vector,hybrid,full]");
         console.error("");
         console.error("Run search quality benchmarks against a fixture file.");
         console.error("See src/bench/fixtures/example.json for the fixture format.");
         process.exit(1);
       }
-      const { runBenchmark } = await import("../bench/bench.js");
+      const { runBenchmark, BENCH_BACKEND_NAMES } = await import("../bench/bench.js");
       const benchCollection = cli.opts.collection;
       if (Array.isArray(benchCollection) && benchCollection.length > 1) {
         console.error(`qmd bench accepts only one -c/--collection; got: ${benchCollection.join(", ")}`);
+        process.exit(1);
+      }
+      const benchBackend = cli.values.backend;
+      const backends = Array.isArray(benchBackend)
+        ? benchBackend.flatMap(v => String(v).split(",")).map(v => v.trim()).filter(Boolean)
+        : undefined;
+      // runBenchmark keeps the known names of a partly valid list; the CLI rejects the typo instead
+      // of benching what is left (`--backend bm25,hybird` would otherwise run bm25 alone).
+      const unknownBackends = (backends ?? []).filter(b => !BENCH_BACKEND_NAMES.includes(b));
+      if (unknownBackends.length > 0) {
+        console.error(`Unknown backend(s): ${unknownBackends.join(", ")}.\nAvailable: ${BENCH_BACKEND_NAMES.join(", ")}.`);
         process.exit(1);
       }
       try {
         await runBenchmark(fixturePath, {
           json: !!cli.values.json,
           collection: Array.isArray(benchCollection) ? benchCollection[0] : benchCollection,
+          backends,
           dbPath: getDbPath(),
           configPath: configExists() ? getConfigPath() : undefined,
         });

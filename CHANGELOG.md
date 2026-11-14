@@ -2,6 +2,91 @@
 
 ## [Unreleased]
 
+- `qmd mcp --http`: fix a memory leak in long-running daemons. The HTTP
+  bridge buffered every `/mcp` response to the end, so a
+  `subscriptions/listen` stream (which stays open) was never sent and was
+  never released when its client left. Every dead listener kept collecting
+  15-second keep-alive frames: one daemon reached 9.2 GB after 6 days and
+  hit the SDK's 1024-subscription cap, after which new listens were
+  refused. Responses now stream to the socket, and a client disconnect
+  closes the SDK stream (`/health` `listens` drops back). Under Bun 1.3 the
+  HTTP server gets no signal when a client hangs up on a POST, so a daemon
+  run with Bun still keeps dead listeners; run the daemon with Node.
+- Rerank input: a note that opens with an empty frontmatter block (`---`
+  twice) keeps its lead. The block used to run on to the next `---` rule in
+  the body, and when that span passed 350 characters the reranker saw only
+  the text after the rule. A `---` at the end of a frontmatter value no
+  longer closes the block either.
+- `--since` / `--until` (CLI, and `since` / `until` on the MCP `query` and
+  `grep` tools) reject a date the calendar does not have, such as
+  `2026-02-31` or a swapped `2026-31-01`, with `not a date`. They used to
+  roll it into a later month and search from there.
+- `qmd grep` (and the MCP `grep` tool) no longer says it stopped at the
+  limit when the limit-th match was the last document read; `--json`
+  `truncated` is false then.
+- Relevance judge: a note that cannot be read (renamed or deleted after the
+  bench) now fails only its query, recorded under that pass's `errors`.
+  It used to abort `scripts/judge/run.ts` before any judgments were written.
+- CI: `docs/vault-search/WINDOWS.md` lists the Windows test failures of
+  develop `f2694b1` (21 files; `test/metadata-search.test.ts` passes now).
+- `qmd grep` (and the MCP `grep` tool) matches CRLF notes like LF notes:
+  an end-anchored pattern such as `끝$` now matches, and the returned line
+  text no longer ends in a carriage return. Line numbers are unchanged.
+- `qmd update` and SDK `update()` no longer empty a collection whose root
+  directory is missing (a macOS volume that is not mounted, a moved or
+  renamed folder). The scan saw zero files and deactivated every document;
+  the root is now reported as skipped (`⚠ Skipped unreadable file: <root>
+  (ENOENT)`) and the index is left as it was. An empty mount point that is
+  still a directory is not caught. To drop a collection on purpose, use
+  `qmd collection remove`.
+- Relevance judge: `scripts/judge/pool.ts` reads CRLF notes (a Windows
+  checkout or a Windows-authored vault) and a leading BOM like LF notes. The
+  frontmatter was kept in the judged text and the aliases were lost, which
+  also failed `test/judge-run.test.ts` on the Windows CI job (run
+  41372458709, hidden by `continue-on-error`).
+- RAG eval: a `narrow` answer prompt (`RAG_PROMPT=narrow`) answers questions
+  that name a note's topic in other words, and abstains only when the asked
+  fact is in no chunk. On the 44 ko-vault questions (M3 Max, gemma3:4b, one
+  run, reference grades by Claude Opus 5.5, not people) it refuses 8 of 32
+  answerable questions against grounded's 12. It keeps 8 of 12 unanswerable
+  refusals. Faithfulness against baseline is +0.190 [0.024, 0.357]. The
+  faithfulness judge no longer sees inline "[n]" markers in the sentence it
+  grades, and `rag-ko.sh` keeps the reference grades of variants it does not
+  answer again. See `docs/eval/README.md`.
+- RAG answers with chunk citations and a faithfulness evaluation (eval stage
+  3). `scripts/rag/ask.ts` answers from a qmd index with `[n]` citations, or
+  says it does not know. `scripts/rag-ko.sh` measures faithfulness, citation
+  precision and abstention on 44 ko-vault questions, 12 of them unanswerable.
+  `gemma3:4b` generates and `qwen3:8b` judges. A stricter prompt raised
+  abstention on unanswerable questions from 0.333 to 0.667, but it also
+  refused 12 of 32 answerable ones. Its faithfulness change, +0.097
+  [-0.125, 0.333] on reference grades, is not distinguishable from zero. The
+  judge agreed with Claude Opus 5.5 reference grades (model, not human) at
+  kappa 0.35 only, so faithfulness is reported on the reference grades. See
+  `docs/eval/README.md`.
+- LLM-as-judge relevance grading for the ko-vault fixture (`scripts/judge-ko.sh`,
+  eval stage 2). A local Ollama model (`qwen3:8b`) grades each query's pool 0–3
+  on `test/fixtures/ko-vault/judge/rubric.md`. The pool is the union of the
+  bm25/hybrid/full top 10 plus missed answers. The report gives nDCG@10 per
+  backend with bootstrap intervals, a position-bias check and kappa against
+  labels sampled by `scripts/judge/label.ts`. Listwise grading changed 41% of
+  grades when only the order changed, so `JUDGE_MODE=pointwise` grades one
+  document at a time. Pointwise nDCG@10 on 50 goldset queries (M3 Max): bm25
+  0.726, hybrid 0.868, full 0.891. Against 250 reference labels by Claude
+  Opus 5.5 (model labels, not human), the pointwise judge's weighted kappa is
+  0.708 [0.646, 0.764]; it is lenient on same-field near misses. See
+  `docs/eval/README.md`.
+- CI gains a lex (BM25) evaluation gate, the `lex-gate` job. It runs
+  `scripts/bench-lex-gate.sh`, which benches bm25 over the ko-vault goldset five
+  times on fresh indexes with no model. It compares per-query recall@5 and
+  reciprocal rank with `test/fixtures/ko-vault/lex-baseline.json` by a seeded
+  paired bootstrap, and fails only when a 95% interval lies below zero. Baseline
+  (M3 Max, 5 reps): r5 0.8875, MRR 0.8169, no run-to-run difference. See
+  `docs/eval/README.md`.
+- `qmd bench --backend <name>` runs a subset of the bm25, vector, hybrid and
+  full backends (repeatable or a comma list). `--backend bm25` needs no
+  embedding or reranker model.
+
 ## [2.8.3-ko.11] - 2026-10-31
 
 - Rerank now caps each document at 256 tokens by default

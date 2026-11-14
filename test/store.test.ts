@@ -4449,6 +4449,32 @@ describe("Integration", () => {
     }
   });
 
+  test("reindexCollection keeps a collection whose root is missing (unmounted drive)", async () => {
+    const store = await createTestStore();
+    const collectionDir = await mkdtemp(join(testDir, "missing-root-"));
+    const collectionName = "missing-root";
+
+    try {
+      await writeFile(join(collectionDir, "a.md"), "# A\n\nbody a");
+      await writeFile(join(collectionDir, "b.md"), "# B\n\nbody b");
+      await createTestCollection({ pwd: collectionDir, glob: "**/*.md", name: collectionName });
+      expect((await reindexCollection(store, collectionDir, "**/*.md", collectionName)).indexed).toBe(2);
+
+      await rm(collectionDir, { recursive: true, force: true });
+      const result = await reindexCollection(store, collectionDir, "**/*.md", collectionName);
+
+      expect(result.removed).toBe(0);
+      expect(result.skippedFiles).toEqual([{ file: collectionDir, code: "ENOENT" }]);
+      const active = store.db.prepare(
+        `SELECT COUNT(*) AS c FROM documents WHERE collection = ? AND active = 1`,
+      ).get(collectionName) as { c: number };
+      expect(active.c).toBe(2);
+    } finally {
+      await rm(collectionDir, { recursive: true, force: true });
+      await cleanupTestDb(store);
+    }
+  });
+
   test("reindexCollection deactivates emptied files like removed files", async () => {
     const store = await createTestStore();
     const collectionDir = await mkdtemp(join(testDir, "emptied-regression-"));

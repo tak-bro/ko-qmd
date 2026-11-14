@@ -1487,10 +1487,6 @@ export function syncConfigToDb(db: Database, config: CollectionConfig): void {
 }
 
 
-export function isSqliteVecAvailable(): boolean {
-  return _sqliteVecAvailable === true;
-}
-
 function ensureVecTableInternal(db: Database, dimensions: number): void {
   if (!_sqliteVecAvailable) {
     throw createSqliteVecUnavailableError(
@@ -1661,6 +1657,15 @@ export async function listCollectionFiles(
   });
 }
 
+/** Why a collection root cannot be scanned (`ENOENT`, `ENOTDIR`, …), or null when it can. */
+function collectionRootProblem(collectionPath: string): string | null {
+  try {
+    return statSync(collectionPath).isDirectory() ? null : "ENOTDIR";
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code ?? "UNREADABLE";
+  }
+}
+
 /**
  * Re-index a single collection by scanning the filesystem and updating the database.
  * Pure function — no console output, no db lifecycle management.
@@ -1677,6 +1682,15 @@ export async function reindexCollection(
 ): Promise<ReindexResult> {
   const db = store.db;
   const now = new Date().toISOString();
+  // fast-glob reports a missing cwd as zero files, which the deactivate pass below would
+  // read as "every file was deleted". A missing root (an unmounted macOS volume, a moved
+  // folder) must not empty the collection, so a root that is not a directory is reported as
+  // skipped instead. An empty mount point that is still a directory is not caught here.
+  const rootCode = collectionRootProblem(collectionPath);
+  if (rootCode) {
+    const skippedFiles = [{ file: collectionPath, code: rootCode }];
+    return { indexed: 0, updated: 0, unchanged: 0, removed: 0, orphanedCleaned: 0, skipped: 1, skippedFiles, metadataErrors: 0 };
+  }
   const files = await listCollectionFiles(collectionPath, globPattern, options?.ignorePatterns);
 
   const total = files.length;

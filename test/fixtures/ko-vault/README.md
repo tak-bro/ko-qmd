@@ -68,3 +68,39 @@ hard kinds:
 2. `RESULT-HARD hybrid_r1=<f> hybrid_mrr=<f> full_r1=<f> full_mrr=<f> n=<n> form=<seam|plain>` — the
    hard types pooled, weighted by query count. `n=0` (and `nan` values) while the fixture has no
    hard queries. This line feeds the dogfood hard gate, which needs `form=` to match its baseline.
+
+## LLM judge — `judge/`
+
+`scripts/judge-ko.sh` grades the bm25/hybrid/full top 10 for each query in `judge/queries.json`
+(50 goldset queries + 30 without an answer key) with a local Ollama model, on the 0–3 scale in
+`judge/rubric.md`. Outputs: `judgments.json` (listwise, two shuffled orders) and
+`judgments-pointwise.json` (`JUDGE_MODE=pointwise`), each with its `report*.json`. `judge/labels.json`
+holds 250 reference labels by Claude Opus 5.5, not people (its `description` says so); hand labels
+can replace it via `npx tsx scripts/judge/label.ts`. A label file records the rubric's hash,
+and the report refuses labels made on another rubric. If you edit `rubric.md`, relabel. Method and
+results: `docs/eval/README.md`.
+
+## RAG answers — `rag/`
+
+`scripts/rag-ko.sh` uses these files:
+
+- `rag/questions.json`: 44 questions (24 single-note, 8 two-note, 8 near-miss, 4 off-corpus),
+  written by Claude Opus 5.5. Near-miss facts were confirmed absent by grepping the corpus.
+- `rag/contexts.json`: the top 5 chunks retrieved per question.
+- `answers-<prompt>.json`: answers with chunk citations, per prompt (`baseline`, `grounded`, `narrow`).
+- `grades-<prompt>.json`: the `qwen3:8b` judge's grades on `rag/faithfulness.md`.
+- `report.json`: the report, baseline against grounded. `report-grounded-narrow.json`: grounded against narrow.
+
+`grades-<prompt>-reference.json`, `report-reference.json` and `report-grounded-narrow-reference.json` hold
+reference grades by Claude Opus 5.5, not people, for the committed answers only. Grades record the
+hash of the answers they grade, and `rag-ko.sh` removes a prompt's reference grades when it writes
+new answers for that prompt. Method and results: `docs/eval/README.md`.
+
+## Lex CI gate — `lex-baseline.json`
+
+`scripts/bench-lex-gate.sh` benches bm25 alone over this fixture (`qmd update` only, no model). It
+compares each query's recall@5 and reciprocal rank with `lex-baseline.json`. CI runs it as the
+`lex-gate` job. The verdict rules are in `src/bench/gate.ts`; the method and results are in
+`docs/eval/README.md`. If you change `ko-bench.json`'s queries on purpose, the gate reports a stale
+baseline. If you change the corpus or the lex path on purpose, it may report a drop. Either way,
+refresh the baseline in the same commit with `bash scripts/bench-lex-gate.sh --update-baseline`.

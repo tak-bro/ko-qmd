@@ -1,0 +1,595 @@
+{
+  "description": "Judge query set for scripts/judge-ko.sh. 50 goldset queries sampled from ko-bench.json by type quota (exact 9, alias 10, semantic 6, topical 4, cross-domain 2, sem-hard 7, multi 6, neg 6; Python random.Random(20261101).sample per type) are the hand-labeled set and keep their expected_files. 30 open queries (opn-*) have no answer key: 27 on the fixture's topics and 3 off-corpus queries whose pools should grade all 0.",
+  "collection": "ko-vault",
+  "queries": [
+    {
+      "id": "exa-02",
+      "query": "골드셋",
+      "type": "exact",
+      "expected_files": [
+        "wiki/golden-dataset.md"
+      ]
+    },
+    {
+      "id": "exa-03",
+      "query": "청킹",
+      "type": "exact",
+      "expected_files": [
+        "wiki/chunking-strategy.md"
+      ]
+    },
+    {
+      "id": "exa-04",
+      "query": "간격 반복",
+      "type": "exact",
+      "expected_files": [
+        "wiki/spaced-repetition.md"
+      ]
+    },
+    {
+      "id": "ali-01",
+      "query": "inverted index",
+      "type": "alias",
+      "expected_files": [
+        "wiki/inverted-index.md"
+      ]
+    },
+    {
+      "id": "ali-03",
+      "query": "embedding model",
+      "type": "alias",
+      "expected_files": [
+        "wiki/vector-embedding.md"
+      ]
+    },
+    {
+      "id": "ali-05",
+      "query": "RAG",
+      "type": "alias",
+      "expected_files": [
+        "wiki/retrieval-augmented-generation.md"
+      ]
+    },
+    {
+      "id": "ali-11",
+      "query": "spaced repetition",
+      "type": "alias",
+      "expected_files": [
+        "wiki/spaced-repetition.md"
+      ]
+    },
+    {
+      "id": "sem-01",
+      "query": "역색인을 만드는 방법",
+      "type": "semantic",
+      "expected_files": [
+        "wiki/inverted-index.md"
+      ]
+    },
+    {
+      "id": "sem-02",
+      "query": "임베딩으로 의미가 비슷한 문장 찾기",
+      "type": "semantic",
+      "expected_files": [
+        "wiki/vector-embedding.md"
+      ]
+    },
+    {
+      "id": "sem-06",
+      "query": "간격반복 복습 주기",
+      "type": "semantic",
+      "expected_files": [
+        "wiki/spaced-repetition.md"
+      ]
+    },
+    {
+      "id": "sem-07",
+      "query": "긴 문서를 조각으로 나누기",
+      "type": "semantic",
+      "expected_files": [
+        "wiki/chunking-strategy.md"
+      ]
+    },
+    {
+      "id": "sem-08",
+      "query": "후보 문서의 순서를 다시 매기는 단계",
+      "type": "semantic",
+      "expected_files": [
+        "wiki/cross-encoder-reranking.md"
+      ]
+    },
+    {
+      "id": "top-01",
+      "query": "검색 품질 평가",
+      "type": "topical",
+      "expected_files": [
+        "wiki/recall-at-k.md",
+        "wiki/golden-dataset.md"
+      ]
+    },
+    {
+      "id": "top-02",
+      "query": "문서 규칙 위반 검사",
+      "type": "topical",
+      "expected_files": [
+        "wiki/lint-automation.md"
+      ]
+    },
+    {
+      "id": "cro-01",
+      "query": "키워드 검색과 벡터 검색 결과를 합치는 공식",
+      "type": "cross-domain",
+      "expected_files": [
+        "wiki/hybrid-search.md",
+        "wiki/reciprocal-rank-fusion.md"
+      ]
+    },
+    {
+      "id": "cro-03",
+      "query": "클리핑을 wiki로 정리할 때 원본 경로 남기기",
+      "type": "cross-domain",
+      "expected_files": [
+        "wiki/ingest-pipeline.md",
+        "wiki/provenance-tracking.md"
+      ]
+    },
+    {
+      "id": "ko-01",
+      "query": "조사를",
+      "type": "exact",
+      "expected_files": [
+        "wiki/korean-morphology.md"
+      ]
+    },
+    {
+      "id": "ko-02",
+      "query": "형태소로",
+      "type": "exact",
+      "expected_files": [
+        "wiki/korean-morphology.md"
+      ]
+    },
+    {
+      "id": "ko-06",
+      "query": "출처추적",
+      "type": "exact",
+      "expected_files": [
+        "wiki/provenance-tracking.md"
+      ]
+    },
+    {
+      "id": "ko-12",
+      "query": "재현율은",
+      "type": "exact",
+      "expected_files": [
+        "wiki/recall-at-k.md"
+      ]
+    },
+    {
+      "id": "ko-14",
+      "query": "조사를 떼는 처리가 필요한 언어",
+      "type": "topical",
+      "expected_files": [
+        "wiki/korean-morphology.md"
+      ]
+    },
+    {
+      "id": "ali-13",
+      "query": "프로버넌스 트래킹",
+      "type": "alias",
+      "expected_files": [
+        "wiki/provenance-tracking.md"
+      ]
+    },
+    {
+      "id": "ali-14",
+      "query": "인버티드 인덱스",
+      "type": "alias",
+      "expected_files": [
+        "wiki/inverted-index.md"
+      ]
+    },
+    {
+      "id": "ali-16",
+      "query": "엔그램 토크나이제이션",
+      "type": "alias",
+      "expected_files": [
+        "wiki/ngram-tokenization.md"
+      ]
+    },
+    {
+      "id": "ali-18",
+      "query": "스페이스드 리피티션",
+      "type": "alias",
+      "expected_files": [
+        "wiki/spaced-repetition.md"
+      ]
+    },
+    {
+      "id": "hsh-01",
+      "query": "찾고 싶은 단어를 넣으면 그 단어가 실린 글을 거꾸로 바로 찾아주는 구조",
+      "type": "sem-hard",
+      "expected_files": [
+        "wiki/inverted-index.md"
+      ]
+    },
+    {
+      "id": "hsh-03",
+      "query": "흔한 단어는 가점을 낮추고 길이도 함께 보아 순서를 매기는 공식",
+      "type": "sem-hard",
+      "expected_files": [
+        "wiki/bm25-ranking.md"
+      ]
+    },
+    {
+      "id": "hsh-04",
+      "query": "긴 글을 넣기 좋은 크기로 끊는 기준을 정하는 일",
+      "type": "sem-hard",
+      "expected_files": [
+        "wiki/chunking-strategy.md"
+      ]
+    },
+    {
+      "id": "hsh-06",
+      "query": "사람이 넣은 짧은 검색어에 알맹이를 덧붙여 놓친 글까지 끌어오는 기법",
+      "type": "sem-hard",
+      "expected_files": [
+        "wiki/query-expansion.md"
+      ]
+    },
+    {
+      "id": "hsh-10",
+      "query": "생각 하나를 카드에 적고 카드끼리 엮어 지식 그물을 짜는 노트법",
+      "type": "sem-hard",
+      "expected_files": [
+        "wiki/zettelkasten.md"
+      ]
+    },
+    {
+      "id": "hmu-04",
+      "query": "회의를 남기고 결정을 기록으로 남기는 흐름",
+      "type": "multi",
+      "expected_files": [
+        "wiki/meeting-notes-workflow.md",
+        "wiki/decision-record.md"
+      ]
+    },
+    {
+      "id": "hmu-05",
+      "query": "카드 노트를 쌓고 그 연결을 그물로 보는 관점",
+      "type": "multi",
+      "expected_files": [
+        "wiki/zettelkasten.md",
+        "wiki/wikilink-graph.md"
+      ]
+    },
+    {
+      "id": "hmu-06",
+      "query": "평가용 정답셋을 만들고 위 몇 안에 정답이 오는지 잰다",
+      "type": "multi",
+      "expected_files": [
+        "wiki/golden-dataset.md",
+        "wiki/recall-at-k.md"
+      ]
+    },
+    {
+      "id": "hmu-07",
+      "query": "출처를 남기고 머리말에 정보를 정리하는 습관",
+      "type": "multi",
+      "expected_files": [
+        "wiki/provenance-tracking.md",
+        "wiki/frontmatter-metadata.md"
+      ]
+    },
+    {
+      "id": "hmu-08",
+      "query": "복습 주기를 두고 카드로 정리하는 학습법",
+      "type": "multi",
+      "expected_files": [
+        "wiki/spaced-repetition.md",
+        "wiki/zettelkasten.md"
+      ]
+    },
+    {
+      "id": "hneg-01",
+      "query": "tf-idf 말고 흔한 단어 패널티가 들어간 순위 공식",
+      "type": "neg",
+      "expected_files": [
+        "wiki/bm25-ranking.md"
+      ]
+    },
+    {
+      "id": "hneg-08",
+      "query": "감사 로그 말고 누가 썼는지 남기는 기록 관리",
+      "type": "neg",
+      "expected_files": [
+        "wiki/provenance-tracking.md"
+      ]
+    },
+    {
+      "id": "hneg-09",
+      "query": "마음지도 말고 카드를 엮는 노트 기법",
+      "type": "neg",
+      "expected_files": [
+        "wiki/zettelkasten.md"
+      ]
+    },
+    {
+      "id": "hneg-10",
+      "query": "elo 점수 말고 등수 역수를 더해 목록을 섞는 식",
+      "type": "neg",
+      "expected_files": [
+        "wiki/reciprocal-rank-fusion.md"
+      ]
+    },
+    {
+      "id": "exa-08",
+      "query": "위키링크",
+      "type": "exact",
+      "expected_files": [
+        "wiki/wikilink-graph.md"
+      ]
+    },
+    {
+      "id": "exa-12",
+      "query": "토픽 맵",
+      "type": "exact",
+      "expected_files": [
+        "wiki/topic-map.md"
+      ]
+    },
+    {
+      "id": "ali-24",
+      "query": "meeting notes",
+      "type": "alias",
+      "expected_files": [
+        "wiki/meeting-notes-workflow.md"
+      ]
+    },
+    {
+      "id": "ali-25",
+      "query": "append-only",
+      "type": "alias",
+      "expected_files": [
+        "wiki/append-only-archive.md"
+      ]
+    },
+    {
+      "id": "sem-12",
+      "query": "커밋 전에 문서 규칙을 자동으로 검사하는 체계",
+      "type": "semantic",
+      "expected_files": [
+        "wiki/lint-automation.md"
+      ]
+    },
+    {
+      "id": "top-06",
+      "query": "검색 엔진 동작 원리 모음",
+      "type": "topical",
+      "expected_files": [
+        "wiki/topics/information-retrieval.md"
+      ]
+    },
+    {
+      "id": "hsh-13",
+      "query": "버린 선택지의 까닭까지 적어 두어 뒷날 같은 논쟁을 되풀이하지 않게 하는 문서 버릇",
+      "type": "sem-hard",
+      "expected_files": [
+        "wiki/decision-record.md"
+      ]
+    },
+    {
+      "id": "hsh-17",
+      "query": "올리기 앞서 어긴 곳을 스스로 찾아내 되돌려보내는 살핌",
+      "type": "sem-hard",
+      "expected_files": [
+        "wiki/lint-automation.md"
+      ]
+    },
+    {
+      "id": "hmu-13",
+      "query": "왜 그렇게 정했는지 남기고 잘됐는지 잴 물음 묶음을 굳히기",
+      "type": "multi",
+      "expected_files": [
+        "wiki/decision-record.md",
+        "wiki/golden-dataset.md"
+      ]
+    },
+    {
+      "id": "hneg-11",
+      "query": "체크섬 말고 원본을 고치지 않고 더하는 보관 규칙",
+      "type": "neg",
+      "expected_files": [
+        "wiki/append-only-archive.md"
+      ]
+    },
+    {
+      "id": "hneg-14",
+      "query": "인용 그물 말고 이중 대괄호 연결망",
+      "type": "neg",
+      "expected_files": [
+        "wiki/wikilink-graph.md"
+      ]
+    },
+    {
+      "id": "opn-01",
+      "query": "한국어 문서를 검색할 때 띄어쓰기가 틀려도 찾히게 하는 방법",
+      "type": "open",
+      "expected_files": []
+    },
+    {
+      "id": "opn-02",
+      "query": "검색 결과 순위를 사람이 매긴 것과 비교하는 지표",
+      "type": "open",
+      "expected_files": []
+    },
+    {
+      "id": "opn-03",
+      "query": "노트를 오래 쌓아도 다시 찾을 수 있게 정리하는 습관",
+      "type": "open",
+      "expected_files": []
+    },
+    {
+      "id": "opn-04",
+      "query": "벡터 검색이 키워드 검색보다 나은 경우",
+      "type": "open",
+      "expected_files": []
+    },
+    {
+      "id": "opn-05",
+      "query": "LLM 답변이 내 문서를 근거로 하게 만드는 법",
+      "type": "open",
+      "expected_files": []
+    },
+    {
+      "id": "opn-06",
+      "query": "검색어가 너무 짧을 때 생기는 문제",
+      "type": "open",
+      "expected_files": []
+    },
+    {
+      "id": "opn-07",
+      "query": "문서를 고치지 않고 이력을 남기는 저장 방식",
+      "type": "open",
+      "expected_files": []
+    },
+    {
+      "id": "opn-08",
+      "query": "회의 끝나고 할 일을 놓치지 않는 방법",
+      "type": "open",
+      "expected_files": []
+    },
+    {
+      "id": "opn-09",
+      "query": "검색 엔진이 문서 길이를 고려하는 이유",
+      "type": "open",
+      "expected_files": []
+    },
+    {
+      "id": "opn-10",
+      "query": "임베딩 모델을 바꾸면 다시 해야 하는 일",
+      "type": "open",
+      "expected_files": []
+    },
+    {
+      "id": "opn-11",
+      "query": "마크다운 파일 맨 위에 메타데이터를 넣는 형식",
+      "type": "open",
+      "expected_files": []
+    },
+    {
+      "id": "opn-12",
+      "query": "두 검색 결과 목록을 하나로 합치기",
+      "type": "open",
+      "expected_files": []
+    },
+    {
+      "id": "opn-13",
+      "query": "문서끼리 링크로 연결했을 때 얻는 것",
+      "type": "open",
+      "expected_files": []
+    },
+    {
+      "id": "opn-14",
+      "query": "평가용 질문 세트는 몇 개가 적당한가",
+      "type": "open",
+      "expected_files": []
+    },
+    {
+      "id": "opn-15",
+      "query": "조사 때문에 같은 단어가 다르게 색인되는 문제",
+      "type": "open",
+      "expected_files": []
+    },
+    {
+      "id": "opn-16",
+      "query": "리랭커가 느린 이유",
+      "type": "open",
+      "expected_files": []
+    },
+    {
+      "id": "opn-17",
+      "query": "결정을 내린 이유를 나중에 다시 확인하는 법",
+      "type": "open",
+      "expected_files": []
+    },
+    {
+      "id": "opn-18",
+      "query": "외운 걸 오래 기억하는 공부법",
+      "type": "open",
+      "expected_files": []
+    },
+    {
+      "id": "opn-19",
+      "query": "검색 품질이 떨어졌는지 자동으로 알아채기",
+      "type": "open",
+      "expected_files": []
+    },
+    {
+      "id": "opn-20",
+      "query": "긴 회의록을 검색하기 좋게 자르는 단위",
+      "type": "open",
+      "expected_files": []
+    },
+    {
+      "id": "opn-21",
+      "query": "자료를 어디서 가져왔는지 기록하는 이유",
+      "type": "open",
+      "expected_files": []
+    },
+    {
+      "id": "opn-22",
+      "query": "문서 규칙을 사람이 아니라 도구가 검사하게 하기",
+      "type": "open",
+      "expected_files": []
+    },
+    {
+      "id": "opn-23",
+      "query": "BM25 파라미터 k1 과 b",
+      "type": "open",
+      "expected_files": []
+    },
+    {
+      "id": "opn-24",
+      "query": "한글 두 글자씩 잘라 색인하는 방식의 단점",
+      "type": "open",
+      "expected_files": []
+    },
+    {
+      "id": "opn-25",
+      "query": "주제별로 문서를 묶어 보여 주는 페이지",
+      "type": "open",
+      "expected_files": []
+    },
+    {
+      "id": "opn-26",
+      "query": "검색 결과에서 비슷하지만 엉뚱한 문서가 위에 오는 문제",
+      "type": "open",
+      "expected_files": []
+    },
+    {
+      "id": "opn-27",
+      "query": "질문을 여러 개로 바꿔서 검색하기",
+      "type": "open",
+      "expected_files": []
+    },
+    {
+      "id": "opn-28",
+      "query": "파스타 면 삶는 시간",
+      "type": "off-corpus",
+      "expected_files": []
+    },
+    {
+      "id": "opn-29",
+      "query": "서울에서 부산까지 KTX 요금",
+      "type": "off-corpus",
+      "expected_files": []
+    },
+    {
+      "id": "opn-30",
+      "query": "고양이가 밤에 우는 이유",
+      "type": "off-corpus",
+      "expected_files": []
+    }
+  ]
+}

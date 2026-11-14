@@ -212,14 +212,16 @@ export const grepDocuments = (
     if (batch.length === 0) break;
     lastId = batch[batch.length - 1]!.id;
 
-    for (const row of batch) {
+    for (const [index, row] of batch.entries()) {
       const displayPath = `${row.collection}/${row.path}`;
       if (filtering && !matchesPaths(displayPath, filter)) continue;
       scanned++;
 
       const lines: GrepLine[] = [];
       let matchCount = 0;
-      const bodyLines = (row.body ?? "").split("\n");
+      // CRLF bodies are stored as written; split on either ending so `$` anchors and the
+      // returned text hold no trailing "\r". Line numbers stay the ones `get` uses.
+      const bodyLines = (row.body ?? "").split(/\r?\n/);
       for (let i = 0; i < bodyLines.length; i++) {
         const text = bodyLines[i]!;
         if (!lineMatches(text, pattern)) continue;
@@ -239,7 +241,10 @@ export const grepDocuments = (
         matchCount,
       });
       if (files.length >= limit) {
-        truncated = true;
+        // Only a stop if something is left unread: rows after this one, or a full batch that
+        // may have a next one. The last row of a short batch means the corpus was read to the end.
+        // Both leftovers lean safe: trailing rows the path filter would skip still count.
+        truncated = index < batch.length - 1 || batch.length === SCAN_BATCH_SIZE;
         break outer;
       }
     }

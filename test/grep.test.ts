@@ -160,6 +160,15 @@ describe("grepDocuments", () => {
     expect(result.truncated).toBe(true);
   });
 
+  test("reaching the limit on the last document read is not a stop", () => {
+    // Every document has a "# " heading, so the fourth match is the last document read
+    // whatever order the scan indexed them in.
+    const result = grep("# ", { limit: 4 });
+    expect(result.files).toHaveLength(4);
+    expect(result.scanned).toBe(4);
+    expect(result.truncated).toBe(false);
+  });
+
   test("caps reported lines per file but still counts the matches", () => {
     const result = grep("todo", { maxLinesPerFile: 1 });
     const note = result.files.find(f => f.displayPath === "docs/journals/note.md")!;
@@ -295,5 +304,33 @@ describe("a pathological pattern terminates", () => {
     // match near a slice boundary is not lost.
     const result = grep("needle");
     expect(result.files.map(f => f.displayPath)).toEqual(["docs/archive/long.md"]);
+  });
+});
+
+describe("a CRLF note greps like an LF note", () => {
+  let crlfRoot: string;
+  let crlfStore: QMDStore;
+
+  beforeAll(async () => {
+    crlfRoot = mkdtempSync(join(tmpdir(), "qmd-grep-crlf-"));
+    const docs = join(crlfRoot, "docs");
+    mkdirSync(docs, { recursive: true });
+    writeFileSync(join(docs, "windows.md"), "# Windows\r\n\r\nline ends here\r\nnext line\r\n");
+    crlfStore = await createStore({
+      dbPath: join(crlfRoot, "index.sqlite"),
+      config: { collections: { docs: { path: docs, pattern: "**/*.md" } } },
+    });
+    await crlfStore.update();
+  });
+
+  afterAll(async () => {
+    await crlfStore.close();
+    rmSync(crlfRoot, { recursive: true, force: true });
+  });
+
+  test("an end-anchored pattern matches and the line text carries no carriage return", () => {
+    const result = grepDocuments(crlfStore.internal.db, compileGrepPattern("here$"), { collections: ["docs"] });
+    expect(result.files).toHaveLength(1);
+    expect(result.files[0]!.lines).toEqual([{ line: 3, text: "line ends here" }]);
   });
 });
