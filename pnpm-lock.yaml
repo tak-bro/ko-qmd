@@ -12,14 +12,14 @@ importers:
         specifier: 2.3.1
         version: 2.3.1
       better-sqlite3:
-        specifier: ^13.0.3
-        version: 13.0.3
+        specifier: 13.1.1
+        version: 13.1.1
       fast-glob:
         specifier: 3.3.3
         version: 3.3.3
       node-llama-cpp:
-        specifier: 3.22.2
-        version: 3.22.2(typescript@5.9.3)
+        specifier: 3.22.3
+        version: 3.22.3(typescript@5.9.3)
       picomatch:
         specifier: 4.0.7
         version: 4.0.7
@@ -397,8 +397,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@huggingface/jinja@0.5.10':
-    resolution: {integrity: sha512-SgS1D1bglQ94ceD4ZCL6eayUDy9uV1xuyk61OjgSxU5GJh7upqZCKII0JoTYMc6wWsg3JUgaPRX0ElQzXPk3Cw==}
+  '@huggingface/jinja@0.5.13':
+    resolution: {integrity: sha512-jM17MqFily1iyT/1LD3r5w8/CZiyapVB0+7vOw48PfVtzyKsXStmHE4jVTyDAD05Tqv3un1xrS9ILUU1ugQAYQ==}
     engines: {node: '>=18'}
 
   '@isaacs/fs-minipass@4.0.1':
@@ -422,93 +422,86 @@ packages:
     resolution: {integrity: sha512-e59MfWuSssj6DoQ96JCTqdW1AXT5/XtnTl0WWd6MU1Ka434fFUGGosCLJbGNySDhHGvxQWoRWK137FXYFkYNWw==}
     engines: {node: '>=20'}
 
-  '@node-llama-cpp/linux-arm64@3.22.2':
-    resolution: {integrity: sha512-ulAPe+pqZtO1LrX3wa8Yvnw4VZiMJxdL500ebJdAxLxXt+HnqY2vksJ/ZBW+f+ZwwBu2wIS2auwVvS8JkZHffQ==}
+  '@node-llama-cpp/linux-arm64@3.22.3':
+    resolution: {integrity: sha512-gfgVXMi2ptics3eJ+7iC+MRgvL3hrqcUPWaefXyOvbam1gIT6/oSPdNTt6OCf/yLab0obCVndW1GwzyfkSLz7w==}
     engines: {node: '>=20.0.0'}
     cpu: [arm64, x64]
     os: [linux]
-    libc: [glibc]
 
-  '@node-llama-cpp/linux-armv7l@3.22.2':
-    resolution: {integrity: sha512-bzXeVGSrwxRH7m7p+SG5pC61T+97wb0aV2e84BXKfNDqMnOj7Z5qVtrxwwLAMYw+1wt4qz9KiuDLEmTqNaiUuQ==}
+  '@node-llama-cpp/linux-armv7l@3.22.3':
+    resolution: {integrity: sha512-WinMR0E7r6Jr0BNXFf/3a1idlbyHuZclmeblLnAp/b4OZZa8Q3UZyJ1PSMgU9Md4IveHdg+tcvm1dmiyB9PcNg==}
     engines: {node: '>=20.0.0'}
     cpu: [arm, x64]
     os: [linux]
-    libc: [glibc]
 
-  '@node-llama-cpp/linux-riscv64@3.22.2':
-    resolution: {integrity: sha512-PUE1sG+ZoMzGBTcM9V50UGLRRO4ESh9tNwScPFKV5fG9Ho02RuDORzOZvWw3giGrhdc8PY74yghJTUfFUyGdog==}
+  '@node-llama-cpp/linux-riscv64@3.22.3':
+    resolution: {integrity: sha512-JhV6EM4uriNNSMg9m2tCf8cMaa5iQQxpYwpmmEVUtbwyw+nid8DuFUaOeLSHh5ogCt3kLzzJN1UTKUeGhVSY8g==}
     engines: {node: '>=20.0.0'}
     cpu: [riscv64]
     os: [linux]
-    libc: [glibc]
 
-  '@node-llama-cpp/linux-x64-cuda-ext@3.22.2':
-    resolution: {integrity: sha512-Y9AZrGMjzmBCRwWHzRxrHa/UFt/JmjiN8nCpW5jZ9/jqqvAfIFTEiEDElAef6sZ/Tq8+6d13nX65Fo7rXOjr1Q==}
+  '@node-llama-cpp/linux-x64-cuda-ext@3.22.3':
+    resolution: {integrity: sha512-CoIZK0klNNwLwEJHd2ajsJYXa5gxVm+mB60W7ZyRH2TavetTHz4eRuJot669CgamjG99BOwKS2mTD5Zq78jq5g==}
     engines: {node: '>=20.0.0'}
     cpu: [x64]
     os: [linux]
-    libc: [glibc]
 
-  '@node-llama-cpp/linux-x64-cuda@3.22.2':
-    resolution: {integrity: sha512-MjGkxag2QzF0KEeTfgz+VlYgXDmlWavYQOwGyNlIylopsW5y4OTzOz7bgU4MEVQf2fjQcES3kdUfbls5pSUicQ==}
+  '@node-llama-cpp/linux-x64-cuda@3.22.3':
+    resolution: {integrity: sha512-GiI9a0r8EMUdhRWlyf4G+DD2ZOs9KXQnEe3fQyJVxlLLoK7VmZie3p98rewQNivG3w+NX9HiQxA+Yd77vS00/Q==}
     engines: {node: '>=20.0.0'}
     cpu: [x64]
     os: [linux]
-    libc: [glibc]
 
-  '@node-llama-cpp/linux-x64-vulkan@3.22.2':
-    resolution: {integrity: sha512-GWbS7vUhiWowYe2UAAtzoN/zRQ1j8HIS3mxytetgqmRI7XfVWhsbkyA0erx/gk1jG7CEfjlYdkyEpAHR6c7S2g==}
+  '@node-llama-cpp/linux-x64-vulkan@3.22.3':
+    resolution: {integrity: sha512-z1hC3+eFnoQQsFY8SDQYRLyUQ1RWGStvd+5v5t5VuPngoqtbZj3CI/CaSrdmLPQof8eiAV5TNgbvNVDpMsaOyg==}
     engines: {node: '>=20.0.0'}
     cpu: [x64]
     os: [linux]
-    libc: [glibc]
 
-  '@node-llama-cpp/linux-x64@3.22.2':
-    resolution: {integrity: sha512-JwSanJFqX2qsxPNwgQo/QMkijBzQKot7YaybXz7kjxfHq+RgXuw7Z/NyUPC1psQHOOnF6vV4FXBd8jmI2KZUJw==}
+  '@node-llama-cpp/linux-x64@3.22.3':
+    resolution: {integrity: sha512-g4lPKFwGoghQfKSDFVTtSFf+fqQalsU02nmYKU/YAaWs8j+K0d/yJrKN9uwDCh8LVyWR7HyZfgTph+8mam0K4Q==}
     engines: {node: '>=20.0.0'}
     cpu: [x64]
     os: [linux]
-    libc: [glibc]
 
-  '@node-llama-cpp/mac-arm64-metal@3.22.2':
-    resolution: {integrity: sha512-bjCewyZcx7voQeu+pVPlDw+m0p0wrpkPw3SnkT0bCJ3VhIXdYyLUkCCQRYgxXz6MI5Qz7jv89JreD0OqzffIVA==}
+  '@node-llama-cpp/mac-arm64-metal@3.22.3':
+    resolution: {integrity: sha512-ExLCswWM0s3N6Ys9Y9Vk92QiKFo0QJlQtVn7zZ3IJrUucDjCd5PHQzchINjXvLDZcCi3jI0wYSuEJUy2D9QMBA==}
     engines: {node: '>=20.0.0'}
     cpu: [arm64, x64]
     os: [darwin]
 
-  '@node-llama-cpp/mac-x64@3.22.2':
-    resolution: {integrity: sha512-RVLpD64ofXkQZTmARPnskFRjlaVf/9ZkPKKDFzHdlSYNlK5jdZz4ebB5XkM/KiFX8pQUMI4Xq8MwmA9oS78lTw==}
+  '@node-llama-cpp/mac-x64@3.22.3':
+    resolution: {integrity: sha512-1Yoj23Xo6lR7RUve1pjGVDYDVheN8+gUmXaikMoOIFj96mTfwt1+Nseftq15daanofEeYt7wE4mfJm4TElQYSw==}
     engines: {node: '>=20.0.0'}
     cpu: [x64]
     os: [darwin]
 
-  '@node-llama-cpp/win-arm64@3.22.2':
-    resolution: {integrity: sha512-IhG0Zn4Rk1WuwORF5org+jfUCTOO6VPP1EOqFnHwSqr72Y9/ikOA4aOoqXDLr91s0iDVrCegvyLnJNEkQoCXEA==}
+  '@node-llama-cpp/win-arm64@3.22.3':
+    resolution: {integrity: sha512-wsJfJfxdNPbRBK/hsQJFh7vkV75wsVijJP1Wqw9E5EsemNSGphxX3JunM+IBaGs+VTtlQDKrxD8/xmxQF7DVOg==}
     engines: {node: '>=20.0.0'}
     cpu: [arm64, x64]
     os: [win32]
 
-  '@node-llama-cpp/win-x64-cuda-ext@3.22.2':
-    resolution: {integrity: sha512-2MamWVicTf9+2xB6L5PZr/1kTkoeX27dXoGMzdWVbZvvacjYHe8cOe8tznM/vr0RG2oeKr7HjRS3/gWRtff9UA==}
+  '@node-llama-cpp/win-x64-cuda-ext@3.22.3':
+    resolution: {integrity: sha512-AFKsAz7zwuDry2Xh5TpXgvvUvRE7qo/3KcorOThbyPvYeim6syGihZDXPbEMDzgP1VlA50ar6ZB2snDpUFAOpg==}
     engines: {node: '>=20.0.0'}
     cpu: [x64]
     os: [win32]
 
-  '@node-llama-cpp/win-x64-cuda@3.22.2':
-    resolution: {integrity: sha512-gSrzutxJe/OTaRz8/e27lI9pCYbKyCIycULtTolP6CRp1nuhQ8So4Rn+GYvOoCRqp8qDYCuImwGEk30a6aiRjQ==}
+  '@node-llama-cpp/win-x64-cuda@3.22.3':
+    resolution: {integrity: sha512-8VRVjg+EPp22a0oMgPum4pp+7IN4N8JztjIlWbS2yWU5DBJPw2q3/e72rUUXLHRbBKoG119zHwlFZ0KCOnMoiw==}
     engines: {node: '>=20.0.0'}
     cpu: [x64]
     os: [win32]
 
-  '@node-llama-cpp/win-x64-vulkan@3.22.2':
-    resolution: {integrity: sha512-jmQ7pQqOTZjrfDrxzRxsRt2qr0I5Km7ji4Wfdi886D3w+ljVdrJyZVIFVvVQpsY+4/az5Lq0HDM9WRdRdLH+mQ==}
+  '@node-llama-cpp/win-x64-vulkan@3.22.3':
+    resolution: {integrity: sha512-54AjIkU9IuCi2LeaMPeeQn0YaX2yNJ0vGn8j3wg3AnxOsZcd0TbasZMDR+QqqqpT9AUe6cmAjudAlIU2fnKbFQ==}
     engines: {node: '>=20.0.0'}
     cpu: [x64]
     os: [win32]
 
-  '@node-llama-cpp/win-x64@3.22.2':
-    resolution: {integrity: sha512-COXVmE5kYkaIyGDPjYgFnVnI4qVwtkZM0t/AIwJjU2XOyfD3XyYh/WnzzrRni2lCv182qPojR0WJOm7bK/v7cA==}
+  '@node-llama-cpp/win-x64@3.22.3':
+    resolution: {integrity: sha512-r+uhfM5c+Yzh0ziQwxSL0FnwnMgRFq4BPjjCC4V8snarubsmRxbglXlB3FQy8vK1bb2R/e1l0AlP9ACz/tA0nw==}
     engines: {node: '>=20.0.0'}
     cpu: [x64]
     os: [win32]
@@ -572,56 +565,48 @@ packages:
     engines: {node: ^20.19.0 || >=22.12.0}
     cpu: [arm64]
     os: [linux]
-    libc: [glibc]
 
   '@oxlint/binding-linux-arm64-musl@1.92.0':
     resolution: {integrity: sha512-9Se7Zuazr104yc2PaluriJW2rqvtaN6FSi9MSjQgZGeYb6LKvEcJ586tpjek0l7hNQNoir8MID7OENPH6juN1w==}
     engines: {node: ^20.19.0 || >=22.12.0}
     cpu: [arm64]
     os: [linux]
-    libc: [musl]
 
   '@oxlint/binding-linux-ppc64-gnu@1.92.0':
     resolution: {integrity: sha512-88IAchs204I/xxAbAo3NRyz1m/29tn8jUAPvc4tK4FzrT2PLwZertd93ANF6231vwbAhYiD5gl0cX8Po5xsjWQ==}
     engines: {node: ^20.19.0 || >=22.12.0}
     cpu: [ppc64]
     os: [linux]
-    libc: [glibc]
 
   '@oxlint/binding-linux-riscv64-gnu@1.92.0':
     resolution: {integrity: sha512-KtFdVdkfvBGcsrmnbjYJ9/XTDABnaniiwnptAcAm0pkaR2zhZ3sr/Xy+N1Xbz1Yq5Jegu7SoeNv9caTP0b5OTA==}
     engines: {node: ^20.19.0 || >=22.12.0}
     cpu: [riscv64]
     os: [linux]
-    libc: [glibc]
 
   '@oxlint/binding-linux-riscv64-musl@1.92.0':
     resolution: {integrity: sha512-V43CO5FPgHtwHup4H5+dIdwzZX2FhREQGsSBZx8V1UyFEAul0Q13qviKqZfSMM6G41CGtCekVpJGGOxW5v1y8Q==}
     engines: {node: ^20.19.0 || >=22.12.0}
     cpu: [riscv64]
     os: [linux]
-    libc: [musl]
 
   '@oxlint/binding-linux-s390x-gnu@1.92.0':
     resolution: {integrity: sha512-WooxeACzGH5q34olo7JgAk7XbVkTUNfwhR/TzmhwVs/y1p2R7ZWJo14hiyxiGcoYZR1iBnbBFHectADqb/KSog==}
     engines: {node: ^20.19.0 || >=22.12.0}
     cpu: [s390x]
     os: [linux]
-    libc: [glibc]
 
   '@oxlint/binding-linux-x64-gnu@1.92.0':
     resolution: {integrity: sha512-lW2pLF1oFvNN780YUCtDyoUm8oFzZGJNcOFe9RtLMX5v5+FcWfAQvHUMMPF8H8kJB0HAi3dFmWDWLa5VPuY9mw==}
     engines: {node: ^20.19.0 || >=22.12.0}
     cpu: [x64]
     os: [linux]
-    libc: [glibc]
 
   '@oxlint/binding-linux-x64-musl@1.92.0':
     resolution: {integrity: sha512-2BJAAB/eqPn7iD7mFVfs+1ZVUogAYOMCTaUgjAvbtNGg2ppCDE7gcv/9VSO6GCDybdFUqlcyeyjn9hRpl1ZHog==}
     engines: {node: ^20.19.0 || >=22.12.0}
     cpu: [x64]
     os: [linux]
-    libc: [musl]
 
   '@oxlint/binding-openharmony-arm64@1.92.0':
     resolution: {integrity: sha512-iLtjNqqa/2IV5qu/3rrkpVd42Ia3yeCn4fSZoEr+m5FoGHtZvAV6J6YuU3lewg5Rg5ORGvwhdgN+7gNzwkl7tA==}
@@ -668,28 +653,24 @@ packages:
     engines: {node: '>= 10'}
     cpu: [arm64]
     os: [linux]
-    libc: [glibc]
 
   '@reflink/reflink-linux-arm64-musl@0.1.19':
     resolution: {integrity: sha512-37iO/Dp6m5DDaC2sf3zPtx/hl9FV3Xze4xoYidrxxS9bgP3S8ALroxRK6xBG/1TtfXKTvolvp+IjrUU6ujIGmA==}
     engines: {node: '>= 10'}
     cpu: [arm64]
     os: [linux]
-    libc: [musl]
 
   '@reflink/reflink-linux-x64-gnu@0.1.19':
     resolution: {integrity: sha512-jbI8jvuYCaA3MVUdu8vLoLAFqC+iNMpiSuLbxlAgg7x3K5bsS8nOpTRnkLF7vISJ+rVR8W+7ThXlXlUQ93ulkw==}
     engines: {node: '>= 10'}
     cpu: [x64]
     os: [linux]
-    libc: [glibc]
 
   '@reflink/reflink-linux-x64-musl@0.1.19':
     resolution: {integrity: sha512-e9FBWDe+lv7QKAwtKOt6A2W/fyy/aEEfr0g6j/hWzvQcrzHCsz07BNQYlNOjTfeytrtLU7k449H1PI95jA4OjQ==}
     engines: {node: '>= 10'}
     cpu: [x64]
     os: [linux]
-    libc: [musl]
 
   '@reflink/reflink-win32-arm64-msvc@0.1.19':
     resolution: {integrity: sha512-09PxnVIQcd+UOn4WAW73WU6PXL7DwGS6wPlkMhMg2zlHHG65F3vHepOw06HFCq+N42qkaNAc8AKIabWvtk6cIQ==}
@@ -832,11 +813,11 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@simple-git/args-pathspec@1.0.3':
-    resolution: {integrity: sha512-ngJMaHlsWDTfjyq9F3VIQ8b7NXbBLq5j9i5bJ6XLYtD6qlDXT7fdKY2KscWWUF8t18xx052Y/PUO1K1TRc9yKA==}
+  '@simple-git/args-pathspec@1.0.4':
+    resolution: {integrity: sha512-EtMX6XjRWSastG2SdkmSQByPtJ9dx/NIjnHbpQPCYt62j4RmSx5rgLTGpw0YCjF5h191gZOmBfheOT23cRSFdw==}
 
-  '@simple-git/argv-parser@1.1.1':
-    resolution: {integrity: sha512-Q9lBcfQ+VQCpQqGJFHe5yooOS5hGdLFFbJ5R+R5aDsnkPCahtn1hSkMcORX65J2Z5lxSkD0lQorMsncuBQxYUw==}
+  '@simple-git/argv-parser@2.0.1':
+    resolution: {integrity: sha512-M++IaVWrN+vYalilOHfwvT2IL3wYZtVEBQpmX6DLSOJLtxbZ+SUeIDE3IiPogzhPACLajwtxfa5rp+ZX1FczzQ==}
 
   '@tinyhttp/content-disposition@2.2.4':
     resolution: {integrity: sha512-5Kc5CM2Ysn3vTTArBs2vESUt0AQiWZA86yc1TI3B+lxXmtEq133C1nxXNOgnzhrivdPZIh3zLj5gDnZjoLL5GA==}
@@ -913,8 +894,8 @@ packages:
   async-retry@1.3.3:
     resolution: {integrity: sha512-wfr/jstw9xNi/0teMHrRW7dsz3Lt5ARhYNZ2ewpadnhaIp5mbALhOAP+EAdsC7t4Z6wqsDVv9+W6gm1Dk9mEyw==}
 
-  better-sqlite3@13.0.3:
-    resolution: {integrity: sha512-RbOBxmLBG8uvFUc15X9+9SFemKcQ0WBuISBVkpuiaUB2qblC8UWlHEjdWVoZ8AdhSwmoEgsiXKfopX0CQxaACQ==}
+  better-sqlite3@13.1.1:
+    resolution: {integrity: sha512-JjyLCATp+VLxZVFyWkicyzKYwpEFLCrV4MmshW97xv3JXdhw5jBDcsbEWRGm2L/96E+k7rtjON8q9nml05h3Pw==}
     engines: {node: '>=22'}
 
   braces@3.0.3:
@@ -1221,8 +1202,8 @@ packages:
     resolution: {integrity: sha512-LA4ZjwlnUblHVgq0oBF3Jl/6h/Nvs5fzBLwdEF4nuxnFdsfajde4WfxtJr3CaiH+F6ewcIB/q4jQ4UzPyid+CQ==}
     hasBin: true
 
-  node-llama-cpp@3.22.2:
-    resolution: {integrity: sha512-kHggUzq5+8aShET07hlGllyo+t7gNOl+xLQyEeyERStkm8JdBGVh+Yh4Jd/uZ15xYt8lYJIDYkzToLjhe0eyZw==}
+  node-llama-cpp@3.22.3:
+    resolution: {integrity: sha512-B1gM/ra5WwXFSd40fdiFCMC4+HHYz+1000Muoj7FBMdhsSuSxcbwbRNNvq9opgBLYYEqMu6Zo9BP/aIhq1XFLw==}
     engines: {node: '>=20.0.0'}
     hasBin: true
     peerDependencies:
@@ -1359,8 +1340,8 @@ packages:
     resolution: {integrity: sha512-bzyZ1e88w9O1iNJbKnOlvYTrWPDl46O1bG0D3XInv+9tkPrxrN8jUUTiFlDkkmKWgn1M6CfIA13SuGqOa9Korw==}
     engines: {node: '>=14'}
 
-  simple-git@3.36.0:
-    resolution: {integrity: sha512-cGQjLjK8bxJw4QuYT7gxHw3/IouVESbhahSsHrX97MzCL1gu2u7oy38W6L2ZIGECEfIBG4BabsWDPjBxJENv9Q==}
+  simple-git@4.0.2:
+    resolution: {integrity: sha512-l0sIsv9VrPwovKELFDBOj/lhmIcbMvxBk2B+hRhsMM4/VL3gKtuZvYnBNixVo+N/0HnqQx2cBdLvxnAbygHpqA==}
 
   sleep-promise@9.1.0:
     resolution: {integrity: sha512-UHYzVpz9Xn8b+jikYSD6bqvf754xL2uBUzDFwiU6NcdZeifPr6UfgU43xpkPu67VMS88+TI2PSI7Eohgqf2fKA==}
@@ -1825,7 +1806,7 @@ snapshots:
   '@esbuild/win32-x64@0.28.2':
     optional: true
 
-  '@huggingface/jinja@0.5.10': {}
+  '@huggingface/jinja@0.5.13': {}
 
   '@isaacs/fs-minipass@4.0.1':
     dependencies:
@@ -1850,46 +1831,46 @@ snapshots:
       '@modelcontextprotocol/core': 2.3.1
       zod: 4.6.7
 
-  '@node-llama-cpp/linux-arm64@3.22.2':
+  '@node-llama-cpp/linux-arm64@3.22.3':
     optional: true
 
-  '@node-llama-cpp/linux-armv7l@3.22.2':
+  '@node-llama-cpp/linux-armv7l@3.22.3':
     optional: true
 
-  '@node-llama-cpp/linux-riscv64@3.22.2':
+  '@node-llama-cpp/linux-riscv64@3.22.3':
     optional: true
 
-  '@node-llama-cpp/linux-x64-cuda-ext@3.22.2':
+  '@node-llama-cpp/linux-x64-cuda-ext@3.22.3':
     optional: true
 
-  '@node-llama-cpp/linux-x64-cuda@3.22.2':
+  '@node-llama-cpp/linux-x64-cuda@3.22.3':
     optional: true
 
-  '@node-llama-cpp/linux-x64-vulkan@3.22.2':
+  '@node-llama-cpp/linux-x64-vulkan@3.22.3':
     optional: true
 
-  '@node-llama-cpp/linux-x64@3.22.2':
+  '@node-llama-cpp/linux-x64@3.22.3':
     optional: true
 
-  '@node-llama-cpp/mac-arm64-metal@3.22.2':
+  '@node-llama-cpp/mac-arm64-metal@3.22.3':
     optional: true
 
-  '@node-llama-cpp/mac-x64@3.22.2':
+  '@node-llama-cpp/mac-x64@3.22.3':
     optional: true
 
-  '@node-llama-cpp/win-arm64@3.22.2':
+  '@node-llama-cpp/win-arm64@3.22.3':
     optional: true
 
-  '@node-llama-cpp/win-x64-cuda-ext@3.22.2':
+  '@node-llama-cpp/win-x64-cuda-ext@3.22.3':
     optional: true
 
-  '@node-llama-cpp/win-x64-cuda@3.22.2':
+  '@node-llama-cpp/win-x64-cuda@3.22.3':
     optional: true
 
-  '@node-llama-cpp/win-x64-vulkan@3.22.2':
+  '@node-llama-cpp/win-x64-vulkan@3.22.3':
     optional: true
 
-  '@node-llama-cpp/win-x64@3.22.2':
+  '@node-llama-cpp/win-x64@3.22.3':
     optional: true
 
   '@nodelib/fs.scandir@2.1.5':
@@ -2074,11 +2055,11 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.60.1':
     optional: true
 
-  '@simple-git/args-pathspec@1.0.3': {}
+  '@simple-git/args-pathspec@1.0.4': {}
 
-  '@simple-git/argv-parser@1.1.1':
+  '@simple-git/argv-parser@2.0.1':
     dependencies:
-      '@simple-git/args-pathspec': 1.0.3
+      '@simple-git/args-pathspec': 1.0.4
 
   '@tinyhttp/content-disposition@2.2.4': {}
 
@@ -2159,9 +2140,9 @@ snapshots:
     dependencies:
       retry: 0.13.1
 
-  better-sqlite3@13.0.3:
+  better-sqlite3@13.1.1:
     dependencies:
-      node-addon-api: 8.7.0
+      node-addon-api: 8.9.2
 
   braces@3.0.3:
     dependencies:
@@ -2470,9 +2451,9 @@ snapshots:
 
   node-gyp-build@4.8.4: {}
 
-  node-llama-cpp@3.22.2(typescript@5.9.3):
+  node-llama-cpp@3.22.3(typescript@5.9.3):
     dependencies:
-      '@huggingface/jinja': 0.5.10
+      '@huggingface/jinja': 0.5.13
       async-retry: 1.3.3
       bytes: 3.1.2
       chalk: 5.6.2
@@ -2493,7 +2474,7 @@ snapshots:
       pretty-ms: 9.3.0
       proper-lockfile: 4.1.2
       semver: 7.7.4
-      simple-git: 3.36.0
+      simple-git: 4.0.2
       slice-ansi: 8.0.0
       stdout-update: 4.0.1
       strip-ansi: 7.2.0
@@ -2501,20 +2482,20 @@ snapshots:
       which: 6.0.1
       yargs: 17.7.2
     optionalDependencies:
-      '@node-llama-cpp/linux-arm64': 3.22.2
-      '@node-llama-cpp/linux-armv7l': 3.22.2
-      '@node-llama-cpp/linux-riscv64': 3.22.2
-      '@node-llama-cpp/linux-x64': 3.22.2
-      '@node-llama-cpp/linux-x64-cuda': 3.22.2
-      '@node-llama-cpp/linux-x64-cuda-ext': 3.22.2
-      '@node-llama-cpp/linux-x64-vulkan': 3.22.2
-      '@node-llama-cpp/mac-arm64-metal': 3.22.2
-      '@node-llama-cpp/mac-x64': 3.22.2
-      '@node-llama-cpp/win-arm64': 3.22.2
-      '@node-llama-cpp/win-x64': 3.22.2
-      '@node-llama-cpp/win-x64-cuda': 3.22.2
-      '@node-llama-cpp/win-x64-cuda-ext': 3.22.2
-      '@node-llama-cpp/win-x64-vulkan': 3.22.2
+      '@node-llama-cpp/linux-arm64': 3.22.3
+      '@node-llama-cpp/linux-armv7l': 3.22.3
+      '@node-llama-cpp/linux-riscv64': 3.22.3
+      '@node-llama-cpp/linux-x64': 3.22.3
+      '@node-llama-cpp/linux-x64-cuda': 3.22.3
+      '@node-llama-cpp/linux-x64-cuda-ext': 3.22.3
+      '@node-llama-cpp/linux-x64-vulkan': 3.22.3
+      '@node-llama-cpp/mac-arm64-metal': 3.22.3
+      '@node-llama-cpp/mac-x64': 3.22.3
+      '@node-llama-cpp/win-arm64': 3.22.3
+      '@node-llama-cpp/win-x64': 3.22.3
+      '@node-llama-cpp/win-x64-cuda': 3.22.3
+      '@node-llama-cpp/win-x64-cuda-ext': 3.22.3
+      '@node-llama-cpp/win-x64-vulkan': 3.22.3
       typescript: 5.9.3
     transitivePeerDependencies:
       - supports-color
@@ -2665,12 +2646,12 @@ snapshots:
 
   signal-exit@4.1.0: {}
 
-  simple-git@3.36.0:
+  simple-git@4.0.2:
     dependencies:
       '@kwsites/file-exists': 1.1.1
       '@kwsites/promise-deferred': 1.1.1
-      '@simple-git/args-pathspec': 1.0.3
-      '@simple-git/argv-parser': 1.1.1
+      '@simple-git/args-pathspec': 1.0.4
+      '@simple-git/argv-parser': 2.0.1
       debug: 4.4.3
     transitivePeerDependencies:
       - supports-color
@@ -2792,7 +2773,7 @@ snapshots:
 
   tree-sitter-javascript@0.23.1:
     dependencies:
-      node-addon-api: 8.7.0
+      node-addon-api: 8.9.2
       node-gyp-build: 4.8.4
 
   tree-sitter-python@0.25.0:
