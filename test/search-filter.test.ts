@@ -138,7 +138,7 @@ describe("searchLex through the SDK", () => {
 
   test("a metadata filter and a path scope together keep only their intersection", async () => {
     const scope = buildDocumentFilter({ path: ["docs/journals/**"] })!;
-    const filter = { key: "status", operator: "eq", value: "keep" } as const;
+    const filter = { field: "status", operator: "eq", value: "keep" } as const;
     const paths = async (opts: Pick<LexSearchOptions, "filter" | "scope">) =>
       (await store.searchLex("zanzibar", { collection: collectionNames, limit: 10, ...opts })).map(h => h.displayPath).sort();
     expect(await paths({ scope })).toEqual(["docs/journals/2024/old.md", "docs/journals/2026/note.md"]);
@@ -214,7 +214,7 @@ describe("vector search takes the same filter", () => {
     expect(hits).toEqual([]);
   });
 
-  const keep = { key: "status", operator: "eq", value: "keep" } as const;
+  const keep = { field: "status", operator: "eq", value: "keep" } as const;
   // No collection: a collection alone already forces the exact scan, which would hide a
   // metadata filter that failed to.
   const vecPaths = async (scope?: ReturnType<typeof buildDocumentFilter>) =>

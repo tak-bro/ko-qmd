@@ -412,8 +412,8 @@ const published = await store.search({
   filter: {
     operator: "and",
     operands: [
-      { key: "topics", operator: "all", value: ["typescript"] },
-      { key: "status", operator: "ne", value: "draft" },
+      { field: "topics", operator: "all", value: ["typescript"] },
+      { field: "status", operator: "ne", value: "draft" },
     ],
   },
 })
@@ -1179,19 +1179,19 @@ Every search surface (CLI, SDK, MCP, HTTP) accepts the same recursive filter, a 
 ```sh
 # One condition
 qmd search "authentication" \
-  --filter '{"key":"status","operator":"eq","value":"published"}'
+  --filter '{"field":"status","operator":"eq","value":"published"}'
 
 # Composed conditions — works with search, vsearch, and query
 qmd query "dependency injection" --filter '{
   "operator": "and",
   "operands": [
-    { "key": "topics", "operator": "all", "value": ["typescript", "programming"] },
-    { "key": "status", "operator": "nin", "value": ["draft", "archived"] },
+    { "field": "topics", "operator": "all", "value": ["typescript", "programming"] },
+    { "field": "status", "operator": "nin", "value": ["draft", "archived"] },
     { "operator": "or", "operands": [
-      { "key": "priority", "operator": "gte", "value": 3 },
-      { "key": "reviewed", "operator": "eq", "value": true }
+      { "field": "priority", "operator": "gte", "value": 3 },
+      { "field": "reviewed", "operator": "eq", "value": true }
     ] },
-    { "operator": "not", "operand": { "key": "audience", "operator": "eq", "value": "internal" } }
+    { "operator": "not", "operand": { "field": "audience", "operator": "eq", "value": "internal" } }
   ]
 }'
 ```

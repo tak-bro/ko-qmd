@@ -236,7 +236,7 @@ describe("grepDocuments with metadataFilter", () => {
     tag("note.md", { status: "published" });
     tag("old.md", { status: "draft" });
     const result = grep("TODO", {
-      metadataFilter: { key: "status", operator: "eq", value: "published" },
+      metadataFilter: { field: "status", operator: "eq", value: "published" },
     });
     expect(result.files.map(f => f.displayPath)).toEqual(["docs/journals/note.md"]);
   });
@@ -246,7 +246,7 @@ describe("grepDocuments with metadataFilter", () => {
     // draft — none of them satisfies eq published, so the filter must not
     // sweep them back in.
     const result = grep("TODO", {
-      metadataFilter: { key: "status", operator: "eq", value: "published" },
+      metadataFilter: { field: "status", operator: "eq", value: "published" },
     });
     expect(result.files.map(f => f.displayPath)).toEqual(["docs/journals/note.md"]);
   });

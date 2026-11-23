@@ -1189,7 +1189,7 @@ describe.skipIf(!!process.env.CI)("MCP HTTP Transport", () => {
     expect(headers.get("mcp-session-id")).toBeNull();
 
     const toolNames = json.result.tools.map((t: any) => t.name);
-    expect(toolNames).toEqual(["query", "memory_store", "memory_recall", "memory_correct", "get", "multi_get", "grep", "status"]);
+    expect(toolNames).toEqual(["query", "memory_store", "memory_recall", "memory_correct", "get", "multi_get", "grep", "status", "metadata"]);
   });
 
   test("POST /mcp tools/call query returns results", async () => {
@@ -1367,7 +1367,7 @@ describe("MCP HTTP Transport — 2026-07-28 protocol", () => {
     expect(json.result.ttlMs).toBe(60_000);
     expect(json.result.cacheScope).toBe("private");
     const toolNames = json.result.tools.map((t: { name: string }) => t.name);
-    expect(toolNames).toEqual(["query", "memory_store", "memory_recall", "memory_correct", "get", "multi_get", "grep", "status"]);
+    expect(toolNames).toEqual(["query", "memory_store", "memory_recall", "memory_correct", "get", "multi_get", "grep", "status", "metadata"]);
     const serverInfo = json.result._meta?.["io.modelcontextprotocol/serverInfo"];
     expect(serverInfo?.name).toBe("qmd");
   });
@@ -2185,7 +2185,7 @@ describe("REST /query, MCP query and the query log", () => {
 // =============================================================================
 
 import { mkdirSync, utimesSync } from "node:fs";
-import { createStore as createSdkStore } from "../src/index.js";
+import { createStore as createSdkStore, parseMetadataFilter } from "../src/index.js";
 import * as storeModule from "../src/store.js";
 
 describe("REST /query refreshes the text index first", () => {
@@ -2760,6 +2760,41 @@ describe("memory tools round trip", () => {
   };
   const recall = async (q: string) =>
     JSON.parse((await callTool("memory_recall", { searches: [{ type: "lex", query: q }] })).content[0]!.text);
+
+  test("recall narrows by actor and project through the metadata filter", async () => {
+    const byUser = await callTool("memory_store", { text: "zqxjnarrow user note", actor: "user", type: "opinion", project: "ko-qmd" });
+    const byAgent = await callTool("memory_store", {
+      text: "zqxjnarrow agent note", actor: "agent:claude-code", type: "fact", source: "ko-qmd/src/memory.ts:1", project: "agent-config",
+    });
+    expect(byUser.isError).toBeFalsy();
+    expect(byAgent.isError).toBeFalsy();
+    const narrowed = async (args: Record<string, unknown>) =>
+      JSON.parse((await callTool("memory_recall", { searches: [{ type: "lex", query: "zqxjnarrow" }], ...args })).content[0]!.text)
+        .results.map((r: any) => r.file);
+
+    expect(await narrowed({})).toHaveLength(2);
+    expect(await narrowed({ actor: "user" })).toEqual([byUser.structuredContent.file]);
+    expect(await narrowed({ project: "agent-config" })).toEqual([byAgent.structuredContent.file]);
+    expect(await narrowed({ actor: "user", project: "agent-config" })).toEqual([]);
+  });
+
+  test("recall answers a filter that only the combined narrowing pushes past the depth limit as a tool error", async () => {
+    const nest = (depth: number): Record<string, unknown> => {
+      let node: Record<string, unknown> = { field: "type", operator: "exists", value: true };
+      for (let i = 1; i < depth; i++) node = { operator: "not", operand: node };
+      return node;
+    };
+    let deepest = 1;
+    while (deepest < 64) {
+      try { parseMetadataFilter(nest(deepest + 1)); deepest++; } catch { break; }
+    }
+    const args = { searches: [{ type: "lex", query: "zqxjnarrow" }], filter: nest(deepest) };
+    const alone = await callTool("memory_recall", args);
+    expect(alone.isError).toBeFalsy();
+    const combined = await callTool("memory_recall", { ...args, actor: "user" });
+    expect(combined.isError).toBe(true);
+    expect(combined.content[0]!.text).toMatch(/^Error: /);
+  });
 
   test("store is recallable immediately, correct is append-only, recall flags the superseded claim", async () => {
     const stored = await callTool("memory_store", {
