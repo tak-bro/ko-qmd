@@ -1259,7 +1259,23 @@ lex/hybrid while exposing a rerank preference for literal overlap; hard full_r1 
 rose 0.6407 → 0.6630 (+1 query of 45). Vector backend untouched at 0.9119, as expected
 — one sentence per doc does not move embeddings.
 
-The seam reference moves to this run. The gate reads the last two lines below:
+The seam reference moves to this run.
+
+## 2026-11-23 — upstream sync (main 04e4dbd → 8be0c42, v2.9.0), pre-sync reference
+
+Run on `develop` `f8c25eb` before the first upstream merge (`bash scripts/bench-ko.sh`, seam form).
+The per-query rows of this run are the reference each sync merge diffs against: bm25 `top_files`
+and `mrr` must be identical per query, as in the 2026-09-23 sync.
+
+```
+RESULT bm25_r5=0.8875 vector_r5=0.9119 hybrid_r5=0.9444 full_r5=0.9770 full_mrr=0.9451   # pre-sync
+RESULT-HARD hybrid_r1=0.5630 hybrid_mrr=0.7701 full_r1=0.6630 full_mrr=0.8759 n=45 form=seam   # pre-sync
+```
+
+bm25, vector, hybrid and the gated hard numbers (`hybrid_r1`, `full_r1`) equal the 2026-10-11
+reference. Only the reranked `full_r5` / `full_mrr` drift (0.9729 → 0.9770, 0.8741 → 0.8759) —
+the rerank stage is recomputed every run and these are not gated. The gate reference is unchanged;
+the gate reads the last two lines below:
 
 RESULT bm25_r5=0.8875 vector_r5=0.9119 hybrid_r5=0.9444 full_r5=0.9729 full_mrr=0.9434
 RESULT-HARD hybrid_r1=0.5630 hybrid_mrr=0.7701 full_r1=0.6630 full_mrr=0.8741 n=45 tol=0 form=seam
