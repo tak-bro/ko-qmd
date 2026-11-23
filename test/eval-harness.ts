@@ -276,25 +276,28 @@ export function scoreQueries(queries: EvalQuery[], runFn: SearchRunner): EvalSco
   return results;
 }
 
-export function runSearch(query: string, execFn: typeof execSync = execSync): SearchResult[] {
+/** The execSync call the runners make; tests pass a stub of this shape. */
+export type ExecFn = (command: string, options: { encoding: "utf-8"; timeout: number }) => string;
+
+export function runSearch(query: string, execFn: ExecFn = execSync): SearchResult[] {
   try {
     const output = execFn(
       `bun src/cli/qmd.ts search "${escapeQuery(query)}" --json -n 5 2>/dev/null`,
       { encoding: "utf-8", timeout: 30000 }
     );
-    return JSON.parse(output as string) as SearchResult[];
+    return JSON.parse(output) as SearchResult[];
   } catch {
     return [];
   }
 }
 
-export function runQuery(query: string, execFn: typeof execSync = execSync): SearchResult[] {
+export function runQuery(query: string, execFn: ExecFn = execSync): SearchResult[] {
   try {
     const output = execFn(
       `bun src/cli/qmd.ts query "${escapeQuery(query)}" --json -n 5 2>/dev/null`,
       { encoding: "utf-8", timeout: 60000 }
     );
-    return JSON.parse(output as string) as SearchResult[];
+    return JSON.parse(output) as SearchResult[];
   } catch {
     return [];
   }

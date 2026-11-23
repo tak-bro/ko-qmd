@@ -16,7 +16,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import * as llmModule from "../src/llm.js";
-import { disposeDefaultLlamaCpp, setDefaultLlamaCpp } from "../src/llm.js";
+import { disposeDefaultLlamaCpp, setDefaultLlamaCpp, type RerankOptions } from "../src/llm.js";
 import { estimateCharsPerToken } from "../src/hangul.js";
 import {
   createStore,
@@ -233,6 +233,7 @@ function failingDb(db: Database, fragment: string, message: string): Database {
       guard(sql);
       db.exec(sql);
     },
+    get inTransaction() { return db.inTransaction; },
     loadExtension: (path: string) => db.loadExtension(path),
     close: () => db.close(),
   };
@@ -1357,7 +1358,7 @@ describe("Caching", () => {
     const modelName = "hf:example/cap/cap.gguf";
 
     const makeMock = (score: number, rerankMaxDocTokens?: number) => {
-      const spy = vi.fn(async (_query: string, scoredDocs: { file: string; text: string }[]) => ({
+      const spy = vi.fn(async (_query: string, scoredDocs: { file: string; text: string }[], _options?: RerankOptions) => ({
         results: scoredDocs.map((doc, index) => ({ file: doc.file, score, index })),
         model: modelName,
       }));
@@ -1393,7 +1394,7 @@ describe("Caching", () => {
     const modelName = "hf:example/cap/cap.gguf";
 
     const makeMock = (score: number, rerankMaxDocTokens?: number) => {
-      const spy = vi.fn(async (_query: string, scoredDocs: { file: string; text: string }[]) => ({
+      const spy = vi.fn(async (_query: string, scoredDocs: { file: string; text: string }[], _options?: RerankOptions) => ({
         results: scoredDocs.map((doc, index) => ({ file: doc.file, score, index })),
         model: modelName,
       }));
@@ -1635,8 +1636,8 @@ describe("Query expansion cache (#818)", () => {
     const embedModel = "dedupe-embed-model";
     store.ensureVecTable(3);
     store.llm = { embedModelName: embedModel } as any;
-    const searchVecSpy = vi.fn(async () => [] as SearchResult[]);
-    store.searchVec = searchVecSpy as any;
+    const searchVecSpy = vi.fn<Store["searchVec"]>(async () => []);
+    store.searchVec = searchVecSpy;
     try {
       const cached = [
         ...Array.from({ length: 12 }, () => ({ type: "hyde", query: "g" })),
@@ -1660,8 +1661,8 @@ describe("Query expansion cache (#818)", () => {
     const embedModel = "dedupe-embed-model";
     store.ensureVecTable(3);
     store.llm = { embedModelName: embedModel } as any;
-    const searchVecSpy = vi.fn(async () => [] as SearchResult[]);
-    store.searchVec = searchVecSpy as any;
+    const searchVecSpy = vi.fn<Store["searchVec"]>(async () => []);
+    store.searchVec = searchVecSpy;
     try {
       // Rows written before the cache stored `query` carry the line as `text`.
       const cached = [
@@ -1688,8 +1689,8 @@ describe("Query expansion cache (#818)", () => {
       embedBatch: async (texts: string[]) => texts.map(() => ({ embedding: [1, 2, 3], model: embedModel })),
     } as any;
     store.searchVec = vi.fn(async () => [] as SearchResult[]) as any;
-    const searchFTSSpy = vi.fn(() => [] as SearchResult[]);
-    store.searchFTS = searchFTSSpy as any;
+    const searchFTSSpy = vi.fn<Store["searchFTS"]>(() => []);
+    store.searchFTS = searchFTSSpy;
     try {
       const cached = [
         { type: "lex", query: "k" }, { type: "lex", query: "k" }, { type: "lex", query: "k" },
@@ -2758,7 +2759,7 @@ describe("Document Retrieval", () => {
         const { docs, errors } = store.findDocuments(`#${doc.docid}`);
         expect(errors).toHaveLength(0);
         expect(docs).toHaveLength(1);
-        expect(docs[0]!.doc.docid).toBe(doc.docid);
+        expect(docs[0]).toMatchObject({ doc: { docid: doc.docid } });
       }
 
       await cleanupTestDb(store);
@@ -3297,10 +3298,11 @@ describe("Snippet Extraction", () => {
     const body = `hit TARGET here\n${"padding line with some words in it\n".repeat(2000)}`;
     const origSplit = String.prototype.split;
     let bodySplits = 0;
-    String.prototype.split = function (sep: string | RegExp, ...rest: string[]) {
+    const splitWith: (this: string, sep: string | RegExp, limit?: number) => string[] = origSplit;
+    String.prototype.split = function (this: string, sep: string | RegExp, limit?: number): string[] {
       if (sep === "\n" && String(this) === body) bodySplits++;
-      return origSplit.call(this, sep, ...rest);
-    };
+      return splitWith.call(this, sep, limit);
+    } as typeof origSplit;
     try {
       extractSnippet(body, "TARGET", 500);
       extractSnippet(body, "TARGET", 500);
@@ -3583,7 +3585,7 @@ describe("Reciprocal Rank Fusion", () => {
         for (const d of docs) scored.set(d.file, scores.get(d.file) ?? 0);
         return docs.map((d) => ({ file: d.file, score: scores.get(d.file) ?? 0 }));
       }),
-    }) as Store; // fake-store stub: only rerank() is exercised below
+    });
 
     // Decisive top: doc0 far ahead — one batch of 8, tail keeps score 0.
     const wide = new Map(chunks.map((c, i) => [c.file, i === 0 ? 0.95 : 0.5 - i * 0.01]));
@@ -3611,7 +3613,7 @@ describe("Reciprocal Rank Fusion", () => {
     const store = {
       rerank: vi.fn(async (_query: string, docs: { file: string; text: string }[]) =>
         docs.map((d) => ({ file: d.file, score: wide.get(d.file) ?? 0 }))),
-    } as Store; // fake-store stub: only rerank() is exercised below
+    };
     const out = await rerankWithDeadline(store, "q", chunks, undefined, undefined);
     expect(out).toHaveLength(20);
     expect(out!.slice(0, 8).every((r) => r.unscored === undefined)).toBe(true);
@@ -3625,7 +3627,7 @@ describe("Reciprocal Rank Fusion", () => {
     const store2 = {
       rerank: vi.fn(async (_query: string, docs: { file: string; text: string }[]) =>
         docs.map((d) => ({ file: d.file, score: tight.get(d.file) ?? 0 }))),
-    } as Store; // fake-store stub: only rerank() is exercised below
+    };
     const out2 = await rerankWithDeadline(store2, "q", chunks, undefined, undefined);
     expect(out2!.every((r) => r.unscored === undefined)).toBe(true);
   });
@@ -3653,7 +3655,7 @@ describe("Reciprocal Rank Fusion", () => {
     try {
       const store = {
         rerank: vi.fn(async () => new Promise<never>(() => {})),
-      } as Store; // fake-store stub: only rerank() is exercised below
+      };
       const hooks = {
         onModelLoad: vi.fn(),
         onDeadline: vi.fn(),
@@ -3690,7 +3692,7 @@ describe("Reciprocal Rank Fusion", () => {
         rerank: vi.fn(async (_query: string, docs: { file: string; text: string }[]) =>
           docs.map((d) => ({ file: d.file, score: wide.get(d.file) ?? 0 })),
         ),
-      } as Store; // fake-store stub: only rerank() is exercised below
+      };
       const out = await rerankWithDeadline(store, "q", chunks, undefined, undefined);
       expect(store.rerank).toHaveBeenCalledTimes(1);
       expect(store.rerank).toHaveBeenCalledWith("q", chunks, undefined, undefined, expect.anything());
@@ -3720,7 +3722,7 @@ describe("Reciprocal Rank Fusion", () => {
           return new Promise<never>(() => {});
         },
       ),
-    } as Store; // fake-store stub: only rerank() is exercised below
+    };
     const hooks: SearchHooks = { onRerankStart: vi.fn(), onRerankDone: vi.fn() };
     const out = await rerankWithDeadline(store, "q", chunks, undefined, {
       rerankDeadlineMs: 50,
@@ -3755,7 +3757,7 @@ describe("Reciprocal Rank Fusion", () => {
           return docs.map((d) => ({ file: d.file, score: 0.5 }));
         },
       ),
-    } as Store; // fake-store stub: only rerank() is exercised below
+    };
     const hooks: SearchHooks = { onDeadline: vi.fn(), onRerankDone: vi.fn() };
     const out = await rerankWithDeadline(store, "q", chunks, undefined, {
       rerankDeadlineMs: 50,
@@ -4619,6 +4621,7 @@ describe("Collection-scoped keyword search", () => {
         },
         transaction: (fn) => store.db.transaction(fn),
         exec: (sql: string) => store.db.exec(sql),
+        get inTransaction() { return store.db.inTransaction; },
         loadExtension: (path: string) => store.db.loadExtension(path),
         close: () => store.db.close(),
       };
@@ -5101,6 +5104,7 @@ describe("Vector Table", () => {
         };
       },
       transaction: (fn) => db.transaction(fn),
+      get inTransaction() { return db.inTransaction; },
       loadExtension: (path: string) => db.loadExtension(path),
       close: () => db.close(),
     };
@@ -5159,6 +5163,7 @@ describe("Vector Table", () => {
           };
         },
         transaction: (fn) => db.transaction(fn),
+        get inTransaction() { return db.inTransaction; },
         loadExtension: (path: string) => db.loadExtension(path),
         close: () => db.close(),
       };
@@ -6110,6 +6115,7 @@ describe("Vector Search collection filter", () => {
       },
       transaction: (fn) => store.db.transaction(fn),
       exec: (sql: string) => store.db.exec(sql),
+      get inTransaction() { return store.db.inTransaction; },
       loadExtension: (path: string) => store.db.loadExtension(path),
       close: () => store.db.close(),
     };
@@ -7148,12 +7154,12 @@ describe("Embedding batching", () => {
 
       // Same-run convergence: exactly the new chunks remain, nothing more.
       expect(result.chunksEmbedded).toBe(2);
-      const seqs = db.prepare(`SELECT seq FROM content_vectors WHERE hash = ? AND model = ? ORDER BY seq`)
-        .all(hash, model)
+      const seqs = (db.prepare(`SELECT seq FROM content_vectors WHERE hash = ? AND model = ? ORDER BY seq`)
+        .all(hash, model) as { seq: number }[])
         .map((r) => r.seq);
       expect(seqs).toEqual([0, 1]);
-      const vecSeqs = db.prepare(`SELECT seq FROM ${VEC_ROWS_TABLE} WHERE hash = ? ORDER BY seq`)
-        .all(hash)
+      const vecSeqs = (db.prepare(`SELECT seq FROM ${VEC_ROWS_TABLE} WHERE hash = ? ORDER BY seq`)
+        .all(hash) as { seq: number }[])
         .map((r) => r.seq);
       expect(vecSeqs).toEqual([0, 1]);
       expect(store.getHashesNeedingEmbedding(model)).toBe(0);
@@ -7997,6 +8003,7 @@ describe("Embedding batching", () => {
         }) as typeof fn;
         return Object.assign(((...args: Parameters<typeof fn>) => wrapped(...args)) as typeof fn, { immediate });
       },
+      get inTransaction() { return db.inTransaction; },
       loadExtension: (path: string) => db.loadExtension(path),
       close: () => db.close(),
     };

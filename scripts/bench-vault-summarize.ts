@@ -32,7 +32,13 @@ const flag = (name: string, fallback?: string) => {
   return i === -1 ? fallback : argv[i + 1]
 }
 const positional = argv.filter((a, i) => !a.startsWith('--') && !argv[i - 1]?.startsWith('--'))
-const [vault, out] = positional
+const [vaultArg, outArg] = positional
+if (!vaultArg || !outArg) {
+  console.error('usage: bun scripts/bench-vault-summarize.ts <vault-dir> <out.json> [options]')
+  process.exit(2)
+}
+const vault: string = vaultArg
+const out: string = outArg
 const model = flag('model', 'gemma3:latest')!
 const maxDocs = Number(flag('docs', '0'))
 const minutes = Number(flag('minutes', '0'))

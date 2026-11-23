@@ -41,6 +41,7 @@ import {
   DEFAULT_RERANK_MAX_DOC_TOKENS,
   type RerankDocument,
   type ILLMSession,
+  type RerankResult,
 } from "../src/llm.js";
 
 describe("inspectGgufFile", () => {
@@ -1312,7 +1313,7 @@ describe("LlamaCpp rerank deduping", () => {
       detokenize: (tokens: string[]) => tokens.join(""),
     });
 
-    const result = await llm.rerank("query", [
+    const result: RerankResult = await llm.rerank("query", [
       { file: "a.md", text: "shared chunk" },
       { file: "b.md", text: "shared chunk" },
       { file: "c.md", text: "different chunk" },

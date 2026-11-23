@@ -366,6 +366,7 @@ describe("searchVec with metadata filter", () => {
       },
       transaction: (fn) => store.db.transaction(fn),
       exec: (sql: string) => store.db.exec(sql),
+      get inTransaction() { return store.db.inTransaction; },
       loadExtension: (path: string) => store.db.loadExtension(path),
       close: () => store.db.close(),
     };

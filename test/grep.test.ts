@@ -15,7 +15,7 @@ import { createStore, type QMDStore } from "../src/index.js";
 import { compileGrepPattern, grepDocuments, MAX_PATTERN_LENGTH } from "../src/grep.js";
 import { buildDocumentFilter } from "../src/filters.js";
 import { replaceDocumentMetadata } from "../src/metadata-store.js";
-import { METADATA_EXTRACTION_VERSION } from "../src/metadata.js";
+import { METADATA_EXTRACTION_VERSION, type DocumentMetadata } from "../src/metadata.js";
 
 let root: string;
 let store: QMDStore;
@@ -222,7 +222,7 @@ describe("grepDocuments", () => {
 });
 
 describe("grepDocuments with metadataFilter", () => {
-  const tag = (pathSuffix: string, metadata: Record<string, unknown>) => {
+  const tag = (pathSuffix: string, metadata: DocumentMetadata) => {
     const row = store.internal.db
       .prepare("SELECT id FROM documents WHERE path LIKE ?")
       .get(`%${pathSuffix}`) as { id: number };

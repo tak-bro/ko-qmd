@@ -26,7 +26,7 @@ import {
   previewCleanup,
   sanitizeFTS5Term,
   splitGlobMask,
-} from "../src/store";
+} from "../src/store.js";
 
 // =============================================================================
 // Path Utilities

@@ -406,7 +406,7 @@ describe("bin/qmd package wrapper", () => {
     expect(result.status).toBe(0);
     const [runtime, scriptPath, ...args] = readFileSync(capturePath, "utf8").trimEnd().split("\n");
     expect(runtime).toBe("bun");
-    expect(realpathSync(scriptPath)).toBe(realpathSync(join(packageRoot, "dist", "cli", "qmd.js")));
+    expect(realpathSync(scriptPath!)).toBe(realpathSync(join(packageRoot, "dist", "cli", "qmd.js")));
     expect(args).toEqual(["search", "x"]);
   });
 

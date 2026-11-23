@@ -277,6 +277,7 @@ describe("qmd cleanup vector repack", () => {
       },
       transaction: (fn) => s.db.transaction(fn),
       exec: (sql: string) => s.db.exec(sql),
+      get inTransaction() { return s.db.inTransaction; },
       loadExtension: (path: string) => s.db.loadExtension(path),
       close: () => s.db.close(),
     };
@@ -390,6 +391,7 @@ describe("qmd cleanup vector repack", () => {
       },
       transaction: (fn) => s.db.transaction(fn),
       exec: (sql: string) => s.db.exec(sql),
+      get inTransaction() { return s.db.inTransaction; },
       loadExtension: (path: string) => s.db.loadExtension(path),
       close: () => s.db.close(),
     };

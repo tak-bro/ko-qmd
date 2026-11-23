@@ -81,6 +81,7 @@
   "devDependencies": {
     "@oxlint/plugins": "1.92.0",
     "@types/better-sqlite3": "7.6.13",
+    "@types/bun": "1.4.3",
     "oxlint": "1.92.0",
     "tsx": "4.23.15",
     "vitest": "3.2.7"

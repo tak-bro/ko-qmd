@@ -26,8 +26,8 @@ function vectorFor(i: number): number[] {
 // Re-embeds a chunk as the vector its document was stored with, so the doctor
 // check compares like with like.
 class StoredVectorLlm extends LlamaCpp {
-  async tokenize(text: string) { return new Array(Math.max(1, Math.ceil(text.length / 16))).fill(1); }
-  async embed(text: string) {
+  override async tokenize(text: string) { return new Array(Math.max(1, Math.ceil(text.length / 16))).fill(1); }
+  override async embed(text: string) {
     const index = Number(/\d{5}/.exec(text)?.[0]);
     return { embedding: vectorFor(index), model: MODEL };
   }

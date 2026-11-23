@@ -22,7 +22,7 @@ import {
   type VectorSearchOptions,
   type ExpandQueryOptions,
 } from "../src/index.js";
-import { setDefaultLlamaCpp } from "../src/llm.js";
+import { setDefaultLlamaCpp, type RerankOptions } from "../src/llm.js";
 import { VEC_COLLECTION_IDS_TABLE, VEC_ROWS_TABLE } from "../src/vec-layout.js";
 
 // =============================================================================
@@ -691,7 +691,7 @@ describe("search (unified API)", () => {
   });
 
   test("search() forwards rerankMaxDocTokens to the reranker", async () => {
-    const spy = vi.fn(async (_query: string, docs: { file: string; text: string }[]) => ({
+    const spy = vi.fn(async (_query: string, docs: { file: string; text: string }[], _options?: RerankOptions) => ({
       results: docs.map((doc, index) => ({ file: doc.file, score: 0.5, index })),
       model: "hf:example/cap/cap.gguf",
     }));
@@ -850,8 +850,7 @@ describe("get and multiGet", () => {
       const { docs, errors } = await store.multiGet(`#${doc.docid}`, { includeBody: true });
       expect(errors).toHaveLength(0);
       expect(docs).toHaveLength(1);
-      expect(docs[0]!.doc.docid).toBe(doc.docid);
-      expect(docs[0]!.skipped).toBe(false);
+      expect(docs[0]).toMatchObject({ skipped: false, doc: { docid: doc.docid } });
       if (!docs[0]!.skipped) {
         expect(docs[0]!.doc.body).toContain("getting started guide");
       }

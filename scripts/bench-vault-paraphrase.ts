@@ -233,7 +233,7 @@ const parseVerdicts = (raw: string, count: number): boolean[] => {
     const m = line.match(/(\d+)\s*[:.)]\s*(예|아니오|yes|no)/i)
     if (!m) continue
     const idx = Number(m[1]) - 1
-    if (idx >= 0 && idx < count) verdicts[idx] = /^(예|yes)$/i.test(m[2])
+    if (idx >= 0 && idx < count) verdicts[idx] = /^(예|yes)$/i.test(m[2] ?? '')
   }
   return verdicts
 }
@@ -311,7 +311,7 @@ const main = async () => {
     unverified: 0, verify_failed: 0,
   }
   const reject = (file: string, query: string, reason: string) => {
-    counts[reason]++
+    counts[reason] = (counts[reason] ?? 0) + 1
     if (args.keepRejects) rejects.push({ file, query, reason })
   }
   const flush = (docsDone: number) => {

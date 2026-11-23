@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { buildRrfTrace, reciprocalRankFusion, type RankedResult, type RRFContributionTrace } from "../src/store";
-import { explainGroupLines } from "../src/cli/qmd.ts";
+import { buildRrfTrace, reciprocalRankFusion, type RankedResult, type RRFContributionTrace } from "../src/store.js";
+import { explainGroupLines } from "../src/cli/qmd.js";
 
 describe("buildRrfTrace", () => {
   test("matches reciprocalRankFusion totals and records per-list contributions", () => {

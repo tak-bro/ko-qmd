@@ -30,8 +30,8 @@ describe("doctor vector sampling", () => {
   async function addStoredPassage(seq: number, positionExists: boolean = true, vectorMatches: boolean = true): Promise<void> {
     let expectedText = "";
     class PassageLlm extends LlamaCpp {
-      async tokenize(text: string) { return new Array(Math.ceil(text.length / 16)).fill(1); }
-      async embed(text: string) {
+      override async tokenize(text: string) { return new Array(Math.ceil(text.length / 16)).fill(1); }
+      override async embed(text: string) {
         return { embedding: text === expectedText ? [1, 0] : [0, 1], model: "model" };
       }
     }

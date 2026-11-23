@@ -6983,12 +6983,15 @@ async function withDeadline<T>(promise: Promise<T>, deadlineMs: number | undefin
 
 export type DeadlineStage = "expand" | "rerank";
 
+/** The store an LLM stage runs for. Abandoned-call counts key on its identity; every stage owner can rerank. */
+type DeadlineOwner = Pick<Store, "rerank">;
+
 /**
  * LLM calls abandoned at their deadline and still running, per store and stage. While one runs, the
  * next call of that stage would only queue behind it on the same model and time out too, so it is
  * skipped instead: this caps the backlog at one abandoned call per stage instead of one per query.
  */
-const abandoned = new WeakMap<Store, Record<DeadlineStage, { running: number; warned: boolean }>>();
+const abandoned = new WeakMap<DeadlineOwner, Record<DeadlineStage, { running: number; warned: boolean }>>();
 
 /**
  * Bound on the model-load wait inside runWithDeadline: a load that never
@@ -7013,7 +7016,7 @@ export function resolveLoadTimeoutMs(): number {
  * Unset or 0 deadline = plain await (still under the load bound).
  */
 async function runWithDeadline<T>(
-  store: Store,
+  store: DeadlineOwner,
   stage: DeadlineStage,
   deadlineMs: number | undefined,
   hooks: SearchHooks | undefined,
@@ -7126,7 +7129,7 @@ export function cascadeNeedsSecondBatch(
 }
 
 export async function rerankWithDeadline(
-  store: Store,
+  store: DeadlineOwner,
   query: string,
   chunks: { file: string; text: string }[],
   intent: string | undefined,

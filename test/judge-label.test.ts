@@ -80,7 +80,7 @@ describe("formatPair", () => {
   test("the counter continues from labels already made", async () => {
     const pairs = labelPairs(pools, new Set(["g1"]));
     const file = empty();
-    (file.labels.g1 = {})[pairs[0]!.file] = 2;
+    file.labels.g1 = { [pairs[0]!.file]: 2 };
     const printed: string[] = [];
     let cleared = 0;
     const io = { ask: async () => null, print: (t: string) => printed.push(t), save: () => {}, clear: () => cleared++ };
