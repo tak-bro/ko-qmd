@@ -32,7 +32,7 @@ describe("QMD_RERANK_CACHE", () => {
   const freshStore = (model = "stub-reranker") => {
     const store = createStore(join(root, `index-${indexCount++}.sqlite`));
     const llmRerank = vi.fn(async (_query: string, documents: { file: string }[]) => ({
-      results: documents.map((d) => ({ file: d.file, score: model === "fallback" ? 0.5 : 0.7 })),
+      results: documents.map((d, index) => ({ file: d.file, score: model === "fallback" ? 0.5 : 0.7, index })),
       model,
     }));
     store.llm = { rerank: llmRerank, rerankModelName: "stub-reranker" } as any; // any: mock implements only what rerank() reads

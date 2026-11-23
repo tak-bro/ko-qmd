@@ -77,6 +77,8 @@ import type {
   ContextMap,
 } from "./collections.js";
 import { METADATA_EXTRACTION_VERSION, type DocumentMetadata } from "./metadata.js";
+import { copyCommandProcessorSpec, snapshotProcessor, type DocumentProcessor } from "./processors.js";
+import { initializeProcessorSchema, requireProcessor, reindexProcessedFiles, removeProcessorState, renameProcessorState } from "./processor-store.js";
 import { compileMetadataFilter, type MetadataFilter } from "./metadata-filter.js";
 import {
   initializeMetadataSchema,
@@ -188,7 +190,8 @@ export function getEmbeddingFingerprint(model: string = DEFAULT_EMBED_MODEL): st
     // composition (estimateCharsPerToken) instead of the fixed 3.0.
     `chunk_chars_estimator:2`,
   ].join("\n");
-  return createHash("sha256").update(significant).digest("hex").slice(0, 6);
+  const digest = createHash("sha256").update(significant).digest("hex");
+  return model.startsWith("remote-openai:") ? digest : digest.slice(0, 6);
 }
 
 /**
@@ -1390,6 +1393,7 @@ function initializeDatabase(db: Database): void {
   // Document metadata — extraction state plus normalized value rows for
   // metadata filtering. Keyed by document identity, not content hash.
   initializeMetadataSchema(db);
+  initializeProcessorSchema(db);
 
   // Store collections — makes the DB self-contained (no external config needed)
   db.exec(`
@@ -1456,9 +1460,11 @@ type StoreCollectionRow = {
   context: string | null;
 };
 
-function rowToNamedCollection(row: StoreCollectionRow): NamedCollection {
+function rowToNamedCollection(row: StoreCollectionRow, db: Database): NamedCollection {
+  const spec = db.prepare("SELECT spec FROM processor_specs WHERE collection = ?").get(row.name) as { spec: string } | undefined;
   return {
     name: row.name,
+    ...(spec ? { processor: copyCommandProcessorSpec(JSON.parse(spec.spec)) } : {}),
     path: row.path,
     pattern: row.pattern,
     ...(row.ignore_patterns ? { ignore: JSON.parse(row.ignore_patterns) as string[] } : {}),
@@ -1470,13 +1476,13 @@ function rowToNamedCollection(row: StoreCollectionRow): NamedCollection {
 
 export function getStoreCollections(db: Database): NamedCollection[] {
   const rows = db.prepare(`SELECT * FROM store_collections`).all() as StoreCollectionRow[];
-  return rows.map(rowToNamedCollection);
+  return rows.map(row => rowToNamedCollection(row, db));
 }
 
 export function getStoreCollection(db: Database, name: string): NamedCollection | null {
   const row = db.prepare(`SELECT * FROM store_collections WHERE name = ?`).get(name) as StoreCollectionRow | null | undefined;
   if (row == null) return null;
-  return rowToNamedCollection(row);
+  return rowToNamedCollection(row, db);
 }
 
 export function getStoreGlobalContext(db: Database): string | undefined {
@@ -1507,6 +1513,11 @@ export function getStoreContexts(db: Database): Array<{ collection: string; path
 }
 
 export function upsertStoreCollection(db: Database, name: string, collection: Omit<Collection, 'pattern'> & { pattern?: string }): void {
+  const spec = collection.processor === undefined ? undefined : copyCommandProcessorSpec(collection.processor);
+  if (spec) {
+    db.prepare(`INSERT INTO processor_specs(collection, spec) VALUES (?, ?)
+      ON CONFLICT(collection) DO UPDATE SET spec = excluded.spec`).run(name, JSON.stringify(spec));
+  } else db.prepare("DELETE FROM processor_specs WHERE collection = ?").run(name);
   db.prepare(`
     INSERT INTO store_collections (name, path, pattern, ignore_patterns, include_by_default, update_command, context)
     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -1581,6 +1592,8 @@ export function setStoreGlobalContext(db: Database, value: string | undefined): 
  * External config always wins. Skips sync if config hash hasn't changed.
  */
 export function syncConfigToDb(db: Database, config: CollectionConfig): void {
+  // Config sync is also used on externally seeded databases before Store opens.
+  initializeProcessorSchema(db);
   // Check config hash — skip sync if unchanged
   const configJson = JSON.stringify(config);
   const hash = createHash('sha256').update(configJson).digest('hex');
@@ -1959,12 +1972,16 @@ export async function reindexCollection(
   collectionName: string,
   options?: {
     ignorePatterns?: string[];
+    processor?: DocumentProcessor;
+    signal?: AbortSignal;
     onProgress?: (info: ReindexProgress) => void;
   }
 ): Promise<ReindexResult> {
+  const processor = options?.processor ? snapshotProcessor(options.processor) : undefined;
+  requireProcessor(store.db, collectionName, !!getStoreCollection(store.db, collectionName)?.processor, processor);
   const batch = scanWriteBatch(store.db);
   try {
-    const result = await reindexCollectionIn(batch, store, collectionPath, globPattern, collectionName, options);
+    const result = await reindexCollectionIn(batch, store, collectionPath, globPattern, collectionName, processor ? { ...options, processor } : options);
     batch.commit();
     return result;
   } catch (err) {
@@ -1981,6 +1998,8 @@ async function reindexCollectionIn(
   collectionName: string,
   options?: {
     ignorePatterns?: string[];
+    processor?: DocumentProcessor;
+    signal?: AbortSignal;
     onProgress?: (info: ReindexProgress) => void;
   }
 ): Promise<ReindexResult> {
@@ -2005,6 +2024,10 @@ async function reindexCollectionIn(
     };
   }
   const files = await listCollectionFiles(collectionPath, globPattern, options?.ignorePatterns);
+
+  if (options?.processor) {
+    return reindexProcessedFiles(db, batch, collectionPath, collectionName, files.map(normalizePathSeparators), options.processor, options);
+  }
 
   const total = files.length;
   let indexed = 0, updated = 0, unchanged = 0, processed = 0, metadataErrors = 0;
@@ -2205,6 +2228,7 @@ export type EmbedResult = {
 };
 
 export type EmbedOptions = {
+  signal?: AbortSignal;
   force?: boolean;
   model?: string;
   /**
@@ -2488,7 +2512,7 @@ export async function generateEmbeddings(
         attempts: (previous?.attempts ?? 0) + 1,
         reason,
       });
-      retryQueue.set(key, chunk);
+      if (!model.startsWith("remote-openai:")) retryQueue.set(key, chunk);
     };
     const clearFailure = (chunk: ChunkItem) => {
       const key = chunkKey(chunk);
@@ -2670,8 +2694,10 @@ export async function generateEmbeddings(
           // individual retry succeeds, any prior failure for that chunk is
           // cleared, so the visible error count reflects outstanding failures.
           const batchReason = reasonFromError(error);
-          if (!session.isValid) {
-            for (const chunk of chunkBatch) recordFailure(chunk, `batch failed and session expired: ${batchReason}`);
+          if (!session.isValid || model.startsWith("remote-openai:")) {
+            // A remote batch is one bounded attempt; malformed/partial responses
+            // must not be rescued by individual HTTP calls.
+            for (const chunk of chunkBatch) recordFailure(chunk, `batch failed: ${batchReason}`);
             batchChunkBytesProcessed += chunkBatch.reduce((sum, c) => sum + c.bytes, 0);
           } else {
             for (const chunk of chunkBatch) {
@@ -2718,7 +2744,7 @@ export async function generateEmbeddings(
     }
 
     return { chunksEmbedded, docsProcessed, errors: activeErrorCount(), failures: failureList() };
-  }, { maxDuration: options?.maxDurationMs ?? DEFAULT_EMBED_MAX_DURATION_MS, name: 'generateEmbeddings' });
+  }, { maxDuration: options?.maxDurationMs ?? DEFAULT_EMBED_MAX_DURATION_MS, signal: options?.signal, name: 'generateEmbeddings' });
 
   return {
     docsProcessed: result.docsProcessed,
@@ -4058,6 +4084,13 @@ async function chunkDocumentByTokensWithLlm(
   chunkStrategy: ChunkStrategy = "regex",
   signal?: AbortSignal
 ): Promise<{ text: string; pos: number; tokens: number }[]> {
+  if (llm.embedModelName?.startsWith("remote-openai:")) {
+    signal?.throwIfAborted();
+    // Fixed remote format v1: the existing surrogate-safe character chunker,
+    // never a local tokenizer or token-truncation pass. Tokens are estimates.
+    return chunkDocument(content, CHUNK_SIZE_CHARS, CHUNK_OVERLAP_CHARS, CHUNK_WINDOW_CHARS)
+      .map(chunk => ({ ...chunk, tokens: Math.ceil(chunk.text.length / 4) }));
+  }
   // Script-aware chars/token estimate from the document's own text: CJK prose
   // measures 1.64 chars/token on Qwen3-Embedding-0.6B-Q8_0 (2026-09-21, ko
   // 1380 chars / 842 tokens) while English measures 6.08 (2680 / 441) but
@@ -4580,6 +4613,7 @@ export function removeCollection(db: Database, collectionName: string): { delete
 
     db.prepare(`DELETE FROM documents WHERE collection = ?`).run(collectionName);
     db.prepare(`DELETE FROM file_sync_state WHERE collection = ?`).run(collectionName);
+    removeProcessorState(db, collectionName);
 
     // Clean up orphaned content hashes with the same conservative predicate as
     // cleanupOrphanedContent(): only hashes with no remaining document rows —
@@ -4632,6 +4666,7 @@ export function renameCollection(db: Database, oldName: string, newName: string)
     db.prepare(`DELETE FROM file_sync_state WHERE collection = ?`).run(newName);
     db.prepare(`UPDATE file_sync_state SET collection = ? WHERE collection = ?`).run(newName, oldName);
     renameCollectionId(db, oldName, newName);
+    renameProcessorState(db, oldName, newName);
   }).immediate();
 }
 
@@ -5402,12 +5437,58 @@ function nearestVecDocuments(
   }
 }
 
+/** Enforce remote spaces in KNN scope without changing local-to-local compatibility. */
+function assertRemoteEmbeddingBoundary(db: Database, model: string, collectionName?: string | readonly string[], filter?: MetadataFilter): void {
+  if (!hasVectorIndex(db)) return;
+  const names = scopedCollectionNames(collectionName);
+  const ids = names ? Array.from(resolveCollectionIds(db, names).values()) : undefined;
+  if (ids?.length === 0) return;
+  const eligible = filter ? eligibleRowsSql({ filter }) : undefined;
+  const conditions: string[] = [];
+  const params: SQLiteValue[] = [];
+  if (ids) {
+    conditions.push(`vr.collection_id IN (${ids.map(() => "?").join(",")})`);
+    params.push(...ids);
+  }
+  if (eligible) {
+    conditions.push(`vr.id IN (SELECT vr.id ${eligible.sql})`);
+    params.push(...eligible.params);
+  }
+  conditions.push(`EXISTS (SELECT 1 FROM ${VEC_TABLE} v WHERE v.rowid = vr.id)`);
+  if (model.startsWith("remote-openai:")) {
+    conditions.push("(cv.model IS NULL OR cv.model != ? OR cv.embed_fingerprint != ?)");
+    params.push(model, getEmbeddingFingerprint(model));
+  } else {
+    // Local labels and legacy fingerprints keep their existing semantics, but
+    // a local query must never rank a remote embedding space (or load ML first).
+    conditions.push("cv.model GLOB 'remote-openai:*'");
+  }
+  const foreign = withLazyContentVectorMigration(db, () => db.prepare(`
+    SELECT 1 FROM ${VEC_ROWS_TABLE} vr
+    LEFT JOIN content_vectors cv ON cv.hash = vr.hash AND cv.seq = vr.seq
+    WHERE ${conditions.join(" AND ")} LIMIT 1
+  `).get(...params));
+  if (foreign) throw new Error("Vector space mismatch; re-embed the selected collections with the configured model");
+}
+
 export async function searchVec(db: Database, query: string, model: string, limit: number = 20, collectionName?: string | readonly string[], session?: ILLMSession, precomputedEmbedding?: number[], llm?: LlamaCpp, filter?: MetadataFilter, scope?: DocumentFilter): Promise<SearchResult[]> {
   if (!hasVectorIndex(db)) return [];
-
+  // No read transaction spans HTTP. Fail before paying for a query, then
+  // recheck after the await in the SAME snapshot as KNN and document resolution.
+  assertRemoteEmbeddingBoundary(db, model, collectionName, filter);
   const embedding = precomputedEmbedding ?? await getEmbedding(query, model, true, session, llm);
   if (!embedding) return [];
+  session?.signal.throwIfAborted();
 
+  return db.transaction(() => {
+    if (!hasVectorIndex(db)) return [];
+    assertRemoteEmbeddingBoundary(db, model, collectionName, filter);
+    return searchVecSnapshot(db, embedding, limit, collectionName, filter, scope);
+  })();
+}
+
+/** Synchronous reads only; called inside the post-embedding read transaction. */
+function searchVecSnapshot(db: Database, embedding: number[], limit: number, collectionName?: string | readonly string[], filter?: MetadataFilter, scope?: DocumentFilter): SearchResult[] {
   const names = scopedCollectionNames(collectionName);
   let collectionIds: number[] | undefined;
   if (names) {
@@ -5450,8 +5531,7 @@ export async function searchVec(db: Database, query: string, model: string, limi
   // One batched context lookup for all winners (was one N+1 triple per row).
   const vecContexts = getContextsForFiles(db, winners.map(row => row.filepath));
   return winners.flatMap((row): SearchResult[] => {
-    // The body is read after resolution, outside its snapshot: another
-    // process's orphaned-content cleanup can delete the row in between.
+    // Body, vector, metadata and context reads share the search snapshot.
     const content = bodyOf.get(row.hash) as { doc: string } | null | undefined;
     if (content == null) return [];
     const body = content.doc;
@@ -5779,18 +5859,27 @@ export function deleteExpansionCacheEntry(db: Database, query: string, model: st
 // Reranking
 // =============================================================================
 
-/** Per-request rerank options. A 5th positional on Store.rerank keeps existing SDK callers working. */
+/**
+ * Per-request rerank options. A 5th positional on Store.rerank keeps existing SDK callers working.
+ * Upstream passes a bare AbortSignal in that position; ko-qmd takes it as `signal` here.
+ */
 export type StoreRerankOptions = {
   /** Doc token cap for this request; overrides QMD_RERANK_MAX_DOC_TOKENS. */
   maxDocTokens?: number;
   /** Called once the rerank model is loaded (not at all when every chunk is cached). */
   onModelReady?: () => void;
+  /** Cancels a remote rerank; local scoring may finish before cancellation is observed. */
+  signal?: AbortSignal;
 };
 
 export async function rerank(query: string, documents: { file: string; text: string }[], model: string = DEFAULT_RERANK_MODEL, db: Database, intent?: string, llmOverride?: LlamaCpp, options: StoreRerankOptions = {}): Promise<{ file: string; score: number }[]> {
+  const signal = options.signal;
+  signal?.throwIfAborted();
+  // Snapshot cache inputs too: caller mutation during HTTP must not change keys.
+  documents = documents.map(doc => ({ file: doc.file, text: doc.text }));
   const rerankQuery = formatRerankQuery(query, intent);
   const llm = llmOverride ?? getDefaultLlamaCpp();
-  // Prefer the LLM instance's resolved URI so a models.rerank swap cannot
+  // Prefer the LLM instance's resolved identity so a models.rerank swap cannot
   // reuse another model's cache entries (#764).
   const cacheModel = llm.rerankModelName ?? model;
   // A capped rerank (per request, else QMD_RERANK_MAX_DOC_TOKENS) scores a different
@@ -5821,31 +5910,43 @@ export async function rerank(query: string, documents: { file: string; text: str
   // Rerank uncached documents using LlamaCpp
   if (uncachedDocsByChunk.size > 0) {
     const uncachedDocs = [...uncachedDocsByChunk.values()];
-    const rerankResult = await llm.rerank(rerankQuery, uncachedDocs, {
+    const callOptions = {
       model: cacheModel,
       ...(requestMaxDocTokens ? { maxDocTokens: requestMaxDocTokens } : {}),
       onModelReady: options.onModelReady,
-    });
+      ...(signal ? { signal } : {}),
+    };
+    const rerankResult = cacheModel.startsWith("remote-typesafe:")
+      ? await withLLMSessionForLlm(llm, session => session.rerank(rerankQuery, uncachedDocs, callOptions), { signal, name: "rerank" })
+      : await llm.rerank(rerankQuery, uncachedDocs, callOptions);
+    signal?.throwIfAborted();
 
     // Cache results by chunk text so identical chunks across files are scored once.
     // A "fallback" result (no rerank context could be created) is a flat 0.5, not a score:
     // it is returned but never cached, so it cannot outlive the failure.
+    // Complete scores arrive before any writes. Index, not file, identifies a
+    // chunk: two different chunks can have the same file name.
     const cacheable = rerankResult.model !== "fallback";
-    const textByFile = new Map(uncachedDocs.map(d => [d.file, d.text]));
-    for (const result of rerankResult.results) {
-      const chunk = textByFile.get(result.file) || "";
-      if (cacheable) {
-        const cacheKey = getCacheKey("rerank", { query: rerankQuery, model: cacheTag, chunk });
-        setCachedResult(db, cacheKey, result.score.toString());
+    db.transaction(() => {
+      for (const result of rerankResult.results) {
+        signal?.throwIfAborted();
+        const chunk = uncachedDocs[result.index]!.text;
+        if (cacheable) {
+          const cacheKey = getCacheKey("rerank", { query: rerankQuery, model: cacheTag, chunk });
+          setCachedResult(db, cacheKey, result.score.toString());
+        }
+        cachedResults.set(chunk, result.score);
       }
-      cachedResults.set(chunk, result.score);
-    }
+      signal?.throwIfAborted();
+    })();
   }
 
-  // Return all results sorted by score
-  return documents
+  // Return all results sorted by score, including a fully cached call.
+  const results = documents
     .map(doc => ({ file: doc.file, score: cachedResults.get(doc.text) || 0 }))
     .sort((a, b) => b.score - a.score);
+  signal?.throwIfAborted();
+  return results;
 }
 
 // =============================================================================
@@ -6800,6 +6901,7 @@ export interface SearchHooks {
 }
 
 export interface HybridQueryOptions {
+  signal?: AbortSignal;
   collection?: string | readonly string[];
   filter?: MetadataFilter;  // metadata filter applied to every retrieval call
   limit?: number;           // default 10
@@ -7133,7 +7235,7 @@ export async function rerankWithDeadline(
   query: string,
   chunks: { file: string; text: string }[],
   intent: string | undefined,
-  options: { rerankMaxDocTokens?: number; rerankDeadlineMs?: number; hooks?: SearchHooks } | undefined,
+  options: { rerankMaxDocTokens?: number; rerankDeadlineMs?: number; hooks?: SearchHooks; signal?: AbortSignal } | undefined,
 ): Promise<{ file: string; score: number; unscored?: boolean }[] | null> {
   const hooks = options?.hooks;
   hooks?.onRerankStart?.(chunks.length);
@@ -7143,7 +7245,7 @@ export async function rerankWithDeadline(
     deadlineMs: number | undefined,
   ) =>
     runWithDeadline(store, "rerank", deadlineMs, hooks, (onModelReady) =>
-      store.rerank(query, docs, undefined, intent, { maxDocTokens: options?.rerankMaxDocTokens, onModelReady }));
+      store.rerank(query, docs, undefined, intent, { maxDocTokens: options?.rerankMaxDocTokens, onModelReady, signal: options?.signal }));
   // Cascade: score the RRF head first. On a decisive top margin the tail keeps
   // score 0 (RRF position tiebreak only) instead of paying for 25 more
   // cross-encoder pairs; a contested top scores everything, as before.
@@ -7189,6 +7291,7 @@ const chunkCandidatesForRerank = async (
   query: string,
   intent: string | undefined,
   chunkStrategy: ChunkStrategy | undefined,
+  signal?: AbortSignal,
 ): Promise<Map<string, CandidateChunks>> => {
   const intentTerms = intent ? extractIntentTerms(intent) : [];
   const docChunkMap = new Map<string, CandidateChunks>();
@@ -7202,7 +7305,9 @@ const chunkCandidatesForRerank = async (
       CHUNK_WINDOW_TOKENS,
       SEARCH_PATH_OTHER_CHARS_PER_TOKEN,
     );
+    signal?.throwIfAborted();
     const chunks = await chunkDocumentAsync(cand.body, maxChars, overlapChars, windowChars, cand.file, chunkStrategy);
+    signal?.throwIfAborted();
     if (chunks.length === 0) continue;
     docChunkMap.set(cand.file, { chunks, bestIdx: selectRerankChunk(chunks, query, intentTerms) });
   }
@@ -7237,6 +7342,8 @@ export async function hybridQuery(
   rawQuery: string,
   options?: HybridQueryOptions
 ): Promise<HybridQueryResult[]> {
+  const signal = options?.signal;
+  signal?.throwIfAborted();
   // ko-qmd: "X 말고 Y" names X to exclude — every list and the reranker see only Y.
   // (Tried demoting X with lex -terms: falsified 2026-10-09 — the expected note
   // often discusses X itself, e.g. bm25-ranking.md mentions TF-IDF, so NOT
@@ -7287,14 +7394,17 @@ export async function hybridQuery(
   // (test/fixtures/ko-vault/BASELINE.md 2026-09-26).
   const skipsExpansion = hasStrongSignal || containsHangul(query);
   hooks?.onExpandStart?.();
+  signal?.throwIfAborted();
   const expandStart = Date.now();
   const expansion = skipsExpansion
     ? []
     : await runWithDeadline(store, "expand", options?.expandDeadlineMs, hooks, (onModelReady) =>
         store.expandQuery(query, undefined, { onModelReady }));
   const expanded = expansion === TIMED_OUT ? [] : expansion;
+  signal?.throwIfAborted();
 
   hooks?.onExpand?.(query, expanded, Date.now() - expandStart);
+  signal?.throwIfAborted();
 
   // Seed with initial FTS results (avoid re-running original query FTS)
   if (initialFts.length > 0) {
@@ -7349,11 +7459,15 @@ export async function hybridQuery(
     // Batch embed all vector queries in a single call
     const llm = getLlm(store);
     const embedModel = llm.embedModelName;
+    assertRemoteEmbeddingBoundary(store.db, embedModel, collection, filter);
     const textsToEmbed = vecQueries.map(q => formatQueryForEmbedding(q.text, embedModel));
     hooks?.onEmbedStart?.(textsToEmbed.length);
     const embedStart = Date.now();
-    const embeddings = await llm.embedBatch(textsToEmbed);
+    signal?.throwIfAborted();
+    const embeddings = await llm.embedBatch(textsToEmbed, signal ? { signal } : undefined);
+    signal?.throwIfAborted();
     hooks?.onEmbedDone?.(Date.now() - embedStart);
+    signal?.throwIfAborted();
 
     // Run sqlite-vec lookups with pre-computed embeddings
     const vecStart = Date.now();
@@ -7365,6 +7479,7 @@ export async function hybridQuery(
         vecQueries[i]!.text, embedModel, 20, collection,
         undefined, embedding, filter, scope
       );
+      signal?.throwIfAborted();
       if (vecResults.length > 0) {
         for (const r of vecResults) docidMap.set(r.filepath, r.docid);
         rankedLists.push(vecResults.map(r => ({
@@ -7386,6 +7501,7 @@ export async function hybridQuery(
   // replays the same misses on every warm repeat. Only judge sub-queries the
   // store could actually run: on FTS-only stores, vec/hyde expansions never
   // execute and say nothing about the expansion's quality.
+  signal?.throwIfAborted();
   if (expanded.length > 0) {
     const runnable = expanded.filter(q => q.type === "lex" || hasVectors);
     const expansionContributed = rankedListMeta.some(m => m.queryType !== "original");
@@ -7412,13 +7528,14 @@ export async function hybridQuery(
   // Step 5: Chunk documents, pick best chunk per doc for reranking.
   // Reranking full bodies is O(tokens) — the critical perf lesson that motivated this refactor.
   const chunkStart = Date.now();
-  const docChunkMap = await chunkCandidatesForRerank(candidates, query, intent, options?.chunkStrategy);
+  const docChunkMap = await chunkCandidatesForRerank(candidates, query, intent, options?.chunkStrategy, signal);
   hooks?.onChunkDone?.(Date.now() - chunkStart);
 
   // Step 6: Rerank chunks (NOT full bodies). No reranker, or one past its deadline, means RRF order.
   const reranked = skipRerank
     ? null
     : await rerankWithDeadline(store, query, rerankDocuments(candidates, docChunkMap), intent, options);
+  signal?.throwIfAborted();
 
   if (reranked === null) {
     // Skip LLM reranking — return candidates scored by RRF only
@@ -7470,7 +7587,9 @@ export async function hybridQuery(
       // cut a 0.5 threshold to two results, so only a caller that skipped rerank gets it applied here.
       .filter(r => !skipRerank || r.score >= minScore)
       .slice(0, limit);
-    return attachResultMetadata(store.db, rrfResults);
+    const results = attachResultMetadata(store.db, rrfResults);
+    signal?.throwIfAborted();
+    return results;
   }
 
 
@@ -7535,7 +7654,9 @@ export async function hybridQuery(
     })
     .filter(r => unscoredFiles.has(r.file) || r.score >= minScore)
     .slice(0, limit);
-  return attachResultMetadata(store.db, finalResults);
+  const results = attachResultMetadata(store.db, finalResults);
+  signal?.throwIfAborted();
+  return results;
 }
 
 export interface VectorSearchOptions {
@@ -7631,6 +7752,7 @@ export async function vectorSearchQuery(
  * Matches the format used in QMD training data.
  */
 export interface StructuredSearchOptions {
+  signal?: AbortSignal;
   collections?: string[];   // Filter to specific collections (OR match)
   filter?: MetadataFilter;  // metadata filter applied to every retrieval call
   limit?: number;           // default 10
@@ -7672,6 +7794,8 @@ export async function structuredSearch(
   rawSearches: ExpandedQuery[],
   options?: StructuredSearchOptions
 ): Promise<HybridQueryResult[]> {
+  const signal = options?.signal;
+  signal?.throwIfAborted();
   const limit = options?.limit ?? 10;
   const minScore = options?.minScore ?? 0;
   // Floor at 1: see hybridQuery — a zero/negative limit inverts the position
@@ -7762,11 +7886,15 @@ export async function structuredSearch(
     if (vecSearches.length > 0) {
       const llm = getLlm(store);
       const embedModel = llm.embedModelName;
+      assertRemoteEmbeddingBoundary(store.db, embedModel, collections, filter);
       const textsToEmbed = vecSearches.map(e => formatQueryForEmbedding(e.s.query, embedModel));
       hooks?.onEmbedStart?.(textsToEmbed.length);
       const embedStart = Date.now();
-      const embeddings = await llm.embedBatch(textsToEmbed);
+      signal?.throwIfAborted();
+      const embeddings = await llm.embedBatch(textsToEmbed, signal ? { signal } : undefined);
+      signal?.throwIfAborted();
       hooks?.onEmbedDone?.(Date.now() - embedStart);
+      signal?.throwIfAborted();
 
       const vecStart = Date.now();
       for (let i = 0; i < vecSearches.length; i++) {
@@ -7778,6 +7906,7 @@ export async function structuredSearch(
           entry.s.query, embedModel, breadth, collections,
           undefined, embedding, filter, scope
         );
+        signal?.throwIfAborted();
         if (vecResults.length === 0) continue;
         for (const r of vecResults) docidMap.set(r.filepath, r.docid);
         rankedLists.push(vecResults.map(r => ({
@@ -7812,6 +7941,7 @@ export async function structuredSearch(
   const contexts = getContextsForFiles(store.db, candidates.map((c) => c.file));
 
   hooks?.onExpand?.("", [], 0); // Signal no expansion (pre-expanded)
+  signal?.throwIfAborted();
 
   // Step 4: Chunk documents, pick best chunk per doc for reranking
   // Use first lex query as the "query" for keyword matching, or first vec if no lex
@@ -7819,13 +7949,14 @@ export async function structuredSearch(
     || searches.find(s => s.type === 'vec')?.query
     || searches[0]?.query || "";
   const chunkStart = Date.now();
-  const docChunkMap = await chunkCandidatesForRerank(candidates, primaryQuery, intent, options?.chunkStrategy);
+  const docChunkMap = await chunkCandidatesForRerank(candidates, primaryQuery, intent, options?.chunkStrategy, signal);
   hooks?.onChunkDone?.(Date.now() - chunkStart);
 
   // Step 5: Rerank chunks. No reranker, or one past its deadline, means RRF order.
   const reranked = skipRerank
     ? null
     : await rerankWithDeadline(store, primaryQuery, rerankDocuments(candidates, docChunkMap), intent, options);
+  signal?.throwIfAborted();
 
   if (reranked === null) {
     // Skip LLM reranking — return candidates scored by RRF only
@@ -7877,7 +8008,9 @@ export async function structuredSearch(
       // cut a 0.5 threshold to two results, so only a caller that skipped rerank gets it applied here.
       .filter(r => !skipRerank || r.score >= minScore)
       .slice(0, limit);
-    return attachResultMetadata(store.db, rrfResults);
+    const results = attachResultMetadata(store.db, rrfResults);
+    signal?.throwIfAborted();
+    return results;
   }
 
 
@@ -7941,5 +8074,7 @@ export async function structuredSearch(
     })
     .filter(r => unscoredFiles.has(r.file) || r.score >= minScore)
     .slice(0, limit);
-  return attachResultMetadata(store.db, finalResults);
+  const results = attachResultMetadata(store.db, finalResults);
+  signal?.throwIfAborted();
+  return results;
 }
