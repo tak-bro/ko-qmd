@@ -1274,8 +1274,19 @@ RESULT-HARD hybrid_r1=0.5630 hybrid_mrr=0.7701 full_r1=0.6630 full_mrr=0.8759 n=
 
 bm25, vector, hybrid and the gated hard numbers (`hybrid_r1`, `full_r1`) equal the 2026-10-11
 reference. Only the reranked `full_r5` / `full_mrr` drift (0.9729 → 0.9770, 0.8741 → 0.8759) —
-the rerank stage is recomputed every run and these are not gated. The gate reference is unchanged;
-the gate reads the last two lines below:
+the rerank stage is recomputed every run and these are not gated.
+
+After the last sync merge (`8be0c42`, v2.9.0 plus follow-ups), same command:
+
+```
+RESULT bm25_r5=0.8875 vector_r5=0.9119 hybrid_r5=0.9444 full_r5=0.9770 full_mrr=0.9451   # post-sync
+RESULT-HARD hybrid_r1=0.5630 hybrid_mrr=0.7701 full_r1=0.6630 full_mrr=0.8759 n=45 form=seam   # post-sync
+```
+
+Every aggregate equals the pre-sync run, and the gate passed at each of the seven merges. The
+pre-sync per-query rows were not kept, so this compares aggregates only, not `top_files` per query.
+
+The gate reference is unchanged; the gate reads the last two lines below:
 
 RESULT bm25_r5=0.8875 vector_r5=0.9119 hybrid_r5=0.9444 full_r5=0.9729 full_mrr=0.9434
 RESULT-HARD hybrid_r1=0.5630 hybrid_mrr=0.7701 full_r1=0.6630 full_mrr=0.8741 n=45 tol=0 form=seam
