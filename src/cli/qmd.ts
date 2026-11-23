@@ -5699,6 +5699,12 @@ if (isMain) {
             process.exit(1);
           }
 
+          // ko-qmd: open the index here first. A one-time migration (the vector
+          // partition copy and its VACUUM take minutes on a large index) then
+          // runs in the foreground with its progress on this terminal, instead
+          // of inside the child's listen window below, which would kill it.
+          createStore(getDbPath()).close();
+
           mkdirSync(cacheDir, { recursive: true });
           const logFd = openDaemonLogFile(logPath); // truncate — fresh log per daemon run (0600: carries query text)
           const selfPath = fileURLToPath(import.meta.url);

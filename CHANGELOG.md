@@ -6,7 +6,9 @@
 
 > **Upgrading converts your index in place.** The first `qmd` command after
 > the upgrade moves every vector into the per-collection layout (upstream
-> #983), printing its progress, and ends with a VACUUM. Going back to an
+> #983), printing its progress, and ends with a VACUUM. `qmd mcp --http
+> --daemon` runs it in the starting terminal before it spawns the daemon,
+> so the daemon's startup wait cannot cut it short. Going back to an
 > earlier ko-qmd afterwards needs `qmd embed -f`, and a running `qmd mcp`
 > daemon must be restarted.
 

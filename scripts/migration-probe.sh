@@ -4,7 +4,9 @@
 #
 # The real index and config are only read: `sqlite3 .backup` copies the index and
 # `cp` copies the config into the work dir, and every qmd command below runs with
-# INDEX_PATH and QMD_CONFIG_DIR pointing at the copies.
+# INDEX_PATH and QMD_CONFIG_DIR pointing at the copies. Both are always set to
+# the work dir: an inherited INDEX_PATH may name a real index, and copying the
+# source over it would convert that index in place.
 #
 # 1. The published `qmd` (QMD_PUBLISHED, default `qmd`) reads the copy's status
 #    before the conversion: embedded vectors, pending documents, orphaned chunks.
@@ -18,11 +20,11 @@
 # holds), every collection returns at least one result, and doctor's embedding
 # vector sample check passes. Prints `MIGRATION-OK embedded=<n> pending=<n>`.
 #
-# Exit 2 when INDEX_PATH or QMD_CONFIG_DIR points at the real index or config.
+# Exit 2 when PROBE_SOURCE_INDEX or PROBE_SOURCE_CONFIG lies inside the work dir,
+# which the probe deletes before copying.
 #
 # Env: PROBE_SOURCE_INDEX (default ~/.cache/qmd/index.sqlite),
-#      PROBE_SOURCE_CONFIG (default ~/.config/qmd), QMD_PUBLISHED (default qmd),
-#      INDEX_PATH / QMD_CONFIG_DIR (default under tmp/migration-probe/).
+#      PROBE_SOURCE_CONFIG (default ~/.config/qmd), QMD_PUBLISHED (default qmd).
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -32,8 +34,8 @@ source_index="${PROBE_SOURCE_INDEX:-$HOME/.cache/qmd/index.sqlite}"
 source_config="${PROBE_SOURCE_CONFIG:-$HOME/.config/qmd}"
 published="${QMD_PUBLISHED:-qmd}"
 work="$root/tmp/migration-probe"
-export INDEX_PATH="${INDEX_PATH:-$work/index.sqlite}"
-export QMD_CONFIG_DIR="${QMD_CONFIG_DIR:-$work/config}"
+export INDEX_PATH="$work/index.sqlite"
+export QMD_CONFIG_DIR="$work/config"
 export NO_COLOR=1
 
 # Resolve a path whose last component may not exist yet.
@@ -48,14 +50,11 @@ resolve() {
   fi
 }
 
-real_cache="$(resolve "$HOME/.cache/qmd")"
-real_config="$(resolve "$HOME/.config/qmd")"
-# collections.ts honours XDG_CONFIG_HOME when QMD_CONFIG_DIR is unset.
-real_xdg_config="$(resolve "${XDG_CONFIG_HOME:-$HOME/.config}/qmd")"
-for target in "$(resolve "$INDEX_PATH")" "$(resolve "$QMD_CONFIG_DIR")"; do
-  case "$target/" in
-    "$real_cache"/*|"$real_config"/*|"$real_xdg_config"/*)
-      echo "migration-probe: refusing to run against the real index or config ($target)" >&2
+work_real="$(resolve "$work")"
+for source in "$(resolve "$source_index")" "$(resolve "$source_config")"; do
+  case "$source/" in
+    "$work_real"/*)
+      echo "migration-probe: the source must not lie inside the work dir ($source)" >&2
       exit 2
       ;;
   esac
