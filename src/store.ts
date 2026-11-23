@@ -12,7 +12,42 @@
  */
 
 import { openDatabase, loadSqliteVec } from "./db.js";
-import type { Database } from "./db.js";
+import {
+  PartitionWriter,
+  VEC_COLLECTION_IDS_TABLE,
+  VEC_ROWS_TABLE,
+  VEC_TABLE,
+  activeCollectionsOfHash,
+  allocateCollectionId,
+  createPartitionedVecTable,
+  createVectorMetadataTables,
+  deleteCollectionId,
+  deletePartitionRows,
+  deletePartitionRowsOfHash,
+  hasVectorIndex,
+  missingPartitionRows,
+  partitionRowKey,
+  renameCollectionId,
+  resolveCollectionId,
+  resolveCollectionIds,
+  rowidList,
+  storedEmbeddingLookup,
+  upsertPartitionVector,
+  vecInteger,
+  vecLayout,
+  vecTableReadable,
+  type MissingPartitionRow,
+  type VecLayout,
+} from "./vec-layout.js";
+import {
+  FTS_SYNC_TRIGGERS_VERSION,
+  getUserVersion,
+  migrateVectorLayout,
+  runStoreMigrations,
+  VECTOR_PARTITION_VERSION,
+  type VectorMigrationProgress,
+} from "./store-migrations.js";
+import type { Database, SQLiteValue } from "./db.js";
 import picomatch from "picomatch";
 import { isNarrowing, matchesPaths, type DocumentFilter } from "./filters.js";
 import { createHash } from "crypto";
@@ -109,9 +144,9 @@ export function splitGlobMask(mask: string): string[] {
 export const DEFAULT_MULTI_GET_MAX_BYTES = 64 * 1024; // 64KB
 
 /**
- * Characters of a document body that search results and getHashesForEmbedding
- * return, so one very large document cannot put its whole text on the heap
- * per result.
+ * Characters of a document body that search results, the vector body lookup
+ * and getHashesForEmbedding return (SQLite's substr counts characters), so one
+ * very large document cannot put its whole text on the heap per result.
  */
 const BODY_CAP_CHARS = 262_144;
 
@@ -896,10 +931,6 @@ const CJK_CHAR_PATTERN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\
 const CJK_RUN_PATTERN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+/gu;
 const FTS_CJK_NORMALIZED_VERSION = "2"; // ko-qmd: "2" adds Hangul bigrams
 
-// Bump when any FTS sync trigger body in applyFtsSyncTriggers changes, so the
-// new definition is reapplied to existing databases on next open.
-const STORE_SCHEMA_VERSION = 2;
-
 /**
  * FTS5's unicode61 tokenizer does not segment CJK text into searchable words.
  * Normalize CJK runs by spacing every character so exact CJK queries can be
@@ -933,12 +964,6 @@ function sanitizeFTS5Phrase(phrase: string): string {
     .join(' ');
 }
 
-function getUserVersion(db: Database): number {
-  const row = db.prepare(`PRAGMA user_version`).get() as Record<string, number> | undefined;
-  const value = row ? Object.values(row)[0] : 0;
-  return typeof value === "number" ? value : Number(value) || 0;
-}
-
 // FTS sync triggers keep documents_fts current for callers that write directly
 // to documents (production indexing rebuilds FTS in TypeScript to normalize CJK
 // first). The bodies use DROP+CREATE rather than CREATE IF NOT EXISTS so a
@@ -946,9 +971,11 @@ function getUserVersion(db: Database): number {
 // autocommit statements, so concurrent opens of one database interleave across
 // connections (A drops, B drops, A creates, B creates -> "trigger already
 // exists"); busy_timeout serializes individual statements but not the pair.
-// Gate the work behind PRAGMA user_version and apply it inside one IMMEDIATE
-// transaction: the DROP+CREATE pair is atomic across connections, and a
-// double-checked read skips it once any process has stamped the version.
+// runStoreMigrations gates the work behind PRAGMA user_version and applies it
+// inside one IMMEDIATE transaction: the DROP+CREATE pair is atomic across
+// connections, and a double-checked read skips it once any process has
+// stamped the version. A ko-qmd trigger body change bumps KO_FTS_TRIGGERS_REVISION
+// (applyKoFtsSyncTriggers) instead, so existing databases reinstall it on the next open.
 function installFtsSyncTriggers(db: Database): void {
   db.exec(`DROP TRIGGER IF EXISTS documents_ai`);
   db.exec(`
@@ -997,19 +1024,25 @@ function installFtsSyncTriggers(db: Database): void {
   `);
 }
 
-function applyFtsSyncTriggers(db: Database): void {
-  if (getUserVersion(db) >= STORE_SCHEMA_VERSION) return;
-  db.exec(`BEGIN IMMEDIATE`);
-  try {
-    if (getUserVersion(db) < STORE_SCHEMA_VERSION) {
-      installFtsSyncTriggers(db);
-      db.exec(`PRAGMA user_version = ${STORE_SCHEMA_VERSION}`);
+/** Progress of the one-time vector layout upgrade, on stderr. */
+function vectorMigrationReporter(): (progress: VectorMigrationProgress) => void {
+  let startedAt: number | null = null;
+  const tty = Boolean(process.stderr.isTTY);
+  return ({ phase, copied, total }) => {
+    if (startedAt === null) {
+      startedAt = Date.now();
+      process.stderr.write(`Moving ${total} vectors to the per-collection index layout (one-time upgrade)...\n`);
     }
-    db.exec(`COMMIT`);
-  } catch (err) {
-    db.exec(`ROLLBACK`);
-    throw err;
-  }
+    if (phase === "copy") {
+      if (tty) process.stderr.write(`\r  copied ${copied}/${total}`);
+      return;
+    }
+    if (tty) process.stderr.write("\r");
+    if (phase === "verify") process.stderr.write(`  copied ${copied}/${total}; verifying...\n`);
+    else if (phase === "flip") process.stderr.write(`  dropping the old vector table...\n`);
+    else if (phase === "vacuum") process.stderr.write(`  vacuuming the index (minutes on a large index)...\n`);
+    else process.stderr.write(`  vector index upgraded in ${Math.round((Date.now() - startedAt) / 1000)}s\n`);
+  };
 }
 
 /**
@@ -1085,8 +1118,65 @@ function recreateDocumentsFts(db: Database): void {
   db.exec(`DELETE FROM store_config WHERE key = 'fts_cjk_normalized_version'`);
 }
 
+// ko-qmd: documents_au is scoped to the FTS-visible columns, a body revision after
+// upstream's FTS_SYNC_TRIGGERS_VERSION 1. Upstream owns PRAGMA user_version (its version 2
+// is the vector partition step), so ko-qmd tracks its trigger revision in store_config,
+// where no upstream step can collide with it. An index an earlier ko-qmd build stamped
+// user_version 2 already has these triggers; it still holds the legacy vector table, which
+// runStoreMigrations copies as a stamped-store repair.
+const KO_FTS_TRIGGERS_KEY = "ko_fts_sync_triggers";
+const KO_FTS_TRIGGERS_REVISION = "2";
+
+function koFtsTriggersRevision(db: Database): string | undefined {
+  const row = db.prepare(`SELECT value FROM store_config WHERE key = ?`).get(KO_FTS_TRIGGERS_KEY) as { value: string } | undefined;
+  return row?.value;
+}
+
+/**
+ * ko-qmd: an index an earlier ko-qmd build opened is stamped user_version 2,
+ * which upstream reads as "vectors already partitioned". Such an index still
+ * holds the legacy vector table, so runStoreMigrations would convert it on its
+ * stamped-store repair path, where a failure (busy lock, full disk) is only a
+ * warning and vector search goes quiet. Rewinding the stamp to the FTS step
+ * sends the conversion down the first-upgrade path, where a failure stops the
+ * open. Only an index this build has never opened (no ko trigger revision yet)
+ * is rewound; FTS_SYNC_TRIGGERS_VERSION is the step both numberings share.
+ */
+function rewindKoSchemaStamp(db: Database): void {
+  const isKoEraStamp = () =>
+    koFtsTriggersRevision(db) === undefined
+    && getUserVersion(db) === VECTOR_PARTITION_VERSION
+    && vecLayout(db).kind === "legacy";
+  if (!isKoEraStamp()) return;
+  db.exec(`BEGIN IMMEDIATE`);
+  try {
+    if (isKoEraStamp()) db.exec(`PRAGMA user_version = ${FTS_SYNC_TRIGGERS_VERSION}`);
+    db.exec(`COMMIT`);
+  } catch (err) {
+    db.exec(`ROLLBACK`);
+    throw err;
+  }
+}
+
+/** Reinstall the ko-qmd trigger bodies once per database, with applyVersionedStep's double-checked IMMEDIATE write. */
+function applyKoFtsSyncTriggers(db: Database): void {
+  if (koFtsTriggersRevision(db) === KO_FTS_TRIGGERS_REVISION) return;
+  db.exec(`BEGIN IMMEDIATE`);
+  try {
+    if (koFtsTriggersRevision(db) !== KO_FTS_TRIGGERS_REVISION) {
+      installFtsSyncTriggers(db);
+      db.prepare(`INSERT INTO store_config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
+        .run(KO_FTS_TRIGGERS_KEY, KO_FTS_TRIGGERS_REVISION);
+    }
+    db.exec(`COMMIT`);
+  } catch (err) {
+    db.exec(`ROLLBACK`);
+    throw err;
+  }
+}
+
 // Missing-table create and legacy-schema repair share one IMMEDIATE
-// transaction with a double-checked read, matching applyFtsSyncTriggers:
+// transaction with a double-checked read, matching applyVersionedStep:
 // the DROP+CREATE (or first CREATE) is atomic across connections, and
 // losers skip once any process has published the current table.
 function ensureDocumentsFtsSchema(db: Database): void {
@@ -1096,10 +1186,10 @@ function ensureDocumentsFtsSchema(db: Database): void {
     if (!documentsFtsSchemaIsCurrent(db)) {
       if (documentsFtsExists(db)) {
         recreateDocumentsFts(db);
-        // recreateDocumentsFts dropped the sync triggers. applyFtsSyncTriggers
+        // recreateDocumentsFts dropped the sync triggers. runStoreMigrations
         // only reinstalls them when user_version is stale, so a DB that already
         // has the current user_version would otherwise be left untriggered.
-        if (getUserVersion(db) >= STORE_SCHEMA_VERSION) {
+        if (getUserVersion(db) >= FTS_SYNC_TRIGGERS_VERSION) {
           installFtsSyncTriggers(db);
         }
       } else {
@@ -1295,6 +1385,7 @@ function initializeDatabase(db: Database): void {
   `);
 
   ensureContentVectorsStatusIndex(db);
+  createVectorMetadataTables(db);
 
   // Document metadata — extraction state plus normalized value rows for
   // metadata filtering. Keyed by document identity, not content hash.
@@ -1340,7 +1431,13 @@ function initializeDatabase(db: Database): void {
   // Do not CREATE VIRTUAL TABLE here as an autocommit statement: FTS5
   // IF NOT EXISTS races under WAL (see createDocumentsFtsTable).
   ensureDocumentsFtsSchema(db);
-  applyFtsSyncTriggers(db);
+  rewindKoSchemaStamp(db);
+  runStoreMigrations(db, {
+    installFtsSyncTriggers,
+    sqliteVecAvailable: _sqliteVecAvailable === true,
+    onProgress: vectorMigrationReporter(),
+  });
+  applyKoFtsSyncTriggers(db);
 
   rebuildFTSForCjkNormalization(db);
 }
@@ -1520,28 +1617,45 @@ export function syncConfigToDb(db: Database, config: CollectionConfig): void {
 }
 
 
+export function isSqliteVecAvailable(): boolean {
+  return _sqliteVecAvailable === true;
+}
+
+/**
+ * Drop the vec0 table and empty its rowid map in one commit. vector_rows ids
+ * are reused once the map is empty, so a map emptied without the drop hands
+ * new rows rowids that surviving vec0 rows still hold, and every later insert
+ * fails on the vec0 primary key.
+ */
+function dropVectorIndex(db: Database): void {
+  db.transaction(() => {
+    db.exec(`DROP TABLE IF EXISTS ${VEC_TABLE}`);
+    db.exec(`DELETE FROM ${VEC_ROWS_TABLE}`);
+  }).immediate();
+}
+
 function ensureVecTableInternal(db: Database, dimensions: number): void {
   if (!_sqliteVecAvailable) {
     throw createSqliteVecUnavailableError(
       _sqliteVecUnavailableReason ?? "vector operations require a SQLite build with extension loading support"
     );
   }
-  const tableInfo = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get() as { sql: string } | null;
-  if (tableInfo) {
-    const match = tableInfo.sql.match(/float\[(\d+)\]/);
-    const hasHashSeq = tableInfo.sql.includes('hash_seq');
-    const hasCosine = tableInfo.sql.includes('distance_metric=cosine');
-    const existingDims = match?.[1] ? parseInt(match[1], 10) : null;
-    if (existingDims === dimensions && hasHashSeq && hasCosine) return;
-    if (existingDims !== null && existingDims !== dimensions) {
+  let layout = vecLayout(db);
+  if (layout.kind === "legacy") {
+    migrateVectorLayout(db, { sqliteVecAvailable: true, onProgress: vectorMigrationReporter() });
+    layout = vecLayout(db);
+  }
+  if (layout.kind === "partitioned") {
+    if (layout.dimensions === dimensions) return;
+    if (layout.dimensions !== null) {
       throw new Error(
-        `Embedding dimension mismatch: existing vectors are ${existingDims}d but the current model produces ${dimensions}d. ` +
+        `Embedding dimension mismatch: existing vectors are ${layout.dimensions}d but the current model produces ${dimensions}d. ` +
         `Run 'qmd embed -f' to re-embed with the new model.`
       );
     }
-    db.exec("DROP TABLE IF EXISTS vectors_vec");
+    dropVectorIndex(db);
   }
-  db.exec(`CREATE VIRTUAL TABLE vectors_vec USING vec0(hash_seq TEXT PRIMARY KEY, embedding float[${dimensions}] distance_metric=cosine)`);
+  createPartitionedVecTable(db, dimensions);
 }
 
 // =============================================================================
@@ -1689,15 +1803,6 @@ export async function listCollectionFiles(
     const parts = file.split("/");
     return !parts.some(part => part.startsWith("."));
   });
-}
-
-/** Why a collection root cannot be scanned (`ENOENT`, `ENOTDIR`, …), or null when it can. */
-function collectionRootProblem(collectionPath: string): string | null {
-  try {
-    return statSync(collectionPath).isDirectory() ? null : "ENOTDIR";
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code ?? "UNREADABLE";
-  }
 }
 
 /**
@@ -1881,14 +1986,23 @@ async function reindexCollectionIn(
 ): Promise<ReindexResult> {
   const db = store.db;
   const now = new Date().toISOString();
-  // fast-glob reports a missing cwd as zero files, which the deactivate pass below would
-  // read as "every file was deleted". A missing root (an unmounted macOS volume, a moved
-  // folder) must not empty the collection, so a root that is not a directory is reported as
-  // skipped instead. An empty mount point that is still a directory is not caught here.
-  const rootCode = collectionRootProblem(collectionPath);
-  if (rootCode) {
-    const skippedFiles = [{ file: collectionPath, code: rootCode }];
-    return { indexed: 0, updated: 0, unchanged: 0, removed: 0, orphanedCleaned: 0, skipped: 1, skippedFiles, metadataErrors: 0 };
+  // A missing root (unmounted drive, offline share, deleted folder) globs to
+  // an empty list, which the deactivation pass below would read as "every
+  // file was deleted". Leave the index alone and report the root instead.
+  let rootIsDirectory = false;
+  try {
+    rootIsDirectory = statSync(collectionPath).isDirectory();
+  } catch (error) {
+    const code = fsErrorCode(error);
+    if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+  }
+  if (!rootIsDirectory) {
+    return {
+      indexed: 0, updated: 0, unchanged: 0, removed: 0, orphanedCleaned: 0,
+      skipped: 1,
+      skippedFiles: [{ file: collectionPath, code: "ROOT_MISSING" }],
+      metadataErrors: 0,
+    };
   }
   const files = await listCollectionFiles(collectionPath, globPattern, options?.ignorePatterns);
 
@@ -2082,6 +2196,8 @@ export type EmbedProgress = {
 export type EmbedResult = {
   docsProcessed: number;
   chunksEmbedded: number;
+  /** Chunks copied into the partition of a collection that gained an already-embedded hash. */
+  chunksCopied: number;
   /** Active failed chunks that did not recover after retries. */
   errors: number;
   failures?: EmbedFailure[];
@@ -2325,10 +2441,11 @@ export async function generateEmbeddings(
     clearAllEmbeddings(db, options?.collection);
   }
 
+  const chunksCopied = copyVectorsToNewCollections(db, options?.collection).copied;
   const docsToEmbed = getPendingEmbeddingDocs(db, options?.collection, model);
 
   if (docsToEmbed.length === 0) {
-    return { docsProcessed: 0, chunksEmbedded: 0, errors: 0, durationMs: 0 };
+    return { docsProcessed: 0, chunksEmbedded: 0, chunksCopied, errors: 0, durationMs: 0 };
   }
   const totalBytes = docsToEmbed.reduce((sum, doc) => sum + Math.max(0, doc.bytes), 0);
   const startTime = Date.now();
@@ -2523,19 +2640,30 @@ export async function generateEmbeddings(
 
         try {
           const embeddings = await session.embedBatch(texts, { model });
-          for (let i = 0; i < chunkBatch.length; i++) {
-            const chunk = chunkBatch[i]!;
-            const embedding = embeddings[i];
-            if (embedding) {
-              insertEmbedding(db, chunk.hash, chunk.seq, chunk.pos, new Float32Array(embedding.embedding), model, now, chunk.expectedTotalChunks, fingerprint);
-              chunksEmbedded++;
-              successesSinceRetry++;
-              clearFailure(chunk);
-            } else {
-              recordFailure(chunk, "batch embedding returned no vector");
+          // One IMMEDIATE transaction per batch: every chunk writes several
+          // rows across three tables, and a kill mid-batch must not leave
+          // them out of step. Failure bookkeeping runs after the commit.
+          const stored: ChunkItem[] = [];
+          const unembedded: ChunkItem[] = [];
+          db.transaction(() => {
+            for (let i = 0; i < chunkBatch.length; i++) {
+              const chunk = chunkBatch[i]!;
+              const embedding = embeddings[i];
+              if (embedding) {
+                insertEmbedding(db, chunk.hash, chunk.seq, chunk.pos, new Float32Array(embedding.embedding), model, now, chunk.expectedTotalChunks, fingerprint);
+                stored.push(chunk);
+              } else {
+                unembedded.push(chunk);
+              }
             }
-            batchChunkBytesProcessed += chunk.bytes;
+          }).immediate();
+          for (const chunk of stored) {
+            chunksEmbedded++;
+            successesSinceRetry++;
+            clearFailure(chunk);
           }
+          for (const chunk of unembedded) recordFailure(chunk, "batch embedding returned no vector");
+          batchChunkBytesProcessed += chunkBatch.reduce((sum, chunk) => sum + chunk.bytes, 0);
           await retryFailedChunks();
         } catch (error) {
           // Batch failed — try individual embeddings as fallback. If an
@@ -2595,6 +2723,7 @@ export async function generateEmbeddings(
   return {
     docsProcessed: result.docsProcessed,
     chunksEmbedded: result.chunksEmbedded,
+    chunksCopied,
     errors: result.errors,
     failures: result.failures,
     durationMs: Date.now() - startTime,
@@ -3039,9 +3168,8 @@ export async function maybeAdoptLegacyEmbeddingFingerprint(store: Store, model: 
     return { checked: false, adopted: 0, reason: `${legacyCount} legacy docs have no active sample` };
   }
 
-  const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
-  if (!tableExists) {
-    return { checked: false, adopted: 0, reason: "vectors_vec table is missing" };
+  if (!hasVectorIndex(db)) {
+    return { checked: false, adopted: 0, reason: "vector index is missing" };
   }
 
   const expectedHashSeq = `${sample.hash}_${sample.seq}`;
@@ -3070,18 +3198,20 @@ export async function maybeAdoptLegacyEmbeddingFingerprint(store: Store, model: 
     }
 
     const nearest = db.prepare(`
-      SELECT hash_seq, distance
-      FROM vectors_vec
+      SELECT rowid, distance
+      FROM ${VEC_TABLE}
       WHERE embedding MATCH ? AND k = 1
-    `).get(new Float32Array(result.embedding)) as { hash_seq: string; distance: number } | undefined;
+    `).get(new Float32Array(result.embedding)) as { rowid: number; distance: number } | undefined;
+    const nearestKey = nearest ? partitionRowKey(db, nearest.rowid) : undefined;
 
-    if (!nearest) {
+    if (!nearest || !nearestKey) {
       return { checked: true, adopted: 0, reason: "legacy sample vector not found" };
     }
 
     const threshold = 0.0001;
-    if (nearest.hash_seq !== expectedHashSeq || nearest.distance > threshold) {
-      return { checked: true, adopted: 0, reason: `legacy sample differs from current fingerprint (nearest ${nearest.hash_seq}, distance ${nearest.distance.toFixed(6)})` };
+    const nearestHashSeq = `${nearestKey.hash}_${nearestKey.seq}`;
+    if (nearestHashSeq !== expectedHashSeq || nearest.distance > threshold) {
+      return { checked: true, adopted: 0, reason: `legacy sample differs from current fingerprint (nearest ${nearestHashSeq}, distance ${nearest.distance.toFixed(6)})` };
     }
 
     const update = withLazyContentVectorMigration(db, () => db.prepare(`UPDATE content_vectors SET embed_fingerprint = ? WHERE model = ? AND embed_fingerprint = ''`).run(fingerprint, model));
@@ -3236,26 +3366,21 @@ export function countOrphanedVectors(db: Database): number {
  * deliver (#768 follow-up: dry-run promised N chunks while the run removed 0
  * with rows intact).
  *
- * Both callers probe the `vectors_vec` virtual table instead of the
- * module-global vec0 flag. The probe throws "no such module: vec0" when the
- * schema entry exists but sqlite-vec is unavailable (e.g. Bun's bun:sqlite
- * lacks loadExtension, #380), and "no such table" when embeddings never ran —
- * in both states cleanup degrades gracefully to 0. Probing also keeps both
- * states reachable with a mocked db, so the dry/run agreement is unit-testable
- * without loading the vec0 module.
+ * sqlite-vec may not be loaded (e.g. Bun's bun:sqlite lacks loadExtension).
+ * The vec0 table can appear in sqlite_master from a prior session, but
+ * querying it without the module loaded would crash (#380). A legacy table
+ * is the vector migration's to move, not cleanup's to prune.
  */
 function isVectorCleanupActionable(db: Database): boolean {
-  try {
-    db.prepare(`SELECT 1 FROM vectors_vec LIMIT 0`).get();
-  } catch {
-    return false;
-  }
-  return true;
+  if (!isSqliteVecAvailable()) return false;
+  const layout = vecLayout(db);
+  return layout.kind === "partitioned" && vecTableReadable(db, layout);
 }
 
 /**
- * Remove orphaned vector embeddings that are not referenced by any active document.
- * Returns the number of orphaned embedding chunks deleted.
+ * Remove vector rows whose (hash, collection) no active document references,
+ * and the content_vectors rows of hashes no active document references at
+ * all. Returns the number of orphaned chunks deleted.
  */
 export function cleanupOrphanedVectors(db: Database): number {
   if (!isVectorCleanupActionable(db)) {
@@ -3263,50 +3388,186 @@ export function cleanupOrphanedVectors(db: Database): number {
   }
 
   return withLazyContentVectorMigration(db, () => {
-    // Count and both DELETEs share one transaction. An interruption between the
-    // two DELETEs (crash, SQLITE_BUSY) desyncs the tables: vectors_vec loses
-    // the rows while content_vectors still records the chunks as embedded.
-    // These rows are orphaned (no active document), so live vector search —
-    // which post-filters on documents.active = 1 — is unaffected right away.
-    // The failure is latent: if that content hash is later reactivated (qmd is
-    // content-addressable, so the same content returning revives the hash), the
-    // stale content_vectors rows make getHashesNeedingEmbedding treat it as
-    // already embedded, so qmd embed skips it and the document is silently
-    // unsearchable by vector with no orphan left to clean up. Keeping the count
-    // inside the same transaction also makes the returned number match the rows
-    // the DELETEs actually remove if another connection mutates documents
-    // concurrently. Run it BEGIN IMMEDIATE: the count reads before the DELETEs
-    // write, and upgrading a deferred read snapshot under a concurrent WAL
-    // writer fails with SQLITE_BUSY_SNAPSHOT instead of honoring the busy
+    // The count and both DELETEs share one transaction: an interruption
+    // between them (crash, SQLITE_BUSY) would leave content_vectors claiming
+    // chunks the index no longer holds, and a revived hash would then be
+    // skipped by getHashesNeedingEmbedding and stay unsearchable. Run it
+    // BEGIN IMMEDIATE: upgrading a deferred read snapshot under a concurrent
+    // WAL writer fails with SQLITE_BUSY_SNAPSHOT instead of honoring the busy
     // timeout. Nested callers still get a savepoint.
     const cleanup = db.transaction(() => {
-      const orphaned = (db.prepare(ORPHANED_VECTOR_COUNT_SQL).get() as { c: number }).c;
-      if (orphaned === 0) {
+      const orphanRows = db.prepare(`
+        SELECT vr.id FROM ${VEC_ROWS_TABLE} vr
+        JOIN ${VEC_COLLECTION_IDS_TABLE} ci ON ci.id = vr.collection_id
+        WHERE NOT EXISTS (
+          SELECT 1 FROM documents d WHERE d.hash = vr.hash AND d.collection = ci.name AND d.active = 1
+        )
+      `).all() as { id: number }[];
+      const orphanedChunks = (db.prepare(ORPHANED_VECTOR_COUNT_SQL).get() as { c: number }).c;
+      if (orphanRows.length === 0 && orphanedChunks === 0) {
         return 0;
       }
 
-      // Delete from vectors_vec first
-      db.exec(`
-        DELETE FROM vectors_vec WHERE hash_seq IN (
-          SELECT cv.hash || '_' || cv.seq FROM content_vectors cv
-          WHERE NOT EXISTS (
-            SELECT 1 FROM documents d WHERE d.hash = cv.hash AND d.active = 1
-          )
-        )
-      `);
-
-      // Delete from content_vectors
+      deletePartitionRows(db, orphanRows.map((row) => row.id));
       db.exec(`
         DELETE FROM content_vectors WHERE hash NOT IN (
           SELECT hash FROM documents WHERE active = 1
         )
       `);
 
-      return orphaned;
+      return Math.max(orphanRows.length, orphanedChunks);
     });
 
     return cleanup.immediate();
   });
+}
+
+/**
+ * Repack the vector table when fewer than this share of its chunk reads hold
+ * live rows. vec0 places an insert in the first free slot of its newest chunk
+ * and reclaims a chunk only once it is empty, so a delete in any older chunk
+ * leaves a hole that every brute-force scan still reads; at 36% occupancy a
+ * scan took twice as long as on a packed copy of the same rows.
+ */
+const VEC_REPACK_BELOW_OCCUPANCY = 0.9;
+
+/** Chunks filled below this share have their live rows moved to the tail. */
+const VEC_REPACK_CHUNK_FILL = 0.9;
+
+export type VectorTableLayout = {
+  rows: number;
+  chunks: number;
+  /** Chunks a freshly packed table needs for the same rows. */
+  neededChunks: number;
+  /** neededChunks over chunks: the share of a scan's chunk reads that hold live rows. */
+  occupancy: number;
+};
+
+interface VecChunkRow {
+  chunkId: number;
+  size: number;
+  partition: number;
+  validity: Uint8Array;
+  rowids: Uint8Array;
+}
+
+/** A plan for repackVectors: the table's chunk layout and the chunks it would move. */
+type VecRepackPlan = { layout: VectorTableLayout; sparse: number[] };
+
+/** The partitioned vec0 table when sqlite-vec is loaded and the table answers; null otherwise. */
+function readableVectorLayout(db: Database): Extract<VecLayout, { kind: "partitioned" }> | null {
+  if (!isSqliteVecAvailable()) return null;
+  const layout = vecLayout(db);
+  return layout.kind === "partitioned" && vecTableReadable(db, layout) ? layout : null;
+}
+
+/**
+ * Chunk layout of the vector table from vec0's shadow tables, and the chunks
+ * a repack would move: those filled below VEC_REPACK_CHUNK_FILL, except each
+ * partition's newest. Rows of different partitions never share a chunk, so a
+ * packed table needs ceil(rows / chunk size) chunks in each partition. With
+ * `dropOrphans` the plan is for the table as cleanupOrphanedVectors will
+ * leave it; vec0 drops a chunk with its last row, so a chunk holding only
+ * orphans is gone from that layout.
+ */
+function vectorRepackPlan(db: Database, dropOrphans: boolean = false): VecRepackPlan | null {
+  const layout = readableVectorLayout(db);
+  if (!layout) return null;
+  const orphansByChunk = new Map<number, number>();
+  if (dropOrphans) {
+    const rows = db.prepare(`
+      SELECT r.chunk_id AS chunkId, COUNT(*) AS n
+      FROM ${VEC_ROWS_TABLE} vr
+      JOIN ${VEC_COLLECTION_IDS_TABLE} ci ON ci.id = vr.collection_id
+      JOIN ${layout.shadow.rowids} r ON r.rowid = vr.id
+      WHERE NOT EXISTS (SELECT 1 FROM documents d WHERE d.hash = vr.hash AND d.collection = ci.name AND d.active = 1)
+      GROUP BY r.chunk_id
+    `).all() as { chunkId: number; n: number }[];
+    for (const row of rows) orphansByChunk.set(row.chunkId, row.n);
+  }
+  const chunks = (db.prepare(`SELECT chunk_id AS chunkId, size, partition00 AS partition, validity FROM ${layout.shadow.chunks} ORDER BY chunk_id`).all() as Omit<VecChunkRow, "rowids">[])
+    .map((chunk) => ({ ...chunk, live: liveSlots(chunk).length - (orphansByChunk.get(chunk.chunkId) ?? 0) }))
+    .filter((chunk) => chunk.live > 0);
+  const rowsByPartition = new Map<number, number>();
+  const newestByPartition = new Map<number, number>();
+  for (const chunk of chunks) {
+    rowsByPartition.set(chunk.partition, (rowsByPartition.get(chunk.partition) ?? 0) + chunk.live);
+    newestByPartition.set(chunk.partition, chunk.chunkId);
+  }
+  let rows = 0;
+  let neededChunks = 0;
+  for (const chunk of chunks) {
+    if (newestByPartition.get(chunk.partition) !== chunk.chunkId) continue;
+    const partitionRows = rowsByPartition.get(chunk.partition)!;
+    rows += partitionRows;
+    neededChunks += Math.ceil(partitionRows / chunk.size);
+  }
+  const occupancy = chunks.length > 0 ? neededChunks / chunks.length : 1;
+  const sparse = chunks
+    .filter((chunk) => newestByPartition.get(chunk.partition) !== chunk.chunkId && chunk.live < chunk.size * VEC_REPACK_CHUNK_FILL)
+    .map((chunk) => chunk.chunkId);
+  return { layout: { rows, chunks: chunks.length, neededChunks, occupancy }, sparse };
+}
+
+/** Whether a plan is worth running: the table's scans read mostly holes and some chunk would move. */
+function repackWanted(plan: VecRepackPlan | null): plan is VecRepackPlan {
+  return plan !== null && plan.layout.occupancy < VEC_REPACK_BELOW_OCCUPANCY && plan.sparse.length > 0;
+}
+
+/** Chunk layout of the vector table from vec0's shadow tables, or null without a readable table. */
+export function vectorTableLayout(db: Database): VectorTableLayout | null {
+  return vectorRepackPlan(db)?.layout ?? null;
+}
+
+function liveSlots(chunk: { size: number; validity: Uint8Array }): number[] {
+  const slots: number[] = [];
+  for (let i = 0; i < chunk.size; i++) {
+    if ((chunk.validity[i >> 3]! >> (i & 7)) & 1) slots.push(i);
+  }
+  return slots;
+}
+
+/**
+ * Compact the vector table in place: the live rows of every chunk that is
+ * mostly holes are deleted and re-inserted under their rowid and partition,
+ * one chunk per IMMEDIATE transaction. vec0 puts each insert in the first
+ * free slot of its partition's newest chunk and drops a chunk once it is
+ * empty, so the moved rows fill that partition's tail and the emptied chunks
+ * vanish; each partition's newest chunk is left alone because that is where
+ * its rows land. A transaction holds the write lock for at most one chunk of
+ * rows, so concurrent embed and update runs interleave with it, and an
+ * interrupted run leaves a consistent table that the next cleanup finishes.
+ */
+export function repackVectors(db: Database, onChunk?: (moved: number, total: number) => void): VectorTableLayout | null {
+  const layout = readableVectorLayout(db);
+  const plan = vectorRepackPlan(db);
+  if (!layout || !plan) return null;
+  const chunkOf = db.prepare(`SELECT chunk_id AS chunkId, size, partition00 AS partition, validity, rowids FROM ${layout.shadow.chunks} WHERE chunk_id = ?`);
+  const newestOf = db.prepare(`SELECT MAX(chunk_id) AS chunkId FROM ${layout.shadow.chunks} WHERE partition00 = ?`);
+  const vectorOf = db.prepare(`SELECT embedding FROM ${layout.table} WHERE rowid = ?`);
+  const remove = db.prepare(`DELETE FROM ${layout.table} WHERE rowid = ?`);
+  const insert = db.prepare(`INSERT INTO ${layout.table} (rowid, collection_id, embedding) VALUES (?, ?, ?)`);
+  plan.sparse.forEach((chunkId, i) => {
+    db.transaction(() => {
+      // Read the chunk again under the write lock: since the plan was made, a
+      // concurrent embed or update may have emptied it, made it its
+      // partition's newest, or deleted a row whose rowid now belongs to
+      // another partition.
+      const chunk = chunkOf.get(chunkId) as VecChunkRow | undefined;
+      if (!chunk) return;
+      if ((newestOf.get(chunk.partition) as { chunkId: number }).chunkId === chunkId) return;
+      const rowids = new DataView(chunk.rowids.buffer, chunk.rowids.byteOffset, chunk.rowids.byteLength);
+      for (const slot of liveSlots(chunk)) {
+        const rowid = rowids.getBigInt64(slot * 8, true);
+        const row = vectorOf.get(rowid) as { embedding: Uint8Array } | undefined;
+        if (row === undefined) continue;
+        remove.run(rowid);
+        insert.run(rowid, vecInteger(chunk.partition), row.embedding);
+      }
+    }).immediate();
+    onChunk?.(i + 1, plan.sparse.length);
+  });
+  return vectorTableLayout(db);
 }
 
 /**
@@ -3336,6 +3597,10 @@ export type CleanupStats = {
   orphanedVectors: number;
   inactiveDocs: number;
   orphanedContent: number;
+  /** Chunk layout of the vector table before any repack, null without a vector table. */
+  vectorLayout: VectorTableLayout | null;
+  /** True when the vector table was repacked (or, in a preview, would be). */
+  vectorsRepacked: boolean;
 };
 
 /** Counts what `runCleanup` would remove, including content only held by inactive docs. */
@@ -3343,25 +3608,38 @@ export function previewCleanup(db: Database): CleanupStats {
   const cacheCount = (db.prepare(`SELECT COUNT(*) as c FROM llm_cache`).get() as { c: number }).c;
   // Gated on the same probe as cleanupOrphanedVectors: without an actionable
   // vec table the run removes 0, so the preview promises 0 too (#768).
-  // Diagnostic counts (status, update hints) still use countOrphanedVectors.
+  // The status diagnostic count still uses countOrphanedVectors.
   const orphanedVectors = isVectorCleanupActionable(db) ? countOrphanedVectors(db) : 0;
   const inactiveDocs = (db.prepare(`SELECT COUNT(*) as c FROM documents WHERE active = 0`).get() as { c: number }).c;
   const orphanedContent = countOrphanedContent(db);
-  return { cacheCount, orphanedVectors, inactiveDocs, orphanedContent };
+  const plan = vectorRepackPlan(db, true);
+  return { cacheCount, orphanedVectors, inactiveDocs, orphanedContent, vectorLayout: plan?.layout ?? null, vectorsRepacked: repackWanted(plan) };
 }
 
+export type CleanupHooks = {
+  /** Called with the layout right before a vector repack starts. */
+  onVectorRepack?: (layout: VectorTableLayout) => void;
+};
+
 /**
- * Full `qmd cleanup` sequence: drop cache, orphaned vectors, inactive document
- * rows, then the content those rows were pinning, compact FTS5, vacuum.
+ * Full `qmd cleanup` sequence: drop cache, orphaned vectors, repack the vector
+ * table when its chunks are mostly holes, inactive document rows, then the
+ * content those rows were pinning, compact FTS5, vacuum.
  */
-export function runCleanup(db: Database): CleanupStats {
+export function runCleanup(db: Database, hooks: CleanupHooks = {}): CleanupStats {
   const cacheCount = deleteLLMCache(db);
   const orphanedVectors = cleanupOrphanedVectors(db);
+  const plan = vectorRepackPlan(db);
+  const vectorsRepacked = repackWanted(plan);
+  if (vectorsRepacked) {
+    hooks.onVectorRepack?.(plan.layout);
+    repackVectors(db);
+  }
   const inactiveDocs = deleteInactiveDocuments(db);
   const orphanedContent = cleanupOrphanedContent(db);
   optimizeDocumentsFts(db);
   vacuumDatabase(db);
-  return { cacheCount, orphanedVectors, inactiveDocs, orphanedContent };
+  return { cacheCount, orphanedVectors, inactiveDocs, orphanedContent, vectorLayout: plan?.layout ?? null, vectorsRepacked };
 }
 
 // =============================================================================
@@ -4267,51 +4545,94 @@ export function listCollections(db: Database): { name: string; pwd: string; glob
 }
 
 /**
- * Remove a collection and clean up its documents.
- * Uses collections.ts to remove from YAML config and cleans up database.
+ * Drop a collection's vector partition and its id. With the vec0 table
+ * present but sqlite-vec not loaded, the rows stay for cleanupOrphanedVectors
+ * to remove once the extension loads, so the mapping never runs ahead of the
+ * index.
  */
-export function removeCollection(db: Database, collectionName: string): { deletedDocs: number; cleanedHashes: number } {
-  // Statement.changes counts FTS trigger/shadow writes as well as the row
-  // itself, so it cannot report document rows. Count them instead.
-  const docsBefore = (db.prepare(`SELECT COUNT(*) as c FROM documents WHERE collection = ?`).get(collectionName) as { c: number }).c;
-
-  // Delete documents from database
-  db.prepare(`DELETE FROM documents WHERE collection = ?`).run(collectionName);
-  db.prepare(`DELETE FROM file_sync_state WHERE collection = ?`).run(collectionName);
-
-  // Clean up orphaned content hashes with the same conservative predicate as
-  // cleanupOrphanedContent(): only hashes with no remaining document rows —
-  // including inactive tombstones — are removed. The old active-only filter
-  // dropped content still pinned by other collections' tombstones, and the
-  // content→documents FK CASCADE then hard-deleted those tombstone rows.
-  const cleanedHashes = cleanupOrphanedContent(db);
-
-  // Remove from store_collections
-  deleteStoreCollection(db, collectionName);
-
-  const docsAfter = (db.prepare(`SELECT COUNT(*) as c FROM documents WHERE collection = ?`).get(collectionName) as { c: number }).c;
-
-  return {
-    deletedDocs: docsBefore - docsAfter,
-    cleanedHashes
-  };
+function deleteVectorPartition(db: Database, collectionName: string): void {
+  const collectionId = resolveCollectionId(db, collectionName);
+  if (collectionId === undefined) return;
+  const layout = vecLayout(db);
+  if (layout.kind === "legacy") return;
+  if (layout.kind === "partitioned") {
+    if (!isSqliteVecAvailable()) return;
+    db.prepare(`DELETE FROM ${VEC_TABLE} WHERE collection_id = ?`).run(vecInteger(collectionId));
+  }
+  db.prepare(`DELETE FROM ${VEC_ROWS_TABLE} WHERE collection_id = ?`).run(collectionId);
+  deleteCollectionId(db, collectionName);
 }
 
 /**
- * Rename a collection.
- * Updates both YAML config and database documents table.
+ * Remove a collection: its vector partition, its documents, the content no
+ * active document references any more, and its store_collections row.
+ */
+export function removeCollection(db: Database, collectionName: string): { deletedDocs: number; cleanedHashes: number } {
+  // One commit: a partition delete that lands without the documents delete
+  // leaves the mapping and id row out of step with the vec0 table, and the
+  // update-time orphan cleanup skips rows whose documents are still active.
+  return db.transaction(() => {
+    deleteVectorPartition(db, collectionName);
+
+    // Statement.changes counts FTS trigger/shadow writes as well as the row
+    // itself, so it cannot report document rows. Count them instead.
+    const docsBefore = (db.prepare(`SELECT COUNT(*) as c FROM documents WHERE collection = ?`).get(collectionName) as { c: number }).c;
+
+    db.prepare(`DELETE FROM documents WHERE collection = ?`).run(collectionName);
+    db.prepare(`DELETE FROM file_sync_state WHERE collection = ?`).run(collectionName);
+
+    // Clean up orphaned content hashes with the same conservative predicate as
+    // cleanupOrphanedContent(): only hashes with no remaining document rows —
+    // including inactive tombstones — are removed. The old active-only filter
+    // dropped content still pinned by other collections' tombstones, and the
+    // content→documents FK CASCADE then hard-deleted those tombstone rows.
+    // Counted, not read from Statement.changes, for the same reason as docsBefore.
+    const contentCount = () => (db.prepare(`SELECT COUNT(*) as c FROM content`).get() as { c: number }).c;
+    const contentBefore = contentCount();
+    cleanupOrphanedContent(db);
+    const cleanedHashes = contentBefore - contentCount();
+
+    deleteStoreCollection(db, collectionName);
+
+    const docsAfter = (db.prepare(`SELECT COUNT(*) as c FROM documents WHERE collection = ?`).get(collectionName) as { c: number }).c;
+
+    return {
+      deletedDocs: docsBefore - docsAfter,
+      cleanedHashes,
+    };
+  }).immediate();
+}
+
+/**
+ * Rename a collection: its documents, its vector partition id, and its
+ * store_collections row.
  */
 export function renameCollection(db: Database, oldName: string, newName: string): void {
-  // Update all documents with the new collection name in database
-  db.prepare(`UPDATE documents SET collection = ? WHERE collection = ?`)
-    .run(newName, oldName);
-  // The documents keep their ids and paths, so their sync rows stay valid
-  // under the new name. Rows already under it belong to no collection.
-  db.prepare(`DELETE FROM file_sync_state WHERE collection = ?`).run(newName);
-  db.prepare(`UPDATE file_sync_state SET collection = ? WHERE collection = ?`).run(newName, oldName);
+  // One commit: the vector id name is UNIQUE, so a rename that fails after
+  // the documents moved would leave them under a name whose partition id
+  // still belongs to the old one, and vector search would miss them.
+  db.transaction(() => {
+    renameStoreCollection(db, oldName, newName);
 
-  // Rename in store_collections
-  renameStoreCollection(db, oldName, newName);
+    // A removed collection keeps its id while sqlite-vec is not loaded to
+    // drop its partition; the renamed collection's id cannot take that name.
+    if (resolveCollectionId(db, newName) !== undefined) {
+      deleteVectorPartition(db, newName);
+      if (resolveCollectionId(db, newName) !== undefined) {
+        throw new Error(
+          `Cannot rename to '${newName}': a removed collection of that name still has a vector partition, which only qmd with sqlite-vec loaded can drop. ` +
+          `Open qmd with sqlite-vec loaded and retry the rename.`
+        );
+      }
+    }
+
+    db.prepare(`UPDATE documents SET collection = ? WHERE collection = ?`).run(newName, oldName);
+    // The documents keep their ids and paths, so their sync rows stay valid
+    // under the new name. Rows already under it belong to no collection.
+    db.prepare(`DELETE FROM file_sync_state WHERE collection = ?`).run(newName);
+    db.prepare(`UPDATE file_sync_state SET collection = ? WHERE collection = ?`).run(newName, oldName);
+    renameCollectionId(db, oldName, newName);
+  }).immediate();
 }
 
 // =============================================================================
@@ -4625,26 +4946,10 @@ function scopedCollectionNames(scope: CollectionScope): string[] | undefined {
   return names.length > 0 ? names : undefined;
 }
 
-function mergeSearchResultsByScore(lists: SearchResult[][], limit: number): SearchResult[] {
-  const best = new Map<string, SearchResult>();
-  for (const list of lists) {
-    for (const r of list) {
-      const prev = best.get(r.filepath);
-      if (!prev || r.score > prev.score) best.set(r.filepath, r);
-    }
-  }
-  // Ties go to the smaller filepath, so the order the collections were named
-  // never decides which of two equal hits survives the limit.
-  return Array.from(best.values())
-    .sort((a, b) => b.score - a.score || compareFilepaths(a, b))
-    .slice(0, limit);
-}
-
 /**
  * Fewest documents a retrieval pass looks at, whatever `limit` the caller asked for.
  *
- * Vector search over-fetches by a multiple of `limit` — 3x or 30x, because several
- * chunks of one document collapse into one result. Those multiples are of a number the caller picked
+ * Keyword search fetches its candidate window from `limit`, a number the caller picked
  * for display, so a small `limit` leaves a pool that post-filtering can exhaust, and
  * `-n 5` was not the first five of `-n 20`. The CLI makes that visible: its default
  * limit is 20 for `--json`/`--files` and 5 otherwise (src/cli/qmd.ts), so the output
@@ -4652,7 +4957,7 @@ function mergeSearchResultsByScore(lists: SearchResult[][], limit: number): Sear
  * and `candidateLimit` as the candidate knob; the floor is what makes that true.
  *
  * 20 is the breadth hybridQuery already passes explicitly on every one of its own
- * retrieval calls.
+ * retrieval calls. Vector search needs no floor: its per-partition KNN is exact.
  */
 const MIN_RETRIEVAL_BREADTH = 20;
 
@@ -4780,7 +5085,7 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
       params.push(scope.untilIso);
     }
 
-    // bm25 lower is better; sort ascending, ties by filepath as in mergeSearchResultsByScore,
+    // bm25 lower is better; sort ascending, ties by filepath as in searchVec,
     // so the order of a collection list never decides a tie. Path globs are matched below rather than here:
     // `Database` spans better-sqlite3 and bun:sqlite, and neither shares a way to register
     // the picomatch predicate as a SQL function. Dropping the inner LIMIT above is what
@@ -4872,259 +5177,302 @@ export function searchFTS(db: Database, query: string, limit: number = 20, colle
 /** sqlite-vec rejects k above this in MATCH queries (v0.1.9). */
 const SQLITE_VEC_MAX_K = 4096;
 
-/**
- * Max filter-eligible vectors for an exact cosine scan. Above this we fall
- * back to global ANN with a capped over-fetch. Exact scan avoids the
- * post-filter starvation of small eligible sets — originally small
- * collections (#791, #803), now also selective metadata filters; ANN remains
- * for very large eligible sets where a full scan would be expensive.
- */
-const FILTERED_VEC_EXACT_SCAN_MAX = 20_000;
-
-const VEC_HASH_SEQ_IN_CHUNK = 400;
-
-/**
- * Exact cosine-distance scan over a known set of hash_seq keys.
- * Uses vec_distance_cosine with chunked IN lists (no JOIN with vectors_vec).
- */
-function exactVecScanByHashSeq(
-  db: Database,
-  embedding: number[],
-  hashSeqs: string[],
-  limit: number,
-): { hash_seq: string; distance: number }[] {
-  if (hashSeqs.length === 0 || limit <= 0) return [];
-
-  const queryVec = new Float32Array(embedding);
-  // Over-fetch a bit so multi-chunk docs can still yield `limit` unique files.
-  const fetchLimit = Math.max(limit * 3, limit);
-  const scored: { hash_seq: string; distance: number }[] = [];
-
-  for (let i = 0; i < hashSeqs.length; i += VEC_HASH_SEQ_IN_CHUNK) {
-    const chunk = hashSeqs.slice(i, i + VEC_HASH_SEQ_IN_CHUNK);
-    const placeholders = chunk.map(() => "?").join(",");
-    const rows = db.prepare(`
-      SELECT hash_seq, vec_distance_cosine(embedding, ?) AS distance
-      FROM vectors_vec
-      WHERE hash_seq IN (${placeholders})
-    `).all(queryVec, ...chunk) as { hash_seq: string; distance: number }[];
-    scored.push(...rows);
-  }
-
-  scored.sort((a, b) => a.distance - b.distance);
-  return scored.slice(0, fetchLimit);
+interface VecMatch {
+  rowid: number;
+  distance: number;
 }
 
-function annVecScan(
-  db: Database,
-  embedding: number[],
-  k: number,
-): { hash_seq: string; distance: number }[] {
-  const vecK = Math.max(1, Math.min(SQLITE_VEC_MAX_K, k));
-  return db.prepare(`
-    SELECT hash_seq, distance
-    FROM vectors_vec
-    WHERE embedding MATCH ? AND k = ?
-  `).all(new Float32Array(embedding), vecK) as { hash_seq: string; distance: number }[];
+/** One KNN scan target: a collection's partition, or the whole table when no scope is given. */
+interface VecScanTarget {
+  collectionId?: number;
+}
+
+/** The document behind a vector match, at its nearest chunk. */
+interface VecDocumentMatch {
+  rowid: number;
+  hash: string;
+  pos: number;
+  filepath: string;
+  display_path: string;
+  title: string;
+  metadata_json: string | null;
+  distance: number;
+}
+
+/**
+ * A metadata filter as SQL over a `document_metadata dm` join, admitting only
+ * documents whose metadata extraction is current and error-free.
+ */
+function compileCurrentMetadataFilter(filter: MetadataFilter): { sql: string; params: SQLiteValue[] } {
+  const compiled = compileMetadataFilter(filter, "d");
+  return {
+    sql: `dm.extraction_version = ${METADATA_EXTRACTION_VERSION} AND dm.extraction_error IS NULL AND ${compiled.sql}`,
+    params: compiled.params,
+  };
+}
+
+/**
+ * Prepares an exact top-k cosine scan of the vector table, run once per
+ * target with k in 1..SQLITE_VEC_MAX_K. vec0 evaluates the partition equality
+ * inside the scan, so a small collection costs its own rows rather than the
+ * whole index and is never crowded out by a larger one (#775, #791, #803). A
+ * `rowid IN` restriction is applied inside the scan the same way, so a
+ * selective metadata filter gets an exact top-k of its own rows instead of
+ * whatever survives a post-filter of a larger top-k. The restriction is the
+ * eligibility subquery itself rather than a bound list of rowids, so however
+ * many rows a filter admits, none of them is read onto the heap.
+ */
+function knnVecScanner(db: Database, partitioned: boolean, narrowing: VecNarrowing): (embedding: Float32Array, k: number, target: VecScanTarget) => VecMatch[] {
+  const conditions = ["embedding MATCH ?", "k = ?"];
+  if (partitioned) conditions.push("collection_id = ?");
+  const eligible = narrowsVecRows(narrowing) ? eligibleRowsSql(narrowing) : undefined;
+  if (eligible) conditions.push(`rowid IN (SELECT vr.id ${eligible.sql}${partitioned ? " AND vr.collection_id = ?" : ""})`);
+  const statement = db.prepare(`
+    SELECT rowid, distance
+    FROM ${VEC_TABLE}
+    WHERE ${conditions.join(" AND ")}
+  `);
+  return (embedding, k, target) => {
+    const params: SQLiteValue[] = [embedding, k];
+    const partition = vecInteger(target.collectionId ?? 0);
+    if (partitioned) params.push(partition);
+    if (eligible) {
+      params.push(...eligible.params);
+      if (partitioned) params.push(partition);
+    }
+    return statement.all(...params) as VecMatch[];
+  };
+}
+
+/**
+ * What narrows a vector search below its collections: a metadata filter, and
+ * (ko-qmd) the documents a path/time scope admits, as a JSON id list for
+ * json_each. Picomatch globs have no SQL form, so the scope is resolved to
+ * document ids up front; its cost follows the documents in scope, not their
+ * chunk count.
+ */
+type VecNarrowing = { filter?: MetadataFilter; scopedDocIds?: string };
+
+const narrowsVecRows = (narrowing: VecNarrowing): boolean =>
+  narrowing.filter !== undefined || narrowing.scopedDocIds !== undefined;
+
+/** The WHERE conditions on `d` (and `dm` when a filter is set) a narrowing adds. */
+function narrowingConditions(narrowing: VecNarrowing): { joins: string; sql: string; params: SQLiteValue[] } {
+  const conditions: string[] = [];
+  const params: SQLiteValue[] = [];
+  let joins = "";
+  if (narrowing.filter) {
+    const current = compileCurrentMetadataFilter(narrowing.filter);
+    joins = `JOIN document_metadata dm ON dm.document_id = d.id`;
+    conditions.push(current.sql);
+    params.push(...current.params);
+  }
+  if (narrowing.scopedDocIds !== undefined) {
+    conditions.push(`d.id IN (SELECT value FROM json_each(?))`);
+    params.push(narrowing.scopedDocIds);
+  }
+  return { joins, sql: conditions.map(c => ` AND ${c}`).join(""), params };
+}
+
+/**
+ * ko-qmd: ids of the active documents a path/time scope admits, as a JSON list,
+ * or undefined when the scope does not narrow.
+ */
+function scopedDocumentIds(db: Database, scope: DocumentFilter | undefined, names: readonly string[] | undefined): string | undefined {
+  if (!isNarrowing(scope)) return undefined;
+  let sql = `SELECT id, collection || '/' || path AS display_path FROM documents WHERE active = 1`;
+  const params: string[] = [];
+  if (names) {
+    sql += ` AND collection IN (SELECT value FROM json_each(?))`;
+    params.push(JSON.stringify(names));
+  }
+  if (scope.sinceIso) {
+    sql += ` AND modified_at >= ?`;
+    params.push(scope.sinceIso);
+  }
+  if (scope.untilIso) {
+    sql += ` AND modified_at <= ?`;
+    params.push(scope.untilIso);
+  }
+  const ids: number[] = [];
+  for (const row of db.prepare(sql).iterate(...params) as IterableIterator<{ id: number; display_path: string }>) {
+    if (matchesPaths(row.display_path, scope)) ids.push(row.id);
+  }
+  return JSON.stringify(ids);
+}
+
+/**
+ * FROM and WHERE clauses selecting, as `vr`, the vector rows of active
+ * documents a narrowing admits. A row is eligible when any document of its
+ * collection that holds the row's content passes the narrowing.
+ */
+function eligibleRowsSql(narrowing: VecNarrowing): { sql: string; params: SQLiteValue[] } {
+  const narrowed = narrowingConditions(narrowing);
+  return {
+    sql: `
+      FROM documents d
+      ${narrowed.joins}
+      JOIN ${VEC_COLLECTION_IDS_TABLE} ci ON ci.name = d.collection
+      JOIN ${VEC_ROWS_TABLE} vr ON vr.hash = d.hash AND vr.collection_id = ci.id
+      WHERE d.active = 1${narrowed.sql}`,
+    params: narrowed.params,
+  };
+}
+
+/**
+ * Ids of the collections holding at least one vector row a narrowing admits.
+ * The narrowing runs once per document and EXISTS probes for a row, so the
+ * cost follows the documents in scope rather than their chunk count.
+ */
+function eligibleCollections(db: Database, narrowing: VecNarrowing): Set<number> {
+  const narrowed = narrowingConditions(narrowing);
+  const rows = db.prepare(`
+    SELECT DISTINCT ci.id AS collectionId
+    FROM documents d
+    ${narrowed.joins}
+    JOIN ${VEC_COLLECTION_IDS_TABLE} ci ON ci.name = d.collection
+    WHERE d.active = 1${narrowed.sql}
+      AND EXISTS (SELECT 1 FROM ${VEC_ROWS_TABLE} vr WHERE vr.hash = d.hash AND vr.collection_id = ci.id)
+  `).all(...narrowed.params) as { collectionId: number }[];
+  return new Set(rows.map(row => row.collectionId));
+}
+
+/**
+ * Prepares step 2 of a vector search: the documents behind a set of vector
+ * rows, one per file at its nearest chunk, nearest first. The rowids are bound
+ * as one JSON parameter, so the statement text stays fixed and a match set up
+ * to the 4096 k cap never meets SQLite's bound-parameter limit. Bodies are
+ * left out: one long document can hold every match, and only the final results
+ * load theirs.
+ */
+function vecDocumentResolver(db: Database, narrowing: VecNarrowing): (matches: readonly VecMatch[]) => VecDocumentMatch[] {
+  // Re-apply the narrowing on the document join: vectors are content-scoped,
+  // so one hash can belong to both matching and non-matching documents.
+  const narrowed = narrowingConditions(narrowing);
+  const statement = withLazyContentVectorMigration(db, () => db.prepare(`
+    SELECT
+      vr.id AS rowid,
+      cv.hash,
+      cv.pos,
+      'qmd://' || d.collection || '/' || d.path as filepath,
+      d.collection || '/' || d.path as display_path,
+      d.title,
+      dm.metadata_json
+    FROM json_each(?) j
+    JOIN ${VEC_ROWS_TABLE} vr ON vr.id = j.value
+    JOIN ${VEC_COLLECTION_IDS_TABLE} ci ON ci.id = vr.collection_id
+    JOIN content_vectors cv ON cv.hash = vr.hash AND cv.seq = vr.seq
+    JOIN documents d ON d.hash = vr.hash AND d.collection = ci.name
+    JOIN content ON content.hash = d.hash
+    LEFT JOIN document_metadata dm ON dm.document_id = d.id
+    WHERE d.active = 1${narrowed.sql}
+  `));
+  return (matches) => {
+    if (matches.length === 0) return [];
+    const distanceByRowid = new Map(matches.map(r => [r.rowid, r.distance]));
+    const rows = statement.all(rowidList(matches.map(r => r.rowid)), ...narrowed.params) as Omit<VecDocumentMatch, "distance">[];
+    const best = new Map<string, VecDocumentMatch>();
+    for (const row of rows) {
+      const distance = distanceByRowid.get(row.rowid) ?? 1;
+      const existing = best.get(row.filepath);
+      if (!existing || distance < existing.distance) best.set(row.filepath, { ...row, distance });
+    }
+    return Array.from(best.values()).sort((a, b) => a.distance - b.distance);
+  };
+}
+
+/**
+ * Nearest documents of one scan target. The first KNN asks for three chunks
+ * per requested document. Chunks of one long document can still fill every
+ * slot, so while the matches collapse into fewer than `limit` documents and
+ * the target holds rows beyond them, k doubles, up to sqlite-vec's cap.
+ */
+function nearestVecDocuments(
+  scan: ReturnType<typeof knnVecScanner>,
+  resolve: ReturnType<typeof vecDocumentResolver>,
+  queryVec: Float32Array,
+  limit: number,
+  target: VecScanTarget,
+): VecDocumentMatch[] {
+  for (let k = limit * 3; ; k *= 2) {
+    const vecK = Math.max(1, Math.min(SQLITE_VEC_MAX_K, k));
+    const matches = scan(queryVec, vecK, target);
+    const documents = resolve(matches);
+    if (documents.length >= limit || matches.length < vecK || vecK === SQLITE_VEC_MAX_K) return documents;
+  }
 }
 
 export async function searchVec(db: Database, query: string, model: string, limit: number = 20, collectionName?: string | readonly string[], session?: ILLMSession, precomputedEmbedding?: number[], llm?: LlamaCpp, filter?: MetadataFilter, scope?: DocumentFilter): Promise<SearchResult[]> {
-  const tableExists = db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
-  if (!tableExists) return [];
+  if (!hasVectorIndex(db)) return [];
 
   const embedding = precomputedEmbedding ?? await getEmbedding(query, model, true, session, llm);
   if (!embedding) return [];
 
   const names = scopedCollectionNames(collectionName);
-  if (names && names.length > 1) {
-    const lists = await Promise.all(
-      names.map(name => searchVec(db, query, model, limit, name, session, embedding, llm, filter, scope)),
-    );
-    return mergeSearchResultsByScore(lists, limit);
+  let collectionIds: number[] | undefined;
+  if (names) {
+    collectionIds = Array.from(resolveCollectionIds(db, names).values());
+    if (collectionIds.length === 0) return [];
   }
-  const collectionFilter = names?.[0];
-  const filtered = isNarrowing(scope) || filter !== undefined;
-  const breadth = Math.max(limit, MIN_RETRIEVAL_BREADTH);
+  // ko-qmd: a path/time scope narrows the eligible rows exactly as a metadata
+  // filter does, so a narrow scope gets an exact top-k of its own rows rather
+  // than whatever a post-filter leaves of a larger one (#791, #803).
+  const narrowing: VecNarrowing = { filter, scopedDocIds: scopedDocumentIds(db, scope, names) };
+  const eligible = narrowsVecRows(narrowing) ? eligibleCollections(db, narrowing) : undefined;
 
   // IMPORTANT: We use a two-step query approach here because sqlite-vec virtual tables
   // hang indefinitely when combined with JOINs in the same query. Do NOT try to
   // "optimize" this by combining into a single query with JOINs - it will break.
   // See: https://github.com/tobi/qmd/pull/23
 
-  // Step 1: Get vector matches from sqlite-vec (no JOINs allowed).
-  //
-  // Collection and metadata filters cannot be pushed into MATCH (sqlite-vec
-  // has no join-safe predicate here). Global ANN + post-filter starves small
-  // eligible sets: they never enter the top-k (#791, #803). Multiplier
-  // over-fetch alone is not enough either — sqlite-vec caps k at 4096. For a
-  // filter we therefore exact-scan the eligible vectors when the set is small
-  // enough, and only then fall back to capped ANN + post-filter.
-  //
-  // A document filter is the same shape of problem as a collection filter and gets the same
-  // answer: resolve it to the hash_seq set up front and scan exactly that. Applying it to
-  // ANN output instead would starve a narrow filter of every result.
-  let vecResults: { hash_seq: string; distance: number }[];
+  // Step 1 gets vector matches from sqlite-vec (no JOINs allowed), one KNN per
+  // collection in scope; step 2 resolves them to documents. One statement per
+  // member rather than `collection_id IN (...)`: the IN form yields k rows per
+  // value only because SQLite runs vec0's filter once per value, which is a
+  // planner detail rather than a vec0 contract.
+  const scanned = collectionIds && eligible ? collectionIds.filter(id => eligible.has(id)) : collectionIds;
+  const scanTargets: VecScanTarget[] = scanned ? scanned.map(collectionId => ({ collectionId })) : eligible?.size === 0 ? [] : [{}];
+  if (scanTargets.length === 0) return [];
+  const scan = knnVecScanner(db, collectionIds !== undefined, narrowing);
+  const resolve = vecDocumentResolver(db, narrowing);
+  const queryVec = new Float32Array(embedding);
+  // Bodies are capped at BODY_CAP_CHARS, as in searchFTS, so a large document cannot
+  // put its whole text on the heap for each result.
+  const bodyOf = db.prepare(`SELECT ${cappedBodySql("doc")} AS doc FROM content WHERE hash = ?`);
 
-  if (collectionFilter || filtered) {
-    let eligibleSql = `
-      SELECT DISTINCT cv.hash || '_' || cv.seq AS hash_seq, d.collection || '/' || d.path AS display_path
-      FROM content_vectors cv
-      JOIN documents d ON d.hash = cv.hash AND d.active = 1
-    `;
-    const eligibleConditions: string[] = ["1 = 1"];
-    const eligibleParams: (string | number)[] = [];
-
-    if (collectionFilter) {
-      eligibleConditions.push(`d.collection = ?`);
-      eligibleParams.push(collectionFilter);
-    }
-    if (scope?.sinceIso) {
-      eligibleConditions.push(`d.modified_at >= ?`);
-      eligibleParams.push(scope.sinceIso);
-    }
-    if (scope?.untilIso) {
-      eligibleConditions.push(`d.modified_at <= ?`);
-      eligibleParams.push(scope.untilIso);
-    }
-    if (filter) {
-      const compiledFilter = compileMetadataFilter(filter, "d");
-      eligibleSql += ` JOIN document_metadata dm ON dm.document_id = d.id`;
-      eligibleConditions.push(`dm.extraction_version = ${METADATA_EXTRACTION_VERSION}`);
-      eligibleConditions.push(`dm.extraction_error IS NULL`);
-      eligibleConditions.push(compiledFilter.sql);
-      eligibleParams.push(...compiledFilter.params);
-    }
-
-    eligibleSql += ` WHERE ${eligibleConditions.join(" AND ")}`;
-
-    // Identical content under two paths shares a hash_seq; count and scan it once.
-    const uniqueEligibleHashSeqs: string[] = withLazyContentVectorMigration(db, () => {
-      const stmt = db.prepare(eligibleSql);
-      // Large-result query: iterate() bounds the heap, and the walk stops once the set
-      // is past the exact-scan ceiling, where only its size still matters.
-      const seqs = new Set<string>();
-      for (const r of stmt.iterate(...eligibleParams) as IterableIterator<{ hash_seq: string; display_path: string }>) {
-        if (!matchesPaths(r.display_path, scope)) continue;
-        seqs.add(r.hash_seq);
-        if (seqs.size > FILTERED_VEC_EXACT_SCAN_MAX) break;
-      }
-      return [...seqs];
-    });
-
-    if (uniqueEligibleHashSeqs.length === 0) return [];
-
-    // When the whole table fits in one MATCH, post-filtering one KNN over it is exact
-    // (vec0 KNN in sqlite-vec 0.1.x is a brute-force scan) and ~10-50x faster than the
-    // per-row vec_distance_cosine scan below (KB goldset, M3 Max: ~25ms vs 250-1300ms
-    // for 1047 of 3389 vectors). Asking for one row more than we counted proves the
-    // table was covered: a row embedded between the count and the MATCH comes back as
-    // the extra one and sends us to the exact scan instead.
-    const totalVectors = (db.prepare(`SELECT count(*) AS n FROM vectors_vec`).get() as { n: number }).n;
-    const fullKnn = totalVectors < SQLITE_VEC_MAX_K ? annVecScan(db, embedding, totalVectors + 1) : null;
-    if (fullKnn && fullKnn.length <= totalVectors) {
-      const eligible = new Set(uniqueEligibleHashSeqs);
-      vecResults = fullKnn.filter(r => eligible.has(r.hash_seq)).slice(0, breadth * 3);
-    } else if (uniqueEligibleHashSeqs.length <= FILTERED_VEC_EXACT_SCAN_MAX) {
-      vecResults = exactVecScanByHashSeq(db, embedding, uniqueEligibleHashSeqs, breadth);
-    } else {
-      // Past the exact-scan ceiling: ANN with over-fetch, hard-capped at sqlite-vec's max k.
-      // The document predicate is re-applied below, so a filter this broad still answers —
-      // it is only a filter narrower than the ANN pool that could come back short here.
-      vecResults = annVecScan(db, embedding, breadth * 30);
-    }
-  } else {
-    vecResults = annVecScan(db, embedding, breadth * 3);
-  }
-
-  if (vecResults.length === 0) return [];
-
-  // Step 2: Get chunk info and document data
-  const hashSeqs = vecResults.map(r => r.hash_seq);
-  const distanceMap = new Map(vecResults.map(r => [r.hash_seq, r.distance]));
-
-  // One binding for candidate IDs leaves room for a valid near-ceiling
-  // metadata filter under Node's 32,766-variable limit. The same lookup
-  // serves exact scans and the capped global fallback.
-  let docSql = `
-    SELECT
-      cv.hash || '_' || cv.seq as hash_seq,
-      cv.hash,
-      cv.pos,
-      'qmd://' || d.collection || '/' || d.path as filepath,
-      d.collection || '/' || d.path as display_path,
-      d.title,
-      ${cappedBodySql("content.doc")} as body,
-      dm.metadata_json
-    FROM content_vectors cv
-    JOIN documents d ON d.hash = cv.hash AND d.active = 1
-    JOIN content ON content.hash = d.hash
-    LEFT JOIN document_metadata dm ON dm.document_id = d.id
-    WHERE cv.hash || '_' || cv.seq IN (SELECT value FROM json_each(?))
-  `;
-  const params: (string | number)[] = [JSON.stringify(hashSeqs)];
-
-  if (collectionFilter) {
-    docSql += ` AND d.collection = ?`;
-    params.push(collectionFilter);
-  }
-  if (scope?.sinceIso) {
-    docSql += ` AND d.modified_at >= ?`;
-    params.push(scope.sinceIso);
-  }
-  if (scope?.untilIso) {
-    docSql += ` AND d.modified_at <= ?`;
-    params.push(scope.untilIso);
-  }
-
-  if (filter) {
-    // Re-apply the filter on the document join: vectors are content-scoped,
-    // so one hash can belong to both matching and non-matching documents.
-    const compiledFilter = compileMetadataFilter(filter, "d");
-    docSql += ` AND dm.extraction_version = ${METADATA_EXTRACTION_VERSION} AND dm.extraction_error IS NULL AND ${compiledFilter.sql}`;
-    params.push(...compiledFilter.params);
-  }
-
-  const docRows = withLazyContentVectorMigration(db, () => db.prepare(docSql).all(...params) as {
-    hash_seq: string; hash: string; pos: number; filepath: string;
-    display_path: string; title: string; body: string; metadata_json: string | null;
-  }[]);
-
-  // Combine with distances and dedupe by filepath
-  const seen = new Map<string, { row: typeof docRows[0]; bestDist: number }>();
-  for (const row of docRows) {
-    if (!matchesPaths(row.display_path, scope)) continue;
-    const distance = distanceMap.get(row.hash_seq) ?? 1;
-    const existing = seen.get(row.filepath);
-    if (!existing || distance < existing.bestDist) {
-      seen.set(row.filepath, { row, bestDist: distance });
-    }
-  }
-
-  const winners = Array.from(seen.values())
-    .sort((a, b) => a.bestDist - b.bestDist)
+  // Each target yields its own nearest `limit` documents (or all it holds), so
+  // merging them by distance gives the scope's exact nearest `limit`. Ties go
+  // to the smaller filepath, as in searchFTS.
+  const winners = scanTargets
+    .flatMap(target => nearestVecDocuments(scan, resolve, queryVec, limit, target))
+    .sort((a, b) => a.distance - b.distance || compareFilepaths(a, b))
     .slice(0, limit);
   // One batched context lookup for all winners (was one N+1 triple per row).
-  const vecContexts = getContextsForFiles(db, winners.map(({ row }) => row.filepath));
-  return winners
-    .map(({ row, bestDist }) => {
-      const collectionName = row.filepath.split('//')[1]?.split('/')[0] || "";
-      return {
-        filepath: row.filepath,
-        displayPath: row.display_path,
-        title: row.title,
-        hash: row.hash,
-        docid: getDocid(row.hash),
-        collectionName,
-        modifiedAt: "",  // Not available in vec query
-        bodyLength: row.body.length,
-        body: row.body,
-        context: vecContexts.get(row.filepath) ?? null,
-        metadata: parseMetadataJson(row.metadata_json),
-        score: 1 - bestDist,  // Cosine similarity = 1 - cosine distance
-        source: "vec" as const,
-        chunkPos: row.pos,
-      };
-    });
+  const vecContexts = getContextsForFiles(db, winners.map(row => row.filepath));
+  return winners.flatMap((row): SearchResult[] => {
+    // The body is read after resolution, outside its snapshot: another
+    // process's orphaned-content cleanup can delete the row in between.
+    const content = bodyOf.get(row.hash) as { doc: string } | null | undefined;
+    if (content == null) return [];
+    const body = content.doc;
+    const collectionName = row.filepath.split('//')[1]?.split('/')[0] || "";
+    return [{
+      filepath: row.filepath,
+      displayPath: row.display_path,
+      title: row.title,
+      hash: row.hash,
+      docid: getDocid(row.hash),
+      collectionName,
+      modifiedAt: "",  // Not available in vec query
+      bodyLength: body.length,
+      body,
+      context: vecContexts.get(row.filepath) ?? null,
+      metadata: parseMetadataJson(row.metadata_json),
+      score: 1 - row.distance,  // Cosine similarity = 1 - cosine distance
+      source: "vec" as const,
+      chunkPos: row.pos,
+    }];
+  });
 }
 
 // =============================================================================
@@ -5173,23 +5521,25 @@ export function getHashesForEmbedding(db: Database, model: string = DEFAULT_EMBE
 /**
  * Clear embeddings for the whole index, or just for one collection.
  *
- * When `collection` is omitted the entire content_vectors table is emptied and
- * the vectors_vec virtual table is dropped (it is recreated with the right
+ * When `collection` is omitted the content_vectors and vector_rows tables are
+ * emptied and the vec0 table is dropped (it is recreated with the right
  * dimensions on the next embed run).
  *
- * When `collection` is provided, only vectors whose hash is referenced
- * exclusively by active documents in that collection are removed. Hashes
- * shared with active documents in other collections are left in place so
- * vector search keeps working there (content_vectors is keyed globally by
- * content hash; identical document bodies across collections share a row).
- * vectors_vec is preserved so other collections keep working unless the scoped
- * clear empties content_vectors entirely, in which case it is dropped so the
- * next embed can recreate the table with the current dimensions.
+ * When `collection` is provided, only chunks whose hash is referenced
+ * exclusively by active documents in that collection are removed, from that
+ * collection's partition and from content_vectors. Hashes shared with active
+ * documents in other collections are left in place so vector search keeps
+ * working there (content_vectors is keyed globally by content hash; identical
+ * document bodies across collections share a row). The vec0 table is dropped
+ * only when the scoped clear empties content_vectors entirely, so the next
+ * embed can recreate it with the current dimensions.
  */
 export function clearAllEmbeddings(db: Database, collection?: string): void {
   if (!collection) {
-    db.exec(`DELETE FROM content_vectors`);
-    db.exec(`DROP TABLE IF EXISTS vectors_vec`);
+    db.transaction(() => {
+      db.exec(`DELETE FROM content_vectors`);
+      dropVectorIndex(db);
+    }).immediate();
     return;
   }
 
@@ -5204,23 +5554,15 @@ export function clearAllEmbeddings(db: Database, collection?: string): void {
           AND d2.collection != d.collection
       )
   `;
+  const collectionId = resolveCollectionId(db, collection);
 
-  const vecTableExists = db
-    .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='vectors_vec'`)
-    .get();
-
-  withLazyContentVectorMigration(db, () => {
-    if (vecTableExists) {
-      const hashSeqRows = db.prepare(`
-        SELECT cv.hash, cv.seq
-        FROM content_vectors cv
-        WHERE cv.hash IN (${exclusiveHashesQuery})
-      `).all(collection) as { hash: string; seq: number }[];
-
-      const delVec = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
-      for (const row of hashSeqRows) {
-        delVec.run(`${row.hash}_${row.seq}`);
-      }
+  withLazyContentVectorMigration(db, () => db.transaction(() => {
+    if (collectionId !== undefined) {
+      const rows = db.prepare(`
+        SELECT id FROM ${VEC_ROWS_TABLE}
+        WHERE collection_id = ? AND hash IN (${exclusiveHashesQuery})
+      `).all(collectionId, collection) as { id: number }[];
+      deletePartitionRows(db, rows.map((row) => row.id));
     }
 
     db.prepare(`
@@ -5231,34 +5573,76 @@ export function clearAllEmbeddings(db: Database, collection?: string): void {
     const remaining = db
       .prepare(`SELECT COUNT(*) AS n FROM content_vectors`)
       .get() as { n: number };
-    if (remaining.n === 0) {
-      db.exec(`DROP TABLE IF EXISTS vectors_vec`);
+    if (remaining.n === 0) dropVectorIndex(db);
+  }).immediate());
+}
+
+/** Partition rows written per commit by copyVectorsToNewCollections. */
+export const VECTOR_COPY_BATCH_ROWS = 1000;
+
+/**
+ * Give every active (hash, collection) pair whose chunks are embedded a row
+ * in that collection's partition, copied from any partition that holds the
+ * chunk, so a hash that gains a collection is searchable there without
+ * another model call. A chunk no partition holds is queued for embedding by
+ * deleting its hash's rows, which the pending detector then picks up.
+ *
+ * Rows commit in batches of VECTOR_COPY_BATCH_ROWS so a collection that gains
+ * thousands of embedded hashes does not hold the write lock for the whole
+ * copy; an interrupted run resumes from whatever missingPartitionRows still
+ * reports.
+ */
+export function copyVectorsToNewCollections(db: Database, collection?: string): { copied: number; queued: number } {
+  const layout = vecLayout(db);
+  if (layout.kind === "legacy" || !isSqliteVecAvailable()) return { copied: 0, queued: 0 };
+  return withLazyContentVectorMigration(db, () => {
+    const missing = missingPartitionRows(db, collection);
+    if (missing.length === 0) return { copied: 0, queued: 0 };
+    const writer = layout.kind === "partitioned" ? new PartitionWriter(db) : null;
+    const storedVector = writer ? storedEmbeddingLookup(db) : null;
+    const deleteChunks = db.prepare(`DELETE FROM content_vectors WHERE hash = ?`);
+    const queued = new Set<string>();
+    let copied = 0;
+    const copyBatch = (rows: MissingPartitionRow[]) => {
+      const queuedNow: string[] = [];
+      for (const row of rows) {
+        if (queued.has(row.hash)) continue;
+        const vector = storedVector?.(row.hash, row.seq);
+        if (!vector || !writer) {
+          queued.add(row.hash);
+          queuedNow.push(row.hash);
+          continue;
+        }
+        if (writer.writeToCollection(row.hash, row.seq, row.collection, vector)) copied++;
+      }
+      // Deleting by hash also removes rows an earlier batch already committed
+      // for it; the run-level set keeps a later batch from copying it again.
+      for (const hash of queuedNow) {
+        deletePartitionRowsOfHash(db, hash);
+        deleteChunks.run(hash);
+      }
+    };
+    for (let start = 0; start < missing.length; start += VECTOR_COPY_BATCH_ROWS) {
+      const batch = missing.slice(start, start + VECTOR_COPY_BATCH_ROWS);
+      db.transaction(() => copyBatch(batch)).immediate();
     }
+    return { copied, queued: queued.size };
   });
 }
 
 /**
- * Insert a single embedding into both content_vectors and vectors_vec tables.
- * The hash_seq key is formatted as "hash_seq" for the vectors_vec table.
+ * Insert a single embedding: the content_vectors row plus one row in the
+ * partition of every active collection that holds the hash, in one
+ * transaction so a crash cannot leave the tables out of step. A hash with no
+ * active document gets its content_vectors row only.
  *
- * The content_vectors INSERT and the vectors_vec DELETE + INSERT run inside
- * one IMMEDIATE transaction, so a crash or error between them can never leave
- * a phantom-complete row (content_vectors claiming a chunk whose vector is
- * missing — pending checks read content_vectors only and would skip the hash
- * forever). Either both tables show the chunk or neither does; a killed batch
- * leaves a partial hash that the next embed run re-selects and converges.
- *
- * IMMEDIATE (not deferred): the txn writes after reading nothing, but the
- * reserved lock must be taken up front — upgrading a deferred read snapshot
- * under a concurrent WAL writer fails with SQLITE_BUSY_SNAPSHOT instead of
- * honoring busy_timeout. Readers still proceed under WAL; writers queue via
- * busy_timeout. Never EXCLUSIVE. The migration wrapper stays outside: a
- * column repair (ALTER TABLE) must not run inside the chunk txn — on a
- * column-miss the txn body throws, rolls back, the repair runs, and the retry
- * re-enters a fresh txn.
- *
- * vectors_vec uses DELETE + INSERT instead of INSERT OR REPLACE because sqlite-vec's
- * vec0 virtual tables silently ignore the OR REPLACE conflict clause.
+ * IMMEDIATE (not deferred): the reserved lock must be taken up front —
+ * upgrading a deferred read snapshot under a concurrent WAL writer fails with
+ * SQLITE_BUSY_SNAPSHOT instead of honoring busy_timeout. Readers still proceed
+ * under WAL; writers queue via busy_timeout. Never EXCLUSIVE. The migration
+ * wrapper stays outside: a column repair (ALTER TABLE) must not run inside the
+ * chunk txn — on a column-miss the txn body throws, rolls back, the repair
+ * runs, and the retry re-enters a fresh txn.
  */
 export function insertEmbedding(
   db: Database,
@@ -5271,20 +5655,14 @@ export function insertEmbedding(
   totalChunks: number = 1,
   fingerprint: string = getEmbeddingFingerprint(model)
 ): void {
-  const hashSeq = `${hash}_${seq}`;
-
   withLazyContentVectorMigration(db, () => {
-    const writeChunk = db.transaction(() => {
-      const insertContentVectorStmt = db.prepare(`INSERT OR REPLACE INTO content_vectors (hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
-      insertContentVectorStmt.run(hash, seq, pos, model, fingerprint, totalChunks, embeddedAt);
-
-      // vec0 virtual tables don't support OR REPLACE — use DELETE + INSERT
-      const deleteVecStmt = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
-      const insertVecStmt = db.prepare(`INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`);
-      deleteVecStmt.run(hashSeq);
-      insertVecStmt.run(hashSeq, embedding);
-    });
-    writeChunk.immediate();
+    db.transaction(() => {
+      db.prepare(`INSERT OR REPLACE INTO content_vectors (hash, seq, pos, model, embed_fingerprint, total_chunks, embedded_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+        .run(hash, seq, pos, model, fingerprint, totalChunks, embeddedAt);
+      for (const collection of activeCollectionsOfHash(db, hash)) {
+        upsertPartitionVector(db, hash, seq, allocateCollectionId(db, collection), embedding);
+      }
+    }).immediate();
   });
 }
 
@@ -5295,10 +5673,11 @@ function pruneStaleChunkVectors(db: Database, hash: string, model: string, keepC
     ).all(hash, model, keepChunks) as { seq: number }[];
     if (stale.length === 0) return;
 
-    const deleteVecStmt = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
+    const partitionRowsOf = db.prepare(`SELECT id FROM ${VEC_ROWS_TABLE} WHERE hash = ? AND seq = ?`);
     const deleteContentStmt = db.prepare(`DELETE FROM content_vectors WHERE hash = ? AND model = ? AND seq = ?`);
     for (const row of stale) {
-      deleteVecStmt.run(`${hash}_${row.seq}`);
+      const rowids = (partitionRowsOf.all(hash, row.seq) as { id: number }[]).map(r => r.id);
+      deletePartitionRows(db, rowids);
       deleteContentStmt.run(hash, model, row.seq);
     }
   });
@@ -5309,15 +5688,12 @@ function removeIncompleteEmbeddings(db: Database, expectedChunksByHash: Map<stri
     let removed = 0;
     const rowsStmt = db.prepare(`SELECT seq FROM content_vectors WHERE hash = ? AND model = ?`);
     const deleteContentStmt = db.prepare(`DELETE FROM content_vectors WHERE hash = ? AND model = ?`);
-    const deleteVecStmt = db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`);
 
     for (const [hash, expectedChunks] of expectedChunksByHash) {
       const rows = rowsStmt.all(hash, model) as { seq: number }[];
       if (rows.length === 0 || rows.length === expectedChunks) continue;
 
-      for (const row of rows) {
-        deleteVecStmt.run(`${hash}_${row.seq}`);
-      }
+      deletePartitionRowsOfHash(db, hash);
       deleteContentStmt.run(hash, model);
       removed += rows.length;
     }
@@ -6204,7 +6580,7 @@ export function getStatusSummary(db: Database, model: string = DEFAULT_EMBED_MOD
 
   const totalDocs = (db.prepare(`SELECT COUNT(*) as c FROM documents WHERE active = 1`).get() as { c: number }).c;
   const needsEmbedding = getHashesNeedingEmbedding(db, undefined, model);
-  const hasVectors = !!db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
+  const hasVectors = hasVectorIndex(db);
 
   return {
     totalDocuments: totalDocs,
@@ -6880,9 +7256,7 @@ export async function hybridQuery(
   const rankedLists: RankedResult[][] = [];
   const rankedListMeta: RankedListMeta[] = [];
   const docidMap = new Map<string, string>(); // filepath -> docid
-  const hasVectors = !!store.db.prepare(
-    `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`
-  ).get();
+  const hasVectors = hasVectorIndex(store.db);
 
   // Step 1: BM25 probe — strong signal skips expensive LLM expansion
   // When intent is provided, disable strong-signal bypass — the obvious BM25
@@ -7203,9 +7577,7 @@ export async function vectorSearchQuery(
   const intent = options?.intent;
   const scope = options?.scope;
 
-  const hasVectors = !!store.db.prepare(
-    `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`
-  ).get();
+  const hasVectors = hasVectorIndex(store.db);
   if (!hasVectors) return [];
 
   // Expand query — filter to vec/hyde only (lex queries target FTS, not vector)
@@ -7348,9 +7720,7 @@ export async function structuredSearch(
   const rankedLists: RankedResult[][] = [];
   const rankedListMeta: RankedListMeta[] = [];
   const docidMap = new Map<string, string>(); // filepath -> docid
-  const hasVectors = !!store.db.prepare(
-    `SELECT name FROM sqlite_master WHERE type='table' AND name='vectors_vec'`
-  ).get();
+  const hasVectors = hasVectorIndex(store.db);
 
   // Each search yields ONE ranked list over the union of the named collections
   // (undefined = all). searchFTS/searchVec merge per-collection results by score,

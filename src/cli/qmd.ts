@@ -51,9 +51,12 @@ import {
   deactivateDocument,
   getActiveDocumentPaths,
   cleanupOrphanedContent,
+  cleanupOrphanedVectors,
+  copyVectorsToNewCollections,
   countOrphanedVectors,
   previewCleanup,
   runCleanup,
+  type VectorTableLayout,
   escapeLikePattern,
   hybridQuery,
   vectorSearchQuery,
@@ -95,6 +98,7 @@ import {
 import { formatMetadataKeySummaries, formatMetadataOverview } from "../metadata-format.js";
 import type { DocumentMetadata } from "../metadata.js";
 import { parseMetadataFilter, parseMetadataMatch, type MetadataFilter, type MetadataMatch } from "../metadata-filter.js";
+import { hasVectorIndex, storedEmbedding } from "../vec-layout.js";
 import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_MODEL_CACHE_DIR, resolveModels, inspectGgufFile, isDarwinMetalMitigationActive } from "../llm.js";
 import {
   escapeXml,
@@ -524,14 +528,6 @@ function sanitizeDiagnosticMessage(message: string): string {
     .filter(Boolean)
     .slice(0, 3)
     .join("; ");
-}
-
-/** Hint after `qmd update` when orphaned embedding chunks exceed this share of vectors (#768). */
-const ORPHAN_VECTOR_HINT_RATIO = 0.1;
-
-function formatOrphanedVectorHint(orphaned: number, total: number): string {
-  const pct = total > 0 ? Math.round((orphaned / total) * 100) : 0;
-  return `${orphaned} orphaned embedding chunks (${pct}% of vectors) — run 'qmd cleanup' to reclaim space`;
 }
 
 async function showStatus(): Promise<void> {
@@ -1046,10 +1042,20 @@ async function updateCollections(): Promise<number> {
     console.log("");
   }
 
+  // The pending count below only sees content_vectors, so a hash that joined
+  // a collection while already embedded elsewhere would be neither counted
+  // nor searchable there; copying its rows closes that gap without a model.
+  // The copy runs before the cleanup, which deletes the partition rows the
+  // copy reads from, so a document moved between collections keeps its vectors.
+  const copiedVectors = copyVectorsToNewCollections(db).copied;
+  // A changed file rewrites its document's hash in place, which strands the
+  // old hash's rows in the collection's vector partition; the partition
+  // filter cannot see documents.active, so those rows would take k slots
+  // from a scoped search until they are removed.
+  const staleVectors = cleanupOrphanedVectors(db);
+
   // Check if any documents need embedding (show once at end)
   const needsEmbedding = getHashesNeedingEmbedding(db, undefined, updateEmbedModel);
-  const vectorTotal = (db.prepare(`SELECT COUNT(*) as count FROM content_vectors`).get() as { count: number }).count;
-  const orphanedVectors = countOrphanedVectors(db);
   closeDb();
 
   if (skippedCollections > 0) {
@@ -1061,11 +1067,14 @@ async function updateCollections(): Promise<number> {
   } else {
     console.log(`${c.green}✓ All collections updated.${c.reset}`);
   }
+  if (staleVectors > 0) {
+    console.log(`Removed ${staleVectors} stale vector row(s)`);
+  }
+  if (copiedVectors > 0) {
+    console.log(`Copied ${copiedVectors} vector(s) into collections that gained already-embedded documents`);
+  }
   if (needsEmbedding > 0) {
     console.log(`\nRun 'qmd embed' to update embeddings (${needsEmbedding} unique hashes need vectors)`);
-  }
-  if (vectorTotal > 0 && orphanedVectors / vectorTotal >= ORPHAN_VECTOR_HINT_RATIO) {
-    console.log(`\n${formatOrphanedVectorHint(orphanedVectors, vectorTotal)}`);
   }
   return skippedCollections;
 }
@@ -2290,6 +2299,7 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
 
   // Clean up orphaned content hashes (content not referenced by any document)
   const orphanedContent = cleanupOrphanedContent(db);
+  const copiedVectors = copyVectorsToNewCollections(db, collectionName).copied;
 
   // Check if vector index needs updating
   const needsEmbedding = getHashesNeedingEmbedding(db);
@@ -2300,6 +2310,9 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
   reportMetadataErrors(metadataErrors);
   if (orphanedContent > 0) {
     console.log(`Cleaned up ${orphanedContent} orphaned content hash(es)`);
+  }
+  if (copiedVectors > 0) {
+    console.log(`Copied ${copiedVectors} vector(s) into collections that gained already-embedded documents`);
   }
 
   if (needsEmbedding > 0 && !suppressEmbedNotice) {
@@ -2326,7 +2339,9 @@ function reportSkippedReads(skippedFiles: { file: string; code: string }[]): voi
   if (skippedFiles.length === 0) return;
   const sizeLimitMb = Math.round(REINDEX_MAX_FILE_SIZE / (1024 * 1024));
   for (const skipped of skippedFiles) {
-    if (skipped.code === "OUTSIDE_COLLECTION") {
+    if (skipped.code === "ROOT_MISSING") {
+      console.warn(`⚠ Collection root not found, index left unchanged: ${skipped.file}`);
+    } else if (skipped.code === "OUTSIDE_COLLECTION") {
       console.warn(`⚠ Skipped file outside collection: ${skipped.file}`);
     } else if (skipped.code === "FILE_TOO_LARGE") {
       console.warn(`⚠ Skipped file over ${sizeLimitMb} MB: ${skipped.file}`);
@@ -2336,7 +2351,8 @@ function reportSkippedReads(skippedFiles: { file: string; code: string }[]): voi
   }
   const escaped = skippedFiles.filter(f => f.code === "OUTSIDE_COLLECTION").length;
   const tooLarge = skippedFiles.filter(f => f.code === "FILE_TOO_LARGE").length;
-  const unreadable = skippedFiles.length - escaped - tooLarge;
+  const rootMissing = skippedFiles.filter(f => f.code === "ROOT_MISSING").length;
+  const unreadable = skippedFiles.length - escaped - tooLarge - rootMissing;
   if (escaped) console.warn(`Skipped ${escaped} file(s) outside the collection root`);
   if (tooLarge) console.warn(`Skipped ${tooLarge} file(s) over ${sizeLimitMb} MB`);
   if (unreadable) console.warn(`Skipped ${unreadable} unreadable file(s)`);
@@ -2487,7 +2503,7 @@ export async function vectorIndex(
   const db = storeInstance.db;
   const runEmbeddings = deps?.runEmbeddings ?? generateEmbeddings;
 
-  // Exclusive process lock — concurrent embeds race on vectors_vec (#825)
+  // Exclusive process lock — concurrent embeds race on vector_rows (#825)
   const embedLock = tryAcquireEmbedLock(embedLockPathForDb(getDbPath()));
   if (!embedLock) {
     console.log(EMBED_LOCK_BUSY_MESSAGE);
@@ -2567,6 +2583,9 @@ export async function vectorIndex(
 
     const totalTimeSec = result.durationMs / 1000;
 
+    if (result.chunksCopied > 0) {
+      console.log(`${c.green}✓${c.reset} Copied ${formatCount(result.chunksCopied)} vectors into collections that gained already-embedded documents`);
+    }
     if (result.chunksEmbedded === 0 && result.docsProcessed === 0) {
       console.log(`${c.green}✓ No non-empty documents to embed.${c.reset}`);
     } else {
@@ -3076,6 +3095,10 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions,
   }
 
   warnUnresolvedFullPaths(unresolvedCount, filtered.length);
+}
+
+function describeVectorLayout(layout: VectorTableLayout): string {
+  return `${layout.chunks} chunks for ${layout.neededChunks} needed, ${Math.round(layout.occupancy * 100)}% useful`;
 }
 
 // Resolve -c collection filter: supports single string, array, or undefined.
@@ -4581,8 +4604,7 @@ export async function checkEmbeddingVectorSamples(db: Database, model: string, f
     return { ok: true, details: "no active documents indexed", empty: true };
   }
 
-  const vecTableExists = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
-  if (!vecTableExists) {
+  if (!hasVectorIndex(db)) {
     return { ok: false, details: "no vector table to test; please run qmd embed again", empty: true };
   }
 
@@ -4614,13 +4636,13 @@ export async function checkEmbeddingVectorSamples(db: Database, model: string, f
         continue;
       }
 
-      const stored = db.prepare(`SELECT embedding FROM vectors_vec WHERE hash_seq = ?`).get(hashSeq) as { embedding: Uint8Array } | undefined;
+      const stored = storedEmbedding(db, sample.hash, sample.seq);
       if (!stored) {
         mismatches.push(`${shortHashSeq(hashSeq)}: stored vector missing`);
         continue;
       }
 
-      const distance = cosineDistance(result.embedding, decodeStoredEmbedding(stored.embedding));
+      const distance = cosineDistance(result.embedding, decodeStoredEmbedding(stored));
       if (distance > threshold) {
         mismatches.push(`${shortHashSeq(hashSeq)}: stored vector distance ${distance.toFixed(6)}`);
       }
@@ -5678,12 +5700,19 @@ if (isMain) {
         if (stats.orphanedContent > 0) {
           console.log(`Would remove ${stats.orphanedContent} orphaned content hashes`);
         }
+        if (stats.vectorLayout) {
+          console.log(stats.vectorsRepacked
+            ? `Would repack the vector table (${describeVectorLayout(stats.vectorLayout)})`
+            : `${c.dim}Vector table is packed (${describeVectorLayout(stats.vectorLayout)})${c.reset}`);
+        }
         console.log("Would compact FTS and vacuum the database");
         closeDb();
         break;
       }
 
-      const stats = runCleanup(db);
+      const stats = runCleanup(db, {
+        onVectorRepack: (layout) => console.log(`Repacking the vector table (${describeVectorLayout(layout)})...`),
+      });
       console.log(`${c.green}✓${c.reset} Cleared ${stats.cacheCount} cached API responses`);
       if (stats.orphanedVectors > 0) {
         console.log(`${c.green}✓${c.reset} Removed ${stats.orphanedVectors} orphaned embedding chunks`);
@@ -5695,6 +5724,11 @@ if (isMain) {
       }
       if (stats.orphanedContent > 0) {
         console.log(`${c.green}✓${c.reset} Removed ${stats.orphanedContent} orphaned content hashes`);
+      }
+      if (stats.vectorLayout) {
+        console.log(stats.vectorsRepacked
+          ? `${c.green}✓${c.reset} Repacked the vector table (${describeVectorLayout(stats.vectorLayout)})`
+          : `${c.dim}Vector table is packed (${describeVectorLayout(stats.vectorLayout)})${c.reset}`);
       }
       console.log(`${c.green}✓${c.reset} FTS compacted, database vacuumed`);
 

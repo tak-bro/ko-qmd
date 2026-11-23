@@ -4,6 +4,22 @@
 
 ### Upstream sync
 
+> **Upgrading converts your index in place.** The first `qmd` command after
+> the upgrade moves every vector into the per-collection layout (upstream
+> #983), printing its progress, and ends with a VACUUM. Going back to an
+> earlier ko-qmd afterwards needs `qmd embed -f`, and a running `qmd mcp`
+> daemon must be restarted.
+
+- Vector index partitioned by collection (upstream #983, #937). ko-qmd keeps
+  `--path`/`--since`/`--until` on vector search exact. The scope is resolved
+  to the documents it admits and narrows the partition scan, as a metadata
+  filter does, instead of post-filtering a top-k. ko-qmd's FTS trigger
+  revision moves from `PRAGMA user_version` (upstream now numbers its own
+  steps there) to `store_config`. An index stamped `user_version 2` by an
+  earlier ko-qmd still converts its vectors on first open. `qmd update` no
+  longer prints the orphaned-chunk hint, because update now removes those
+  rows itself. A missing collection root is reported as `ROOT_MISSING`
+  (upstream), not as the stat error code.
 - **Breaking — metadata filter:** a filter condition now names its target with
   `field`, not `key` (upstream #956), and unknown properties are rejected, so
   `{"key":"status",…}` fails with `unknown property 'key'`. Every surface takes
@@ -513,6 +529,13 @@ it to `scope`.
   collections (thanks @brettdavies). Builds on the approach in #918 (thanks
   @fxstein). #953 (thanks @Mr-Beasley)
 
+- `qmd update` no longer deactivates every document in a collection whose root
+  folder is missing, for example an unmounted drive or an offline network share.
+  The folder globbed to an empty list, which read as "every file was deleted",
+  so search went empty and a `qmd cleanup` before the drive came back deleted
+  the rows for good. The collection is now reported as not found and its index
+  is left unchanged. Permission and I/O errors still fail with their original
+  cause (#989). #990 (thanks @ParkerRex)
 - Embedding generation and legacy fingerprint adoption now tokenize documents
   with the store-selected embedding model instead of the global default. This
   keeps chunk boundaries aligned with the model that creates and verifies the
@@ -893,6 +916,39 @@ first search after an idle spell from ~1.8s to ~0.07s.
   set `models: embed:` or `QMD_EMBED_MODEL` to keep embeddinggemma. The qmd skill
   gains a "Korean queries" section. Hangul handling and ko-vault bench numbers
   are in `README.ko.md`.
+### Changed
+
+- The vector index is partitioned by collection. Each embedded chunk is
+  stored once per collection that holds it, under an integer collection id,
+  so a collection-scoped `qmd query` or `qmd vsearch` scans only that
+  collection's vectors instead of pre-filtering the whole index, and a small
+  collection is never crowded out of the results by a large one. The first
+  command after upgrading converts the index in place and prints its
+  progress; the conversion resumes from where it stopped if interrupted, two
+  commands started at once share it, and a VACUUM at the end reclaims the
+  space of the old table. `qmd collection rename` no longer touches vectors,
+  `qmd update` removes, as it finishes, the vectors of content that no
+  indexed document holds any more (content that comes back later is embedded
+  again), and `qmd update` and `qmd embed` copy an already-embedded document
+  into a collection that gains it instead of embedding it again. A
+  metadata-filtered vector search returns the nearest documents the filter
+  admits however many chunks it admits, and a vector search fills its limit
+  even when one long document holds all of the nearest chunks. Downgrading
+  to an older qmd afterwards needs `qmd embed -f`, and a `qmd mcp` server
+  started before the upgrade must be restarted. #983 (thanks @brettdavies)
+
+### Changed
+
+- `qmd cleanup` repacks the vector table when fewer than 90% of its chunk
+  reads hold live rows. vec0 fills the first free slot of its newest chunk
+  and reclaims a chunk only once it is empty, so re-embeds and orphan removal
+  leave holes in older chunks that every brute-force scan still reads; a
+  794k-vector index at 36% occupancy scanned twice as slowly as a packed copy
+  of the same rows. The repack moves the live rows of each mostly-empty chunk
+  to the tail, one chunk per short transaction, so it never holds the write
+  lock for long and an interrupted run leaves a consistent table. The cleanup
+  output and `qmd cleanup --dry-run` report the chunk counts.
+  #937 (thanks @brettdavies)
 
 ## [2.8.3] - 2026-08-16
 

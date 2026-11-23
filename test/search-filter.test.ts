@@ -177,11 +177,7 @@ describe("vector search takes the same filter", () => {
     ).all() as { hash: string; display_path: string }[];
     for (const row of rows) {
       const embedding = row.display_path.startsWith("docs/journals/") ? farFromQuery() : nearQuery();
-      db.prepare(
-        `INSERT OR REPLACE INTO content_vectors (hash, seq, pos, model, embed_fingerprint, embedded_at) VALUES (?, 0, 0, ?, ?, ?)`,
-      ).run(row.hash, DEFAULT_EMBED_MODEL, getEmbeddingFingerprint(DEFAULT_EMBED_MODEL), now);
-      db.prepare(`INSERT OR REPLACE INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`)
-        .run(`${row.hash}_0`, embedding);
+      store.internal.insertEmbedding(row.hash, 0, 0, embedding, DEFAULT_EMBED_MODEL, now, 1, getEmbeddingFingerprint(DEFAULT_EMBED_MODEL));
     }
   });
 

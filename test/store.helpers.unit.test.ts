@@ -6,6 +6,7 @@ import { describe, test, expect } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { VEC_TABLE } from "../src/vec-layout.js";
 import {
   homedir,
   resolve,
@@ -170,10 +171,11 @@ describe("countOrphanedVectors", () => {
 describe("cleanupOrphanedVectors", () => {
   test("returns 0 when vec table exists in schema but sqlite-vec is unavailable", () => {
     const prepare = (sql: string) => {
-      if (sql.includes("sqlite_master") && sql.includes("vectors_vec")) {
-        return { get: () => ({ name: "vectors_vec" }) };
+      if (sql.includes("sqlite_master")) {
+        const row = { name: VEC_TABLE, sql: `CREATE VIRTUAL TABLE ${VEC_TABLE} USING vec0(collection_id INTEGER PARTITION KEY, embedding float[3] distance_metric=cosine)` };
+        return { get: () => row, all: () => [row] };
       }
-      if (sql.includes("SELECT 1 FROM vectors_vec LIMIT 0")) {
+      if (sql.includes(`SELECT 1 FROM ${VEC_TABLE} LIMIT 0`)) {
         return { get: () => { throw new Error("no such module: vec0"); } };
       }
       throw new Error(`Unexpected SQL in test: ${sql}`);
@@ -189,11 +191,11 @@ describe("cleanupOrphanedVectors", () => {
     expect(cleanupOrphanedVectors(db)).toBe(0);
   });
 
-  test("returns 0 when the vectors_vec table is missing entirely", () => {
+  test("returns 0 when the vector table is missing entirely", () => {
     const db = {
       prepare: (sql: string) => {
-        if (sql.includes("SELECT 1 FROM vectors_vec LIMIT 0")) {
-          return { get: () => { throw new Error("no such table: vectors_vec"); } };
+        if (sql.includes("sqlite_master")) {
+          return { get: () => undefined, all: () => [] };
         }
         throw new Error(`Unexpected SQL in test: ${sql}`);
       },
@@ -204,41 +206,23 @@ describe("cleanupOrphanedVectors", () => {
 
     expect(cleanupOrphanedVectors(db)).toBe(0);
   });
-
-  test("removes orphaned chunks when the vec probe succeeds (no vec0 load)", () => {
-    const execCalls: string[] = [];
-    const db = {
-      prepare: (sql: string) => {
-        if (sql.includes("SELECT 1 FROM vectors_vec LIMIT 0")) {
-          return { get: () => ({ "1": 1 }) };
-        }
-        if (sql.includes("FROM content_vectors cv") && sql.includes("COUNT(*)")) {
-          return { get: () => ({ c: 2 }) };
-        }
-        throw new Error(`Unexpected SQL in test: ${sql}`);
-      },
-      exec: (sql: string) => { execCalls.push(sql); },
-      transaction: (fn: () => number) => Object.assign(() => fn(), { immediate: () => fn() }),
-    } as any;
-
-    expect(cleanupOrphanedVectors(db)).toBe(2);
-    expect(execCalls.some((sql) => sql.includes("DELETE FROM vectors_vec"))).toBe(true);
-    expect(execCalls.some((sql) => sql.includes("DELETE FROM content_vectors"))).toBe(true);
-  });
 });
 
 describe("previewCleanup vector agreement (#768)", () => {
-  // Mocked db only: both vec0 states are reachable via the probe outcome,
-  // so no vec0 module load is needed.
-  function makePreviewDb(opts: { probeOk: boolean; orphanCount: number }) {
+  // Mocked db: the vec0 table is in the schema but sqlite-vec is not loaded, so
+  // the probe throws. The actionable case needs vec0 loaded and is covered by
+  // cleanup.test.ts ("previewCleanup projects the layout after orphan removal,
+  // matching what runCleanup does").
+  function makePreviewDb(opts: { orphanCount: number }) {
     let touchedContentVectors = false;
     const db = {
       prepare: (sql: string) => {
-        if (sql.includes("SELECT 1 FROM vectors_vec LIMIT 0")) {
-          if (!opts.probeOk) {
-            return { get: () => { throw new Error("no such module: vec0"); } };
-          }
-          return { get: () => ({ "1": 1 }) };
+        if (sql.includes("sqlite_master")) {
+          const row = { name: VEC_TABLE, sql: `CREATE VIRTUAL TABLE ${VEC_TABLE} USING vec0(collection_id INTEGER PARTITION KEY, embedding float[3] distance_metric=cosine)` };
+          return { get: () => row, all: () => [row] };
+        }
+        if (sql.includes(`SELECT 1 FROM ${VEC_TABLE} LIMIT 0`)) {
+          return { get: () => { throw new Error("no such module: vec0"); } };
         }
         if (sql.includes("content_vectors")) {
           touchedContentVectors = true;
@@ -255,16 +239,10 @@ describe("previewCleanup vector agreement (#768)", () => {
   }
 
   test("reports 0 actionable vectors when the vec probe fails", () => {
-    const db = makePreviewDb({ probeOk: false, orphanCount: 3 });
+    const db = makePreviewDb({ orphanCount: 3 });
     expect(previewCleanup(db).orphanedVectors).toBe(0);
     // The count query must not run: there is nothing actionable to count.
     expect(db.wasAskedForContentVectors()).toBe(false);
-  });
-
-  test("reports the count when the vec probe succeeds", () => {
-    const db = makePreviewDb({ probeOk: true, orphanCount: 3 });
-    expect(previewCleanup(db).orphanedVectors).toBe(3);
-    expect(db.wasAskedForContentVectors()).toBe(true);
   });
 });
 
