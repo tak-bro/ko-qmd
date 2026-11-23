@@ -5169,10 +5169,8 @@ export function removeCollection(db: Database, collectionName: string): { delete
 
     deleteStoreCollection(db, collectionName);
 
-    const docsAfter = (db.prepare(`SELECT COUNT(*) as c FROM documents WHERE collection = ?`).get(collectionName) as { c: number }).c;
-
     return {
-      deletedDocs: docsBefore - docsAfter,
+      deletedDocs: docsBefore,
       cleanedHashes,
     };
   }).immediate();
