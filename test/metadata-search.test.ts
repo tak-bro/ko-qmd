@@ -180,6 +180,14 @@ describe("searchVec with metadata filter", () => {
   const model = DEFAULT_EMBED_MODEL;
   const queryEmbedding = [1, 0, 0];
 
+  // ko-qmd: the 20,000-chunk tests below run seconds of synchronous SQLite
+  // each, and vitest moves from test to test on microtasks alone, so without
+  // this the worker's event loop stays blocked for the whole file. A slow CI
+  // runner then passes 60 s, and the worker's pending "onTaskUpdate" RPC times
+  // out and fails the run although every test passed. Each heavy phase ends
+  // with a turn of the event loop so the RPC reply can land.
+  const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
+
   async function insertEmbeddedDoc(
     collection: string,
     path: string,
@@ -219,6 +227,7 @@ describe("searchVec with metadata filter", () => {
         insertEmbedding(store.db, hash, sequence, 0, new Float32Array([1, sequence / 20_001, 0]), model, timestamp, 20_001);
       }
     })();
+    await yieldToEventLoop();
 
     // 256 nodes, 64 distinct members per wide leaf: a valid filter with
     // 31,490 bindings. Candidate IDs must not exhaust the remaining budget.
@@ -230,12 +239,14 @@ describe("searchVec with metadata filter", () => {
     // At 20,000 eligible chunks the exact path returns up to limit * 3 IDs.
     const exactResults = await searchVec(store.db, "q", model, 500, "notes", undefined, queryEmbedding, undefined, metadataFilter);
     expect(exactResults.map(result => result.displayPath)).toEqual(["notes/published.md"]);
+    await yieldToEventLoop();
 
     // The extra chunk crosses into capped global lookup. Its 4,096 candidate
     // IDs used to push the final document lookup past Node's variable limit.
     insertEmbedding(store.db, hash, 20_000, 0, new Float32Array([1, 1, 0]), model, timestamp, 20_001);
     const fallbackResults = await searchVec(store.db, "q", model, 137, "notes", undefined, queryEmbedding, undefined, metadataFilter);
     expect(fallbackResults.map(result => result.displayPath)).toEqual(["notes/published.md"]);
+    await yieldToEventLoop();
   });
 
   test("returns empty when no documents are eligible", async () => {
@@ -322,11 +333,13 @@ describe("searchVec with metadata filter", () => {
     store.db.exec("BEGIN");
     for (let i = 0; i < 20_001; i++) {
       await insertEmbeddedDoc("book", `eligible-${i}.md`, `# Eligible ${i}`, [0, 1, 0], { eligible: true });
+      if (i % 1_000 === 0) await yieldToEventLoop();
     }
     for (let i = 0; i < 200; i++) {
       await insertEmbeddedDoc("book", `closer-${i}.md`, `# Closer ${i}`, [1, 0, 0], { eligible: false });
     }
     store.db.exec("COMMIT");
+    await yieldToEventLoop();
 
     const filtered = await searchVec(
       store.db, "q", model, 5, "book", undefined, queryEmbedding, undefined,
@@ -334,6 +347,7 @@ describe("searchVec with metadata filter", () => {
     );
     expect(filtered).toHaveLength(5);
     expect(filtered.every(r => r.metadata.eligible === true)).toBe(true);
+    await yieldToEventLoop();
   }, 120_000);
 
   test("a filtered vector scan binds no list of eligible rows, so none is held on the heap", async () => {
