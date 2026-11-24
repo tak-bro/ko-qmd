@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.9.0-ko.1] - 2026-11-24
+
 ### Upstream sync
 
 > **Upgrading converts your index in place.** The first `qmd` command after
