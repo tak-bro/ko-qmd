@@ -47,10 +47,12 @@ describe("embed lock contention exit code", () => {
     const lockPath = embedLockPathForDb(dbPath);
     try {
       // Live qmd-like holder for this DB's lock (argv carries `qmd embed` tokens).
+      // It holds until RELEASE on stdin and lets go when stdin closes, so stdin
+      // stays an open pipe for the whole contention window.
       const holderArgs = isBunRuntime
-        ? [holderTs, lockPath, "60000", "qmd", "embed"]
-        : [tsxCli, holderTs, lockPath, "60000", "qmd", "embed"];
-      const holder = spawn(process.execPath, holderArgs, { stdio: ["ignore", "pipe", "pipe"] });
+        ? [holderTs, lockPath, "qmd", "embed"]
+        : [tsxCli, holderTs, lockPath, "qmd", "embed"];
+      const holder = spawn(process.execPath, holderArgs, { stdio: ["pipe", "pipe", "pipe"] });
       let holderOut = "";
       holder.stdout.on("data", (d: Buffer) => { holderOut += d.toString(); });
       await waitForStdoutContains(() => holderOut, "HOLD");
@@ -68,7 +70,8 @@ describe("embed lock contention exit code", () => {
       const exitCode = await new Promise<number | null>((resolve) => {
         contender.on("close", (code) => resolve(code));
       });
-      holder.kill();
+      holder.stdin.end("RELEASE\n");
+      await new Promise<void>((resolve) => holder.on("close", () => resolve()));
 
       expect(stdout).toContain(EMBED_LOCK_BUSY_MESSAGE);
       expect(stderr).not.toContain(EMBED_LOCK_BUSY_MESSAGE);

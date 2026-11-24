@@ -14,6 +14,7 @@ AI 에이전트(Claude Code·Claude Desktop 등)는 CLI·MCP 서버·REST·TypeS
 - 패키지: `ko-qmd` (npm). 실행 파일과 MCP 서버 이름은 업스트림과 같은 `qmd`
 - 버전: `<업스트림 버전>-ko.N` (예: `2.8.3-ko.5`)
 - 영어 레퍼런스(전체 CLI 옵션·MCP 툴 파라미터·SDK API·점수 계산): [docs/REFERENCE.md](docs/REFERENCE.md)
+- 업스트림 2.9.0 기능: 원격 임베딩·원격 재순위·문서 프로세서는 설정해야 켜지고, 메타데이터 탐색(`qmd collection metadata`)은 바로 쓴다. 문서: [Remote Embeddings](docs/REFERENCE.md#remote-embeddings) · [TypeSafe 재순위](docs/REFERENCE.md#remote-reranking-with-typesafe-system-one) · [프로세서](docs/PROCESSORS.md) · [Metadata Discovery](docs/REFERENCE.md#metadata-discovery)
 - 변경 이력: [CHANGELOG.md](CHANGELOG.md) · 자주 묻는 질문: [FAQ](#자주-묻는-질문)
 
 ```mermaid

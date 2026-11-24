@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import {
   looksLikeQmdMcpCommand,
   isQmdMcpPid,
+  mcpDaemonLockStatePath,
   mcpDaemonStateFiles,
   readProcessCmdline,
 } from "../src/cli/mcp-pid.ts";
@@ -73,6 +74,13 @@ describe("readProcessCmdline", () => {
 
   test("returns null for a certainly-dead pid", () => {
     expect(readProcessCmdline(999999999)).toBeNull();
+  });
+});
+
+describe("mcpDaemonLockStatePath", () => {
+  test("scopes the critical-section sidecar to the pidfile it guards", () => {
+    expect(mcpDaemonLockStatePath("/cache/qmd/mcp.pid")).toBe("/cache/qmd/mcp.pid.lock.sqlite");
+    expect(mcpDaemonLockStatePath("/cache/qmd/mcp-named.pid")).toBe("/cache/qmd/mcp-named.pid.lock.sqlite");
   });
 });
 

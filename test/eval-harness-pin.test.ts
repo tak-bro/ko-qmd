@@ -165,13 +165,13 @@ describe("scoreQueries pins current aggregation math", () => {
 describe("runSearch/runQuery silent-failure paths with stubbed exec", () => {
   test("runSearch returns parsed JSON on success", () => {
     const payload = [makeResult("api-design.md")];
-    const execStub = (_command: string, _options: { encoding: string; timeout: number }) =>
+    const execStub = (_command: string, _options: { encoding: "utf-8"; timeout: number }) =>
       JSON.stringify(payload);
     expect(runSearch("API versioning", execStub)).toEqual(payload);
   });
 
   test("runSearch returns [] when exec throws", () => {
-    const failing = (_command: string, _options: { encoding: string; timeout: number }): string => {
+    const failing = (_command: string, _options: { encoding: "utf-8"; timeout: number }): string => {
       throw new Error("boom");
     };
     expect(runSearch("API versioning", failing)).toEqual([]);

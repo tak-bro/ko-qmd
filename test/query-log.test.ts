@@ -27,9 +27,10 @@ const fakeStore = {
     totalDocuments: 3,
     needsEmbedding: 0,
     hasVectorIndex: false,
+    pendingMetadata: 0,
     collections: [
-      { name: "docs", path: "/d", pattern: "**/*.md", documents: 2, lastUpdated: "2026-09-01T00:00:00.000Z" },
-      { name: "notes", path: "/n", pattern: "**/*.md", documents: 1, lastUpdated: "2026-09-10T00:00:00.000Z" },
+      { name: "docs", path: "/d", pattern: "**/*.md", documents: 2, lastUpdated: "2026-09-01T00:00:00.000Z", metadataKeyCount: 0, metadataKeys: [] },
+      { name: "notes", path: "/n", pattern: "**/*.md", documents: 1, lastUpdated: "2026-09-10T00:00:00.000Z", metadataKeyCount: 0, metadataKeys: [] },
     ],
   }),
 };

@@ -39,13 +39,13 @@ const terms = (text: string): Set<string> => {
 const titleTerms = (relPath: string): Set<string> => {
   const raw = readFileSync(join(FIXTURE, relPath), "utf8");
   const fm = raw.match(/^---\n([\s\S]*?)\n---/);
-  const aliases = fm ? [...fm[1].matchAll(/- "([^"]+)"/g)].map((m) => m[1]) : [];
+  const aliases = fm ? [...fm[1]!.matchAll(/- "([^"]+)"/g)].map((m) => m[1]) : [];
   const heading = raw.match(/^# (.+)$/m)?.[1] ?? "";
   const stem = basename(relPath, extname(relPath)).replace(/-/g, " ");
   return terms([stem, heading, ...aliases].join(" "));
 };
 
-const wikiDocs = readdirSync(join(FIXTURE, "wiki"), { recursive: true }).filter((f) => f.endsWith(".md"));
+const wikiDocs = readdirSync(join(FIXTURE, "wiki"), { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".md"));
 const distractorDocs = readdirSync(join(FIXTURE, "distractors")).filter((f) => f.endsWith(".md"));
 const byType = new Map<string, number>();
 for (const q of bench.queries) byType.set(q.type, (byType.get(q.type) ?? 0) + 1);

@@ -8,9 +8,10 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll, vi } from "vitest";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { accessSync, chmodSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import {
   LlamaCpp,
   getDefaultLlamaCpp,
@@ -41,6 +42,7 @@ import {
   DEFAULT_RERANK_MAX_DOC_TOKENS,
   type RerankDocument,
   type ILLMSession,
+  type RerankResult,
 } from "../src/llm.js";
 
 describe("inspectGgufFile", () => {
@@ -246,6 +248,18 @@ describe("validateGgufFile via pullModels", () => {
 });
 
 describe("canWriteLlamaDir", () => {
+  test("checks the installed package even when package.json is not exported", () => {
+    const require = createRequire(import.meta.url);
+    const dir = join(dirname(dirname(require.resolve("node-llama-cpp"))), "llama");
+    let writable = true;
+    try {
+      accessSync(dir, constants.W_OK);
+    } catch {
+      writable = false;
+    }
+    expect(canWriteLlamaDir()).toBe(writable);
+  });
+
   test("returns true when llama/ exists and is writable", () => {
     const dir = mkdtempSync(join(tmpdir(), "qmd-llama-rw-"));
     mkdirSync(join(dir, "llama"));
@@ -1312,7 +1326,7 @@ describe("LlamaCpp rerank deduping", () => {
       detokenize: (tokens: string[]) => tokens.join(""),
     });
 
-    const result = await llm.rerank("query", [
+    const result: RerankResult = await llm.rerank("query", [
       { file: "a.md", text: "shared chunk" },
       { file: "b.md", text: "shared chunk" },
       { file: "c.md", text: "different chunk" },

@@ -466,7 +466,7 @@ describe("negation queries through hybridQuery and structuredSearch", () => {
     });
     await store.update();
     // An empty vec table turns the vector path on; the stubs record what each list was asked.
-    store.internal.db.exec(`CREATE VIRTUAL TABLE vectors_vec USING vec0(hash_seq TEXT PRIMARY KEY, embedding float[1] distance_metric=cosine)`);
+    store.internal.ensureVecTable(1);
     store.internal.llm = {
       embedModelName: "stub",
       embedBatch: async (texts: string[]) => texts.map(() => ({ embedding: [1] })),
