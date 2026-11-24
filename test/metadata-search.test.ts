@@ -247,7 +247,10 @@ describe("searchVec with metadata filter", () => {
     const fallbackResults = await searchVec(store.db, "q", model, 137, "notes", undefined, queryEmbedding, undefined, metadataFilter);
     expect(fallbackResults.map(result => result.displayPath)).toEqual(["notes/published.md"]);
     await yieldToEventLoop();
-  });
+    // ko-qmd: the same budget as the 20,000-chunk test below. Upstream's
+    // source runs these two searches in 9 s here, and the ubuntu runner took
+    // 25 to 91 s, past the 60 s default.
+  }, 120_000);
 
   test("returns empty when no documents are eligible", async () => {
     store.ensureVecTable(3);
