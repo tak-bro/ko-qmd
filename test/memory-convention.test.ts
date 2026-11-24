@@ -98,7 +98,7 @@ describe("actor/project recall narrowing", () => {
     insertDoc("by-agent.md", { actor: "agent", project: "knowledge-base" });
     insertDoc("no-actor.md", { project: "knowledge-base" });
 
-    expect(matchPaths({ key: "actor", operator: "eq", value: "user" })).toEqual(["by-user.md"]);
+    expect(matchPaths({ field: "actor", operator: "eq", value: "user" })).toEqual(["by-user.md"]);
   });
 
   test("actor + project combine with and", () => {
@@ -110,8 +110,8 @@ describe("actor/project recall narrowing", () => {
       matchPaths({
         operator: "and",
         operands: [
-          { key: "actor", operator: "eq", value: "agent" },
-          { key: "project", operator: "eq", value: "knowledge-base" },
+          { field: "actor", operator: "eq", value: "agent" },
+          { field: "project", operator: "eq", value: "knowledge-base" },
         ],
       }),
     ).toEqual(["a.md"]);

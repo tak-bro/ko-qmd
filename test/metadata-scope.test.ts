@@ -74,7 +74,7 @@ describe("metadata filter and path scope together", () => {
     await rm(testDir, { recursive: true, force: true });
   });
 
-  const published = { key: "status", operator: "eq", value: "published" };
+  const published = { field: "status", operator: "eq", value: "published" };
   const searches = [{ type: "lex", query: "zanzibar" }];
 
   const restFiles = async (extra: Record<string, unknown>) => {

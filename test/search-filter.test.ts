@@ -138,7 +138,7 @@ describe("searchLex through the SDK", () => {
 
   test("a metadata filter and a path scope together keep only their intersection", async () => {
     const scope = buildDocumentFilter({ path: ["docs/journals/**"] })!;
-    const filter = { key: "status", operator: "eq", value: "keep" } as const;
+    const filter = { field: "status", operator: "eq", value: "keep" } as const;
     const paths = async (opts: Pick<LexSearchOptions, "filter" | "scope">) =>
       (await store.searchLex("zanzibar", { collection: collectionNames, limit: 10, ...opts })).map(h => h.displayPath).sort();
     expect(await paths({ scope })).toEqual(["docs/journals/2024/old.md", "docs/journals/2026/note.md"]);
@@ -177,11 +177,7 @@ describe("vector search takes the same filter", () => {
     ).all() as { hash: string; display_path: string }[];
     for (const row of rows) {
       const embedding = row.display_path.startsWith("docs/journals/") ? farFromQuery() : nearQuery();
-      db.prepare(
-        `INSERT OR REPLACE INTO content_vectors (hash, seq, pos, model, embed_fingerprint, embedded_at) VALUES (?, 0, 0, ?, ?, ?)`,
-      ).run(row.hash, DEFAULT_EMBED_MODEL, getEmbeddingFingerprint(DEFAULT_EMBED_MODEL), now);
-      db.prepare(`INSERT OR REPLACE INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)`)
-        .run(`${row.hash}_0`, embedding);
+      store.internal.insertEmbedding(row.hash, 0, 0, embedding, DEFAULT_EMBED_MODEL, now, 1, getEmbeddingFingerprint(DEFAULT_EMBED_MODEL));
     }
   });
 
@@ -214,7 +210,7 @@ describe("vector search takes the same filter", () => {
     expect(hits).toEqual([]);
   });
 
-  const keep = { key: "status", operator: "eq", value: "keep" } as const;
+  const keep = { field: "status", operator: "eq", value: "keep" } as const;
   // No collection: a collection alone already forces the exact scan, which would hide a
   // metadata filter that failed to.
   const vecPaths = async (scope?: ReturnType<typeof buildDocumentFilter>) =>

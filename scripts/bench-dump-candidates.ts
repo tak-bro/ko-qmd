@@ -6,6 +6,10 @@ import { createStore } from '../src/index.js'
 
 async function main() {
   const [fixturePath, outPath] = process.argv.slice(2)
+  if (!fixturePath || !outPath) {
+    console.error('usage: bun scripts/bench-dump-candidates.ts <fixture.json> <out.json>')
+    process.exit(2)
+  }
   const fixture = JSON.parse(readFileSync(fixturePath, 'utf8'))
   const store = await createStore({
     dbPath: process.env.INDEX_PATH!,

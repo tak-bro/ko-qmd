@@ -15,7 +15,7 @@ import { createStore, type QMDStore } from "../src/index.js";
 import { compileGrepPattern, grepDocuments, MAX_PATTERN_LENGTH } from "../src/grep.js";
 import { buildDocumentFilter } from "../src/filters.js";
 import { replaceDocumentMetadata } from "../src/metadata-store.js";
-import { METADATA_EXTRACTION_VERSION } from "../src/metadata.js";
+import { METADATA_EXTRACTION_VERSION, type DocumentMetadata } from "../src/metadata.js";
 
 let root: string;
 let store: QMDStore;
@@ -222,7 +222,7 @@ describe("grepDocuments", () => {
 });
 
 describe("grepDocuments with metadataFilter", () => {
-  const tag = (pathSuffix: string, metadata: Record<string, unknown>) => {
+  const tag = (pathSuffix: string, metadata: DocumentMetadata) => {
     const row = store.internal.db
       .prepare("SELECT id FROM documents WHERE path LIKE ?")
       .get(`%${pathSuffix}`) as { id: number };
@@ -236,7 +236,7 @@ describe("grepDocuments with metadataFilter", () => {
     tag("note.md", { status: "published" });
     tag("old.md", { status: "draft" });
     const result = grep("TODO", {
-      metadataFilter: { key: "status", operator: "eq", value: "published" },
+      metadataFilter: { field: "status", operator: "eq", value: "published" },
     });
     expect(result.files.map(f => f.displayPath)).toEqual(["docs/journals/note.md"]);
   });
@@ -246,7 +246,7 @@ describe("grepDocuments with metadataFilter", () => {
     // draft — none of them satisfies eq published, so the filter must not
     // sweep them back in.
     const result = grep("TODO", {
-      metadataFilter: { key: "status", operator: "eq", value: "published" },
+      metadataFilter: { field: "status", operator: "eq", value: "published" },
     });
     expect(result.files.map(f => f.displayPath)).toEqual(["docs/journals/note.md"]);
   });

@@ -1,15 +1,31 @@
 import { isBun } from "../db.js";
 import type { Database, SQLiteValue } from "../db.js";
 import fastGlob from "fast-glob";
+import { createCommandProcessor } from "../processors.js";
+import { hasProcessorMode, requireProcessor } from "../processor-store.js";
 import { spawn as nodeSpawn } from "child_process";
-import { isQmdMcpPid, mcpDaemonStateFiles, openDaemonLogFile } from "./mcp-pid.js";
-import { embedLockPathForDb, tryAcquireEmbedLock, EMBED_LOCK_BUSY_MESSAGE } from "./embed-lock.js";
+import {
+  MCP_DAEMON_EXIT_SECTION_BUDGET_MS,
+  claimMcpDaemonPidfile,
+  isQmdMcpPid,
+  mcpDaemonStateFiles,
+  openDaemonLogFile,
+  pidfileRecordsPid,
+  readMcpDaemonPidState,
+  removeMcpDaemonPidfileIfRecords,
+  removeStaleMcpDaemonPidfile,
+  stopMcpDaemon,
+  waitForDaemonChildIdentity,
+  waitForDaemonPidfileOwnership,
+} from "./mcp-pid.js";
+import { EMBED_LOCK_BUSY_MESSAGE } from "./embed-lock.js";
 import { fileURLToPath } from "url";
 import { basename, dirname, join as pathJoin, relative as relativePath, resolve as pathResolve } from "path";
 import { parseArgs, type ParseArgsOptionsConfig } from "util";
+import type { HttpServerHandle } from "../mcp/server.js";
 import { buildDocumentFilter, describeFilter, type DocumentFilter } from "../filters.js";
 import { compileGrepPattern, grepDocuments, type GrepFileMatch } from "../grep.js";
-import { readFileSync, readdirSync, realpathSync, statSync, existsSync, unlinkSync, writeFileSync, closeSync, mkdirSync, lstatSync, rmSync, symlinkSync, readlinkSync, copyFileSync } from "fs";
+import { readFileSync, readdirSync, realpathSync, statSync, existsSync, unlinkSync, writeFileSync, openSync, closeSync, mkdirSync, lstatSync, rmSync, symlinkSync, readlinkSync, copyFileSync } from "fs";
 import { createInterface } from "readline/promises";
 import {
   getPwd,
@@ -26,11 +42,21 @@ import {
   listCollections,
   removeCollection,
   renameCollection,
+  deleteStoreCollection,
+  hasCollectionIndexState,
+  assertRenameTargetAvailable,
+  reconcilePublishedRename,
+  findSimilarFiles,
   findDocument,
   resolveCommaListName,
   matchFilesByGlob,
   getHashesNeedingEmbedding,
+  getEmbeddingVectorSamples,
   hashContent,
+  clearAllEmbeddings,
+  insertEmbedding,
+  getStatus,
+  hashContentSync,
   extractTitle,
   formatDocForEmbedding,
   getEmbeddingFingerprint,
@@ -50,9 +76,12 @@ import {
   deactivateDocument,
   getActiveDocumentPaths,
   cleanupOrphanedContent,
+  cleanupOrphanedVectors,
+  copyVectorsToNewCollections,
   countOrphanedVectors,
   previewCleanup,
   runCleanup,
+  type VectorTableLayout,
   escapeLikePattern,
   hybridQuery,
   vectorSearchQuery,
@@ -73,15 +102,34 @@ import {
   createStore,
   getDefaultDbPath,
   reindexCollection,
+  scanWriteBatch,
+  REINDEX_MAX_FILE_SIZE,
   generateEmbeddings,
+  EmbedLockBusyError,
   maybeAdoptLegacyEmbeddingFingerprint,
   syncConfigToDb,
+  invalidateConfigHash,
+  type ReindexResult,
   type ChunkStrategy,
 } from "../store.js";
-import { syncDocumentMetadata, countDocumentsPendingMetadata } from "../metadata-store.js";
+import {
+  syncDocumentMetadata,
+  countDocumentsPendingMetadata,
+  countDocumentsWithMetadata,
+  countMetadataKeys,
+  listMetadata,
+  listMetadataCollectionSummaries,
+  MetadataBindingBudgetError,
+  type ListMetadataOptions,
+  type ListMetadataResult,
+} from "../metadata-store.js";
+import { formatMetadataKeySummaries, formatMetadataOverview } from "../metadata-format.js";
 import type { DocumentMetadata } from "../metadata.js";
-import { parseMetadataFilter, type MetadataFilter } from "../metadata-filter.js";
-import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_MODEL_CACHE_DIR, resolveModels, inspectGgufFile, isDarwinMetalMitigationActive } from "../llm.js";
+import { parseMetadataFilter, parseMetadataMatch, type MetadataFilter, type MetadataMatch } from "../metadata-filter.js";
+import { hasVectorIndex, storedEmbedding } from "../vec-layout.js";
+import { RemoteEmbedder, isRemoteEmbedModel } from "../remote-embed.js";
+import { JevReranker, isJevModel } from "../jev.js";
+import { disposeDefaultLlamaCpp, getDefaultLlamaCpp, setDefaultLlamaCpp, LlamaCpp, withLLMSession, pullModels, DEFAULT_MODEL_CACHE_DIR, resolveEmbedModel, resolveGenerateModel, resolveRerankModel, resolveModels, inspectGgufFile, isDarwinMetalMitigationActive } from "../llm.js";
 import {
   escapeXml,
   escapeCSV,
@@ -101,7 +149,9 @@ import {
   listAllContexts,
   setConfigIndexName,
   loadConfig,
-  saveConfig,
+  updateConfig,
+  hasPendingRename,
+  withConfigLocked,
   setConfigSource,
   findLocalConfigPath,
   getLocalDbPath,
@@ -144,25 +194,32 @@ let currentIndexName = "index";
 
 function getStore(): ReturnType<typeof createStore> {
   if (!store) {
-    store = createStore(storeDbPathOverride);
-    // Sync YAML config into SQLite store_collections so store.ts reads from DB
+    const activeModels = ensureModelsConfiguredForCli();
+    let config: CollectionConfig;
     try {
-      const activeModels = ensureModelsConfiguredForCli();
-      const config = loadConfig();
-      syncConfigToDb(store.db, config);
-      // Untrusted project-local custom model URIs must not be loaded; status
-      // still displays the YAML values via resolveModelsForCli (#889).
-      const modelsForLlm = localConfigIsFullyTrusted() ? activeModels : resolveModels();
-      const llm = new LlamaCpp({
-        embedModel: modelsForLlm.embed,
-        generateModel: modelsForLlm.generate,
-        rerankModel: modelsForLlm.rerank,
-      });
-      setDefaultLlamaCpp(llm);
-      store.llm = llm;
+      config = loadConfig();
     } catch {
-      // Config may not exist yet — that's fine, DB works without it
+      // Keep diagnostics available for invalid YAML. Valid but unsafe remote
+      // selections already failed above, outside this parse-only catch.
+      store = createStore(storeDbPathOverride);
+      return store;
     }
+    // Untrusted project-local custom model URIs/options must not be loaded;
+    // status still displays the YAML values via resolveModelsForCli (#889).
+    const trusted = localConfigIsFullyTrusted();
+    const modelsForLlm = trusted ? activeModels : resolveModels();
+    const llm = new LlamaCpp({
+      embedModel: modelsForLlm.embed,
+      embedOptions: trusted ? config.models?.embedOptions : undefined,
+      generateModel: modelsForLlm.generate,
+      rerankModel: modelsForLlm.rerank,
+      rerankOptions: trusted ? config.models?.rerankOptions : undefined,
+    });
+    store = createStore(storeDbPathOverride);
+    // Sync YAML config into SQLite store_collections so store.ts reads from DB.
+    withConfigLocked((fresh) => syncConfigToDb(store!.db, fresh));
+    setDefaultLlamaCpp(llm);
+    store.llm = llm;
   }
   return store;
 }
@@ -174,14 +231,10 @@ function getDb(): Database {
 /** Re-sync YAML config into SQLite after CLI mutations (add/remove/rename collection, context changes) */
 function resyncConfig(): void {
   const s = getStore();
-  try {
-    const config = loadConfig();
-    // Clear config hash to force re-sync
-    s.db.prepare(`DELETE FROM store_config WHERE key = 'config_hash'`).run();
+  withConfigLocked((config) => {
+    invalidateConfigHash(s.db);
     syncConfigToDb(s.db, config);
-  } catch {
-    // Config may not exist — that's fine
-  }
+  });
 }
 
 function closeDb(): void {
@@ -235,7 +288,7 @@ export async function waitForDaemonListening(
   logPath: string,
   timeoutMs = 15000,
 ): Promise<{ ok: true } | { ok: false; message: string }> {
-  let exited = child.exitCode !== null;
+  let exited = child.exitCode !== null || child.signalCode !== null;
   child.on("exit", () => { exited = true; });
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -464,17 +517,20 @@ function initLocalIndex(): void {
   closeDb();
 
   if (!existsSync(configPath)) {
-    saveConfig({
-      collections: {},
-      models: resolveModels(),
+    updateConfig((config) => {
+      config.collections ??= {};
+      config.models ??= resolveModels();
     });
   } else {
     ensureModelsConfiguredForCli();
   }
 
   const localStore = createStore(dbPath);
-  syncConfigToDb(localStore.db, loadConfig());
-  localStore.close();
+  try {
+    withConfigLocked((config) => syncConfigToDb(localStore.db, config));
+  } finally {
+    localStore.close();
+  }
 
   console.log("ready to go with new local index");
 }
@@ -512,14 +568,6 @@ function sanitizeDiagnosticMessage(message: string): string {
     .join("; ");
 }
 
-/** Hint after `qmd update` when orphaned embedding chunks exceed this share of vectors (#768). */
-const ORPHAN_VECTOR_HINT_RATIO = 0.1;
-
-function formatOrphanedVectorHint(orphaned: number, total: number): string {
-  const pct = total > 0 ? Math.round((orphaned / total) * 100) : 0;
-  return `${orphaned} orphaned embedding chunks (${pct}% of vectors) — run 'qmd cleanup' to reclaim space`;
-}
-
 async function showStatus(): Promise<void> {
   const dbPath = getDbPath();
   const db = getDb();
@@ -550,16 +598,17 @@ async function showStatus(): Promise<void> {
   console.log(`Index: ${dbPath}`);
   console.log(`Size:  ${formatBytes(indexSize)}`);
 
-  // MCP daemon status (check PID file liveness; scoped per --index)
+  // MCP daemon status (pidfile identity decides; scoped per --index)
   const { pidPath: mcpPidPath } = mcpDaemonPaths();
-  if (existsSync(mcpPidPath)) {
-    const mcpPid = parseInt(readFileSync(mcpPidPath, "utf-8").trim());
-    if (isQmdMcpPid(mcpPid)) {
-      console.log(`MCP:   ${c.green}running${c.reset} (PID ${mcpPid})`);
-    } else {
-      try { unlinkSync(mcpPidPath); } catch { /* ignore */ }
-      // Stale / recycled PID file cleaned up silently
-    }
+  const mcpDaemonState = readMcpDaemonPidState(mcpPidPath);
+  if (mcpDaemonState.status === "running") {
+    console.log(`MCP:   ${c.green}running${c.reset} (PID ${mcpDaemonState.pid})`);
+  } else if (mcpDaemonState.status === "stale" || mcpDaemonState.status === "malformed") {
+    // Cleaned up silently, but only after re-verifying inside the pidfile
+    // critical section: the read above may be outdated, and a daemon that a
+    // concurrent start published meanwhile must keep its file. An unreadable
+    // pidfile is never touched — it may belong to a live daemon.
+    removeStaleMcpDaemonPidfile(mcpPidPath);
   }
   // ko-qmd: the daemon's query log. This process cannot see the daemon's env,
   // so report what is on disk; the daemon's own `status` tool shows its flag and errors.
@@ -585,6 +634,10 @@ async function showStatus(): Promise<void> {
   }
   if (needsEmbedding > 0) {
     console.log(`  ${c.yellow}Pending:  ${needsEmbedding} need embedding${c.reset} (run 'qmd embed')`);
+  }
+  const metadataKeyCount = countMetadataKeys(db);
+  if (metadataKeyCount > 0) {
+    console.log(`  Metadata: ${metadataKeyCount} keys across ${countDocumentsWithMetadata(db)} files (explore with 'qmd collection metadata')`);
   }
   const pendingMetadata = countDocumentsPendingMetadata(db);
   if (pendingMetadata > 0) {
@@ -686,8 +739,8 @@ async function showStatus(): Promise<void> {
     };
     const activeModels = resolveModelsForCli();
     console.log(`\n${c.bold}Models${c.reset}`);
-    console.log(`  Embedding:   ${hfLink(activeModels.embed)}`);
-    console.log(`  Reranking:   ${hfLink(activeModels.rerank)}`);
+    console.log(`  Embedding:   ${isRemoteEmbedModel(activeModels.embed) ? "configured remote (not probed; no local download)" : hfLink(activeModels.embed)}`);
+    console.log(`  Reranking:   ${isJevModel(activeModels.rerank) ? "configured remote TypeSafe (not probed; no local download)" : hfLink(activeModels.rerank)}`);
     console.log(`  Generation:  ${hfLink(activeModels.generate)}`);
   }
 
@@ -746,6 +799,9 @@ function builtinModels(): BuiltinModels {
 function collectSensitiveSnapshot(): SensitiveSnapshot {
   const config = loadConfig();
   return {
+    processors: Object.entries(config.collections ?? {})
+      .filter(([, col]) => col.processor !== undefined)
+      .map(([collection, col]) => ({ collection, spec: col.processor! })),
     hooks: Object.entries(config.collections ?? {})
       .filter(([, col]) => !!col.update)
       .map(([name, col]) => ({ collection: name, command: col.update! })),
@@ -755,7 +811,9 @@ function collectSensitiveSnapshot(): SensitiveSnapshot {
     })),
     models: {
       embed: config.models?.embed,
+      embedOptions: config.models?.embedOptions,
       rerank: config.models?.rerank,
+      rerankOptions: config.models?.rerankOptions,
       generate: config.models?.generate,
     },
   };
@@ -800,6 +858,13 @@ async function confirmOnTty(question: string): Promise<boolean> {
 }
 
 function printGatedItems(gated: GatedItems): void {
+  if (gated.processors?.length) console.log(`${c.yellow}Collection processor commands require approval: ${gated.processors.map(p => p.collection).join(", ")}${c.reset}`);
+  if (gated.rerankOptions !== undefined) {
+    console.log(`${c.yellow}Custom remote rerank options (revision/credential variable name)${c.reset}`);
+  }
+  if (gated.embedOptions !== undefined) {
+    console.log(`${c.yellow}Custom remote embedding options (dimensions/revision/credential variable name)${c.reset}`);
+  }
   if (gated.hooks.length > 0) {
     console.log(`${c.yellow}This project's config defines update commands:${c.reset}`);
     for (const hook of gated.hooks) {
@@ -951,20 +1016,35 @@ async function updateCollections(): Promise<number> {
   const hooksAllowed = allowed;
   const configPath = getConfigPath();
 
+  // Validate every selected collection before hooks or document writes. Keep the
+  // same config and authorized adapter throughout this update, without rereads.
+  const prepared = collections.map(col => {
+    const yamlCol = getCollectionFromYaml(col.name);
+    const rawPath = yamlCol?.path ?? col.pwd;
+    const skip = !hooksAllowed && isLocalConfigPath(configPath) && !isCollectionPathInsideProject(configPath, rawPath)
+      ? "path" : yamlCol?.processor && !hooksAllowed ? "processor" : undefined;
+    const processor = !skip && yamlCol?.processor ? createCommandProcessor(yamlCol.processor, { cwd: col.pwd }) : undefined;
+    if (!skip) requireProcessor(db, col.name, !!yamlCol?.processor, processor);
+    return { col, yamlCol, rawPath, processor, skip };
+  });
+
   console.log(`${c.bold}Updating ${collections.length} collection(s)...${c.reset}\n`);
 
   let skippedCollections = 0;
-  for (let i = 0; i < collections.length; i++) {
-    const col = collections[i];
-    if (!col) continue;
+  for (let i = 0; i < prepared.length; i++) {
+    const entry = prepared[i];
+    if (!entry) continue;
+    const { col, yamlCol, rawPath, processor, skip } = entry;
     console.log(`${c.cyan}[${i + 1}/${collections.length}]${c.reset} ${c.bold}${col.name}${c.reset} ${c.dim}(${col.glob_pattern})${c.reset}`);
 
-    // Execute custom update command if specified in YAML
-    const yamlCol = getCollectionFromYaml(col.name);
-    const rawPath = yamlCol?.path ?? col.pwd;
-    if (!hooksAllowed && isLocalConfigPath(configPath) && !isCollectionPathInsideProject(configPath, rawPath)) {
+    if (skip === "path") {
       console.log(`${c.yellow}Skipping collection '${col.name}' — path ${rawPath} is outside this project and this .qmd config is not trusted.${c.reset}`);
       console.log(`${c.dim}Approve with 'qmd trust'.${c.reset}\n`);
+      skippedCollections++;
+      continue;
+    }
+    if (skip === "processor") {
+      console.log(`${c.yellow}Skipping processor collection '${col.name}' — config is not trusted. Approve with 'qmd trust'.${c.reset}`);
       skippedCollections++;
       continue;
     }
@@ -1008,6 +1088,7 @@ async function updateCollections(): Promise<number> {
 
     const result = await reindexCollection(storeInstance, col.pwd, col.glob_pattern, col.name, {
       ignorePatterns: yamlCol?.ignore,
+      processor,
       onProgress: (info) => {
         progress.set((info.current / info.total) * 100);
         const elapsed = (Date.now() - startTime) / 1000;
@@ -1028,10 +1109,20 @@ async function updateCollections(): Promise<number> {
     console.log("");
   }
 
+  // The pending count below only sees content_vectors, so a hash that joined
+  // a collection while already embedded elsewhere would be neither counted
+  // nor searchable there; copying its rows closes that gap without a model.
+  // The copy runs before the cleanup, which deletes the partition rows the
+  // copy reads from, so a document moved between collections keeps its vectors.
+  const copiedVectors = copyVectorsToNewCollections(db).copied;
+  // A changed file rewrites its document's hash in place, which strands the
+  // old hash's rows in the collection's vector partition; the partition
+  // filter cannot see documents.active, so those rows would take k slots
+  // from a scoped search until they are removed.
+  const staleVectors = cleanupOrphanedVectors(db);
+
   // Check if any documents need embedding (show once at end)
   const needsEmbedding = getHashesNeedingEmbedding(db, undefined, updateEmbedModel);
-  const vectorTotal = (db.prepare(`SELECT COUNT(*) as count FROM content_vectors`).get() as { count: number }).count;
-  const orphanedVectors = countOrphanedVectors(db);
   closeDb();
 
   if (skippedCollections > 0) {
@@ -1043,11 +1134,14 @@ async function updateCollections(): Promise<number> {
   } else {
     console.log(`${c.green}✓ All collections updated.${c.reset}`);
   }
+  if (staleVectors > 0) {
+    console.log(`Removed ${staleVectors} stale vector row(s)`);
+  }
+  if (copiedVectors > 0) {
+    console.log(`Copied ${copiedVectors} vector(s) into collections that gained already-embedded documents`);
+  }
   if (needsEmbedding > 0) {
     console.log(`\nRun 'qmd embed' to update embeddings (${needsEmbedding} unique hashes need vectors)`);
-  }
-  if (vectorTotal > 0 && orphanedVectors / vectorTotal >= ORPHAN_VECTOR_HINT_RATIO) {
-    console.log(`\n${formatOrphanedVectorHint(orphanedVectors, vectorTotal)}`);
   }
   return skippedCollections;
 }
@@ -1842,6 +1936,7 @@ function collectionList(): void {
   }
 
   console.log(`${c.bold}Collections (${collections.length}):${c.reset}\n`);
+  const metadataOverviews = listMetadataCollectionSummaries(db, COLLECTION_LIST_METADATA_KEYS);
 
   for (const coll of collections) {
     const updatedAt = coll.last_modified ? new Date(coll.last_modified) : new Date();
@@ -1858,11 +1953,37 @@ function collectionList(): void {
       console.log(`  ${c.dim}Ignore:${c.reset}   ${yamlColl.ignore.join(', ')}`);
     }
     console.log(`  ${c.dim}Files:${c.reset}    ${coll.active_count}`);
+    const metadataOverview = metadataOverviews.get(coll.name);
+    if (metadataOverview) {
+      const shownKeys = metadataOverview.keys.map(overview => overview.key);
+      const hiddenKeys = metadataOverview.totalKeys - shownKeys.length;
+      console.log(`  ${c.dim}Metadata:${c.reset} ${shownKeys.join(', ')}${hiddenKeys > 0 ? `, +${hiddenKeys} more` : ''}`);
+    }
     console.log(`  ${c.dim}Updated:${c.reset}  ${timeAgo}`);
     console.log();
   }
 
   closeDb();
+}
+
+/** Key names shown on `collection list`, and keys detailed on `collection show`. */
+const COLLECTION_LIST_METADATA_KEYS = 5;
+
+// The Metadata section of `collection show`: top keys by coverage with a
+// value preview, and a pointer at the drill-down for the rest.
+function collectionShowMetadata(name: string): void {
+  const db = getDb();
+  const result = listMetadata(db, { collection: name, keyLimit: COLLECTION_LIST_METADATA_KEYS, valueLimit: 3 });
+  const documentsWithMetadata = countDocumentsWithMetadata(db, [name]);
+  const pendingMetadata = countDocumentsPendingMetadata(db, [name]);
+  closeDb();
+
+  console.log(formatMetadataOverview(result, {
+    documentsWithMetadata,
+    pendingMetadata,
+    drillDownHint: `qmd collection metadata ${name}`,
+    colors: c,
+  }));
 }
 
 /** Canonical --mask, with --glob as the alias OpenClaw and others already pass (#536). */
@@ -1904,11 +2025,13 @@ async function collectionAdd(pwd: string, globPattern: string, name?: string): P
     process.exit(1);
   }
 
+  // Typing a path does not approve unrelated processor commands in this config.
+  const mayRefreshTrust = !collectSensitiveSnapshot().processors?.length || localConfigIsFullyTrusted();
   // Add to YAML config + sync to SQLite
   const { addCollection } = await import("../collections.js");
   addCollection(collName, pwd, globPattern);
   // The user just typed this path, so it needs no separate approval (#889).
-  trustCurrentConfig();
+  if (mayRefreshTrust) trustCurrentConfig();
   resyncConfig();
 
   // Create the collection and index files
@@ -1918,20 +2041,44 @@ async function collectionAdd(pwd: string, globPattern: string, name?: string): P
   console.log(`${c.green}✓${c.reset} Collection '${collName}' created successfully`);
 }
 
+/** Inspect leftover index state without materializing model defaults in YAML. */
+function hasIndexedCollectionForRecovery(name: string): boolean {
+  if (store) return hasCollectionIndexState(store.db, name);
+  const dbPath = getDbPath();
+  if (!dbPath.startsWith("file:") && !existsSync(dbPath)) return false;
+  const probe = createStore(dbPath);
+  try {
+    return hasCollectionIndexState(probe.db, name);
+  } finally {
+    probe.close();
+  }
+}
+
 function collectionRemove(name: string): void {
-  // Check if collection exists in YAML
-  const coll = getCollectionFromYaml(name);
-  if (!coll) {
+  if (!getCollectionFromYaml(name) && !hasIndexedCollectionForRecovery(name)) {
     console.error(`${c.yellow}Collection not found: ${name}${c.reset}`);
     console.error(`Run 'qmd collection list' to see available collections.`);
     process.exit(1);
   }
-
   const db = getDb();
-  const result = removeCollection(db, name);
-  // Also remove from YAML config
-  yamlRemoveCollectionFn(name);
+  let result = { deletedDocs: 0, cleanedHashes: 0 };
+  const removed = yamlRemoveCollectionFn(name, () => db.transaction(() => {
+    let changed: boolean;
+    if (hasCollectionIndexState(db, name)) {
+      result = removeCollection(db, name);
+      changed = true;
+    } else {
+      changed = deleteStoreCollection(db, name);
+    }
+    invalidateConfigHash(db);
+    return changed;
+  }).immediate());
   closeDb();
+  if (!removed) {
+    console.error(`${c.yellow}Collection not found: ${name}${c.reset}`);
+    console.error(`Run 'qmd collection list' to see available collections.`);
+    process.exit(1);
+  }
 
   console.log(`${c.green}✓${c.reset} Removed collection '${name}'`);
   console.log(`  Deleted ${result.deletedDocs} documents`);
@@ -1941,30 +2088,155 @@ function collectionRemove(name: string): void {
 }
 
 function collectionRename(oldName: string, newName: string): void {
-  // Check if old collection exists in YAML
-  const coll = getCollectionFromYaml(oldName);
-  if (!coll) {
+  const original = getCollectionFromYaml(oldName);
+  if (!original && !hasPendingRename(oldName, newName)) {
+    console.error(`${c.yellow}Collection not found: ${oldName}${c.reset}`);
+    console.error(`Run 'qmd collection list' to see available collections.`);
+    process.exit(1);
+  }
+  if (original && getCollectionFromYaml(newName)) {
+    console.error(`${c.yellow}Collection name already exists: ${newName}${c.reset}`);
+    console.error(`Choose a different name or remove the existing collection first.`);
+    process.exit(1);
+  }
+  const db = getDb();
+  assertRenameTargetAvailable(db, newName);
+  const renamed = yamlRenameCollectionFn(oldName, newName, () => db.transaction(() => {
+    const changed = reconcilePublishedRename(db, oldName, newName);
+    invalidateConfigHash(db);
+    return changed;
+  }).immediate());
+  closeDb();
+  if (!renamed) {
     console.error(`${c.yellow}Collection not found: ${oldName}${c.reset}`);
     console.error(`Run 'qmd collection list' to see available collections.`);
     process.exit(1);
   }
 
-  // Check if new name already exists in YAML
-  const existing = getCollectionFromYaml(newName);
-  if (existing) {
-    console.error(`${c.yellow}Collection name already exists: ${newName}${c.reset}`);
-    console.error(`Choose a different name or remove the existing collection first.`);
+  console.log(`${c.green}✓${c.reset} Renamed collection '${oldName}' to '${newName}'`);
+  console.log(`  Virtual paths updated: ${c.cyan}qmd://${oldName}/${c.reset} → ${c.cyan}qmd://${newName}/${c.reset}`);
+}
+
+// Metadata discovery drill-down. Collection names are already validated;
+// an empty list means the default collections resolved to nothing, which
+// the store reads as "every collection" exactly as search does.
+function collectionMetadata(collectionNames: string[], options: ListMetadataOptions): void {
+  const db = getDb();
+
+  if (listCollections(db).length === 0) {
+    console.log("No collections found. Run 'qmd collection add .' to create one.");
+    closeDb();
+    return;
+  }
+
+  // Discovery always applies the extraction gate, filter or not.
+  warnPendingMetadata(db, collectionNames);
+
+  let result: ListMetadataResult;
+  try {
+    result = listMetadata(db, { ...options, collection: collectionSearchFilter(collectionNames) });
+  } catch (error) {
+    if (!(error instanceof MetadataBindingBudgetError)) throw error;
+    closeDb();
+    console.error(`${c.yellow}${error.message}${c.reset}`);
+    process.exit(1);
+  }
+  closeDb();
+
+  const selection = options.match || options.filter;
+  console.log(formatMetadataKeySummaries(result, {
+    showCollections: collectionNames.length !== 1,
+    valueWindowHint: "--value-limit <n>, --value-offset <n>, or --all-values",
+    keyWindowHint: "--key-limit <n>, --key-offset <n>, or --all-keys",
+    keyOffset: options.keyOffset ?? 0,
+    keyOffsetLabel: "--key-offset",
+    emptyMessage: selection
+      ? "No metadata matches. Run 'qmd collection metadata' without --match or --filter to see which keys exist."
+      : "No metadata found. Add qmd.metadata frontmatter and run 'qmd update'.",
+    colors: c,
+  }));
+}
+
+// Parse the discovery-specific flags; exits with usage on a bad value.
+function parseCliMetadataOptions(values: Record<string, unknown>): ListMetadataOptions {
+  const options: ListMetadataOptions = {
+    match: parseCliMetadataMatch(values.match),
+    filter: parseCliMetadataFilter(values.filter),
+  };
+
+  // Discovery windows two dimensions, so the single-window search flags
+  // have no reading here. Point at the flags that do.
+  if (values.n !== undefined) {
+    console.error("-n is not an option of 'qmd collection metadata'");
+    console.error("Use --value-limit <n> for values per key, or --key-limit <n> for keys");
+    process.exit(1);
+  }
+  if (values.all) {
+    console.error("--all is not an option of 'qmd collection metadata'");
+    console.error("Use --all-values, --all-keys, or both");
     process.exit(1);
   }
 
-  const db = getDb();
-  renameCollection(db, oldName, newName);
-  // Also rename in YAML config
-  yamlRenameCollectionFn(oldName, newName);
-  closeDb();
+  const formatAlias = ["json", "csv", "md", "xml", "files"].find(flag => values[flag]);
+  const format = typeof values.format === "string" ? values.format.trim().toLowerCase() : undefined;
+  if (formatAlias || (format !== undefined && format !== "cli")) {
+    console.error(`${formatAlias ? `--${formatAlias}` : `--format ${String(values.format)}`} is not supported by 'qmd collection metadata'`);
+    console.error("This command prints text. Use the SDK, MCP metadata tool, or POST /metadata for structured output");
+    process.exit(1);
+  }
 
-  console.log(`${c.green}✓${c.reset} Renamed collection '${oldName}' to '${newName}'`);
-  console.log(`  Virtual paths updated: ${c.cyan}qmd://${oldName}/${c.reset} → ${c.cyan}qmd://${newName}/${c.reset}`);
+  if (values["all-keys"]) {
+    options.keyLimit = Infinity;
+  } else if (values["key-limit"] !== undefined) {
+    options.keyLimit = parsePositiveInteger(values["key-limit"], "--key-limit");
+  }
+  if (values["key-offset"] !== undefined) {
+    options.keyOffset = parseNonNegativeInteger(values["key-offset"], "--key-offset");
+  }
+
+  if (values["all-values"]) {
+    options.valueLimit = Infinity;
+  } else if (values["value-limit"] !== undefined) {
+    options.valueLimit = parsePositiveInteger(values["value-limit"], "--value-limit");
+  }
+  if (values["value-offset"] !== undefined) {
+    options.valueOffset = parseNonNegativeInteger(values["value-offset"], "--value-offset");
+  }
+
+  if (values["min-count"] !== undefined) {
+    options.minCount = parsePositiveInteger(values["min-count"], "--min-count");
+  }
+
+  if (values.sort !== undefined) {
+    if (values.sort !== "count" && values.sort !== "value") {
+      console.error(`Invalid --sort value: ${String(values.sort)}`);
+      console.error("Valid: count, value");
+      process.exit(1);
+    }
+    options.sort = values.sort;
+  }
+
+  return options;
+}
+
+function parsePositiveInteger(raw: unknown, flag: string): number {
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    console.error(`Invalid ${flag} value: ${String(raw)}`);
+    console.error(`${flag} must be a positive safe integer`);
+    process.exit(1);
+  }
+  return parsed;
+}
+
+function parseNonNegativeInteger(raw: unknown, flag: string): number {
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    console.error(`Invalid ${flag} value: ${String(raw)}`);
+    console.error(`${flag} must be a non-negative safe integer`);
+    process.exit(1);
+  }
+  return parsed;
 }
 
 async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, collectionName?: string, suppressEmbedNotice: boolean = false, ignorePatterns?: string[]): Promise<void> {
@@ -1979,6 +2251,23 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
   // Collection name must be provided (from YAML)
   if (!collectionName) {
     throw new Error("Collection name is required. Collections must be defined in ~/.config/qmd/index.yml");
+  }
+
+  const processorSpec = getCollectionFromYaml(collectionName)?.processor;
+  if (processorSpec || hasProcessorMode(db, collectionName)) {
+    if (processorSpec && !await resolveLocalConfigTrust()) {
+      console.log("Skipping processor collection — config is not trusted. Approve with 'qmd trust'.");
+      closeDb();
+      return;
+    }
+    const processor = processorSpec ? createCommandProcessor(processorSpec, { cwd: resolvedPwd }) : undefined;
+    const result = await reindexCollection(getStore(), resolvedPwd, globPattern, collectionName, { ignorePatterns, processor });
+    console.log(`Indexed: ${result.indexed} new, ${result.updated} updated, ${result.unchanged} unchanged, ${result.removed} removed`);
+    reportSkippedReads(result.skippedFiles);
+    reportMetadataErrors(result.metadataErrors);
+    copyVectorsToNewCollections(db, collectionName);
+    closeDb();
+    return;
   }
 
   console.log(`Collection: ${resolvedPwd} (${globPattern})`);
@@ -2017,13 +2306,23 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
   const livePaths = new Set(files.map(f => f.replace(/\\/g, '/')));
   const startTime = Date.now();
 
+  const batch = scanWriteBatch(db);
   for (const relativeFile of files) {
+    batch.next();
     const filepath = getRealPath(resolve(resolvedPwd, relativeFile));
     // Store the literal relative path — handelize() is NOT applied at index time.
     const path = relativeFile.replace(/\\/g, '/');
     if (!isPathInsideDir(resolvedPwd, filepath)) {
       processed++;
       skippedFiles.push({ file: relativeFile, code: "OUTSIDE_COLLECTION" });
+      progress.set((processed / total) * 100);
+      continue;
+    }
+    let tooLarge = false;
+    try { tooLarge = statSync(filepath).size > REINDEX_MAX_FILE_SIZE; } catch { /* the read below reports it */ }
+    if (tooLarge) {
+      processed++;
+      skippedFiles.push({ file: relativeFile, code: "FILE_TOO_LARGE" });
       progress.set((processed / total) * 100);
       continue;
     }
@@ -2046,7 +2345,9 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
       continue;
     }
 
-    const hash = await hashContent(content);
+    // Synchronous on purpose: this scan holds its write batch transaction, so
+    // awaiting anything here would let another writer's statements run inside it.
+    const hash = hashContentSync(content);
     const title = extractTitle(content, relativeFile);
 
     // Check if document exists (also migrates legacy lowercase paths)
@@ -2103,13 +2404,17 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
   let removed = 0;
   for (const path of allActive) {
     if (!seenPaths.has(path)) {
+      batch.next();
       deactivateDocument(db, collectionName, path);
       removed++;
     }
   }
 
+  batch.commit();
+
   // Clean up orphaned content hashes (content not referenced by any document)
   const orphanedContent = cleanupOrphanedContent(db);
+  const copiedVectors = copyVectorsToNewCollections(db, collectionName).copied;
 
   // Check if vector index needs updating
   const needsEmbedding = getHashesNeedingEmbedding(db);
@@ -2120,6 +2425,9 @@ async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, coll
   reportMetadataErrors(metadataErrors);
   if (orphanedContent > 0) {
     console.log(`Cleaned up ${orphanedContent} orphaned content hash(es)`);
+  }
+  if (copiedVectors > 0) {
+    console.log(`Copied ${copiedVectors} vector(s) into collections that gained already-embedded documents`);
   }
 
   if (needsEmbedding > 0 && !suppressEmbedNotice) {
@@ -2144,16 +2452,24 @@ function reportMetadataErrors(metadataErrors: number): void {
 
 function reportSkippedReads(skippedFiles: { file: string; code: string }[]): void {
   if (skippedFiles.length === 0) return;
+  const sizeLimitMb = Math.round(REINDEX_MAX_FILE_SIZE / (1024 * 1024));
   for (const skipped of skippedFiles) {
-    if (skipped.code === "OUTSIDE_COLLECTION") {
+    if (skipped.code === "ROOT_MISSING") {
+      console.warn(`⚠ Collection root not found, index left unchanged: ${skipped.file}`);
+    } else if (skipped.code === "OUTSIDE_COLLECTION") {
       console.warn(`⚠ Skipped file outside collection: ${skipped.file}`);
+    } else if (skipped.code === "FILE_TOO_LARGE") {
+      console.warn(`⚠ Skipped file over ${sizeLimitMb} MB: ${skipped.file}`);
     } else {
       console.warn(`⚠ Skipped unreadable file: ${skipped.file} (${skipped.code})`);
     }
   }
   const escaped = skippedFiles.filter(f => f.code === "OUTSIDE_COLLECTION").length;
-  const unreadable = skippedFiles.length - escaped;
+  const tooLarge = skippedFiles.filter(f => f.code === "FILE_TOO_LARGE").length;
+  const rootMissing = skippedFiles.filter(f => f.code === "ROOT_MISSING").length;
+  const unreadable = skippedFiles.length - escaped - tooLarge - rootMissing;
   if (escaped) console.warn(`Skipped ${escaped} file(s) outside the collection root`);
+  if (tooLarge) console.warn(`Skipped ${tooLarge} file(s) over ${sizeLimitMb} MB`);
   if (unreadable) console.warn(`Skipped ${unreadable} unreadable file(s)`);
 }
 
@@ -2252,30 +2568,38 @@ function parseMinScoreOption(value: unknown): number {
   return parsed;
 }
 
+function resolveAndValidateConfiguredModels(config: CollectionConfig): { embed: string; generate: string; rerank: string } {
+  const models = resolveModels(config.models);
+  const current = config.models ?? {};
+  // Invalid remote selection must fail closed, never fall back to local ML.
+  if (isRemoteEmbedModel(models.embed)) new RemoteEmbedder(models.embed, current.embedOptions);
+  else if (current.embedOptions !== undefined) throw new Error("embedOptions requires a remote embedding URI");
+  if (isJevModel(models.rerank)) new JevReranker(models.rerank, current.rerankOptions);
+  else if (current.rerankOptions !== undefined) throw new Error("rerankOptions requires a typesafe: rerank model");
+  return models;
+}
+
 function ensureModelsConfiguredForCli(): { embed: string; generate: string; rerank: string } {
+  let config: CollectionConfig;
   try {
-    const config = loadConfig();
-    const models = resolveModels(config.models);
-    const current = config.models ?? {};
-    if (current.embed !== models.embed || current.generate !== models.generate || current.rerank !== models.rerank) {
-      saveConfig({
-        ...config,
-        models: {
-          ...current,
-          embed: models.embed,
-          generate: models.generate,
-          rerank: models.rerank,
-        },
-      });
-    }
-    return models;
+    config = loadConfig();
   } catch {
-    return resolveModels();
+    return resolveModels(); // Doctor reports the parse error without loading ML.
   }
+  let models = resolveAndValidateConfiguredModels(config);
+  const current = config.models ?? {};
+  if (current.embed !== models.embed || current.generate !== models.generate || current.rerank !== models.rerank) {
+    updateConfig((latest) => {
+      models = resolveAndValidateConfiguredModels(latest);
+      latest.models = { ...latest.models, ...models };
+    });
+  }
+  return models;
 }
 
 export function resolveEmbedModelForCli(): string {
-  return ensureModelsConfiguredForCli().embed;
+  const uri = ensureModelsConfiguredForCli().embed;
+  return isRemoteEmbedModel(uri) ? new RemoteEmbedder(uri, loadConfig().models?.embedOptions).modelName : uri;
 }
 
 function resolveModelsForCli(): { embed: string; generate: string; rerank: string } {
@@ -2299,34 +2623,15 @@ export async function vectorIndex(
   deps?: { runEmbeddings?: typeof generateEmbeddings },
 ): Promise<void> {
   const storeInstance = getStore();
-  const db = storeInstance.db;
   const runEmbeddings = deps?.runEmbeddings ?? generateEmbeddings;
+  if (isRemoteEmbedModel(model)) model = storeInstance.llm!.embedModelName;
 
-  // Exclusive process lock — concurrent embeds race on vectors_vec (#825)
-  const embedLock = tryAcquireEmbedLock(embedLockPathForDb(getDbPath()));
-  if (!embedLock) {
-    console.log(EMBED_LOCK_BUSY_MESSAGE);
-    closeDb();
-    // A skipped run is not a success: exit nonzero so automation
-    // (`qmd embed && deploy`) can tell skip from success. Mirrors the
-    // "Already running" guards elsewhere in the CLI (mcp daemon, EADDRINUSE),
-    // which exit 1. Direct process.exit (not exitCode) because
-    // finishSuccessfulCliCommand resets exitCode to 0 after the switch.
-    process.exit(1);
-  }
 
   try {
     if (force) {
       console.log(`${c.yellow}Force re-indexing: clearing all vectors...${c.reset}`);
     }
 
-    // Check if there's work to do before starting
-    const hashesToEmbed = getHashesNeedingEmbedding(db, batchOptions?.collection, model);
-    if (hashesToEmbed === 0 && !force) {
-      console.log(`${c.green}✓ All content hashes already have embeddings.${c.reset}`);
-      closeDb();
-      return;
-    }
 
     console.log(`${c.dim}Model: ${shortModelName(model)}${c.reset}\n`);
     if (batchOptions?.maxDocsPerBatch !== undefined || batchOptions?.maxBatchBytes !== undefined) {
@@ -2382,7 +2687,12 @@ export async function vectorIndex(
 
     const totalTimeSec = result.durationMs / 1000;
 
-    if (result.chunksEmbedded === 0 && result.docsProcessed === 0) {
+    if (result.chunksCopied > 0) {
+      console.log(`${c.green}✓${c.reset} Copied ${formatCount(result.chunksCopied)} vectors into collections that gained already-embedded documents`);
+    }
+    if (result.nothingToDo) {
+      console.log(`${c.green}✓ All content hashes already have embeddings.${c.reset}`);
+    } else if (result.chunksEmbedded === 0 && result.docsProcessed === 0) {
       console.log(`${c.green}✓ No non-empty documents to embed.${c.reset}`);
     } else {
       console.log(`\r${c.green}${renderProgressBar(100)}${c.reset} ${c.bold}100%${c.reset}                                    `);
@@ -2399,8 +2709,16 @@ export async function vectorIndex(
     }
 
     closeDb();
-  } finally {
-    embedLock.release();
+  } catch (error) {
+    if (!(error instanceof EmbedLockBusyError)) throw error;
+    progress.clear();
+    cursor.show();
+    console.log(EMBED_LOCK_BUSY_MESSAGE);
+    closeDb();
+    // ko-qmd: a skipped run is not a success: exit nonzero so automation
+    // (`qmd embed && deploy`) can tell skip from success. Direct process.exit
+    // because finishSuccessfulCliCommand resets exitCode to 0 after the switch.
+    process.exit(1);
   }
 }
 
@@ -2893,6 +3211,10 @@ function outputResults(results: OutputRow[], query: string, opts: OutputOptions,
   warnUnresolvedFullPaths(unresolvedCount, filtered.length);
 }
 
+function describeVectorLayout(layout: VectorTableLayout): string {
+  return `${layout.chunks} chunks for ${layout.neededChunks} needed, ${Math.round(layout.occupancy * 100)}% useful`;
+}
+
 // Resolve -c collection filter: supports single string, array, or undefined.
 // Returns validated collection names (exits on unknown collection).
 function resolveCollectionFilter(raw: string | string[] | undefined, useDefaults: boolean = false): string[] {
@@ -3015,29 +3337,54 @@ function parseStructuredQuery(query: string): ParsedStructuredQuery | null {
 // Parse and validate a --filter JSON string; exits with an actionable
 // message on malformed JSON or an invalid filter AST.
 function parseCliMetadataFilter(rawFilter: unknown): MetadataFilter | undefined {
-  if (rawFilter === undefined) return undefined;
+  return parseCliPredicateFlag(rawFilter, {
+    flag: "--filter",
+    example: `{"field":"status","operator":"eq","value":"published"}`,
+    parse: parseMetadataFilter,
+  });
+}
 
-  let filterJson: unknown;
+// Same grammar as --filter, evaluated against metadata entries for discovery.
+function parseCliMetadataMatch(rawMatch: unknown): MetadataMatch | undefined {
+  return parseCliPredicateFlag(rawMatch, {
+    flag: "--match",
+    example: `{"field":"key","operator":"eq","value":"topics"}`,
+    parse: parseMetadataMatch,
+  });
+}
+
+interface CliPredicateFlag<Predicate> {
+  flag: string;
+  example: string;
+  parse: (input: unknown) => Predicate;
+}
+
+// Parse a JSON predicate flag with the parser for its record type.
+function parseCliPredicateFlag<Predicate>(raw: unknown, predicateFlag: CliPredicateFlag<Predicate>): Predicate | undefined {
+  if (raw === undefined) return undefined;
+
+  let astJson: unknown;
   try {
-    filterJson = JSON.parse(String(rawFilter));
+    astJson = JSON.parse(String(raw));
   } catch (err) {
-    console.error(`Invalid --filter JSON: ${err instanceof Error ? err.message : String(err)}`);
-    console.error(`Example: --filter '{"key":"status","operator":"eq","value":"published"}'`);
+    console.error(`Invalid ${predicateFlag.flag} JSON: ${err instanceof Error ? err.message : String(err)}`);
+    console.error(`Example: ${predicateFlag.flag} '${predicateFlag.example}'`);
     process.exit(1);
   }
 
   try {
-    return parseMetadataFilter(filterJson);
+    return predicateFlag.parse(astJson);
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
   }
 }
 
-// Filtered search excludes documents without current metadata extraction;
-// tell the user when that makes results incomplete.
-function warnPendingMetadata(db: Database): void {
-  const pendingMetadata = countDocumentsPendingMetadata(db);
+// Filtered search and discovery exclude documents without current metadata
+// extraction; tell the user when that makes results incomplete, scoped to
+// the collections the command reads.
+function warnPendingMetadata(db: Database, collectionNames: string[]): void {
+  const pendingMetadata = countDocumentsPendingMetadata(db, collectionNames.length > 0 ? collectionNames : undefined);
   if (pendingMetadata === 0) return;
   process.stderr.write(`${c.yellow}Warning: ${pendingMetadata} document(s) lack current metadata extraction and are excluded from filtered results. Run 'qmd update'.${c.reset}\n`);
 }
@@ -3060,7 +3407,7 @@ function search(query: string, opts: OutputOptions): void {
   // Use default collections if none specified
   const collectionNames = resolveCollectionFilter(opts.collection, true);
 
-  if (opts.filter) warnPendingMetadata(db);
+  if (opts.filter) warnPendingMetadata(db, collectionNames);
 
   // Use large limit for --all, otherwise fetch more than needed and let outputResults filter
   const fetchLimit = opts.all ? 100000 : Math.max(50, opts.limit * 2);
@@ -3116,7 +3463,7 @@ function grepCommand(pattern: string, opts: OutputOptions, values: Record<string
 
   const db = getDb();
   const collectionNames = resolveCollectionFilter(opts.collection, true);
-  if (opts.filter) warnPendingMetadata(db);
+  if (opts.filter) warnPendingMetadata(db, collectionNames);
   const maxLinesRaw = values["max-lines"];
   // Grep has its own default file cap (20, matching --help and the MCP tool),
   // not search's format-dependent default (5 for cli output) inherited via opts.limit.
@@ -3204,7 +3551,7 @@ async function vectorSearch(query: string, opts: OutputOptions, _model: string =
   const collectionNames = resolveCollectionFilter(opts.collection, true);
 
   checkIndexHealth(store.db);
-  if (opts.filter) warnPendingMetadata(store.db);
+  if (opts.filter) warnPendingMetadata(store.db, collectionNames);
 
   await withLLMSession(async () => {
     let results = await vectorSearchQuery(store, query, {
@@ -3251,7 +3598,7 @@ async function querySearch(query: string, opts: OutputOptions, _embedModel: stri
   const collectionNames = resolveCollectionFilter(opts.collection, true);
 
   checkIndexHealth(store.db);
-  if (opts.filter) warnPendingMetadata(store.db);
+  if (opts.filter) warnPendingMetadata(store.db, collectionNames);
 
   // Check for structured query syntax (lex:/vec:/hyde:/intent: prefixes)
   const parsed = parseStructuredQuery(query);
@@ -3409,7 +3756,17 @@ const CLI_OPTIONS: ParseArgsOptionsConfig = {
       json: { type: "boolean" },
       explain: { type: "boolean" },
       collection: { type: "string", short: "c", multiple: true },  // Filter by collection(s)
-      filter: { type: "string" },  // Metadata filter (JSON AST) for search/vsearch/query/grep
+      filter: { type: "string" },  // Metadata filter (JSON AST) for search/vsearch/query/grep/collection metadata
+      // Metadata discovery options (collection metadata)
+      match: { type: "string" },  // Metadata match (JSON AST) over the entries reported
+      "key-limit": { type: "string" },  // keys reported (default 50)
+      "key-offset": { type: "string" },  // keys skipped before the window
+      "all-keys": { type: "boolean" },  // remove the key window
+      "value-limit": { type: "string" },  // values reported per key (default 10)
+      "value-offset": { type: "string" },  // values skipped per key before the window
+      "all-values": { type: "boolean" },  // remove the value window
+      sort: { type: "string" },  // count (default) | value
+      "min-count": { type: "string" },  // drop values held by fewer documents
       // Collection options
       name: { type: "string" },  // collection name
       mask: { type: "string" },  // glob pattern
@@ -3987,6 +4344,7 @@ function showHelp(): void {
   console.log("");
   console.log("Collections & context:");
   console.log("  qmd collection add/list/remove/rename/show   - Manage indexed folders");
+  console.log("  qmd collection metadata [name] [--match J]   - Discover metadata keys and values to filter on");
   console.log("  qmd context add/list/rm                      - Attach human-written summaries");
   console.log("  qmd ls [collection[/path]]                   - Inspect indexed files");
   console.log("");
@@ -4069,7 +4427,7 @@ function showHelp(): void {
   console.log("  --since <when>             - Only documents modified at or after (7d, 3h, 2w, 2026-09-01)");
   console.log("  --until <when>             - Only documents modified at or before (same formats)");
   console.log("  --filter <json>            - Metadata filter (recursive JSON AST; search/vsearch/query/grep)");
-  console.log("                                e.g. '{\"key\":\"status\",\"operator\":\"eq\",\"value\":\"published\"}'");
+  console.log("                                e.g. '{\"field\":\"status\",\"operator\":\"eq\",\"value\":\"published\"}'");
   console.log("");
   console.log("Grep options:");
   console.log("  -i, --ignore-case          - Match either case (default: smart case)");
@@ -4206,7 +4564,7 @@ function collectEnvironmentOverrides(activeModels: { embed: string; generate: st
     const consequence = configured && configured !== raw
       ? `set but ignored because index models.${key} is configured as ${configured}`
       : `sets the active ${key} model to ${active}; changes embedding/search semantics and may require \`qmd pull\` plus \`qmd embed\``;
-    overrides.push({ name, value: envValueForDisplay(raw), consequence });
+    overrides.push({ name, value: key === "embed" && isRemoteEmbedModel(raw) ? "<remote URI>" : envValueForDisplay(raw), consequence });
   };
 
   add("INDEX_PATH", "overrides the SQLite index path; QMD reads/writes a different database");
@@ -4298,7 +4656,8 @@ function checkModelDefaults(activeModels: { embed: string; generate: string; rer
     } else if (check.configured && check.configured !== check.defaultModel) {
       notes.push(`${check.role}: index ${check.configured} (default ${check.defaultModel}; might be ok)`);
     } else if (envValue && check.active !== envValue) {
-      notes.push(`${check.role}: ${check.envName} is set to ${envValue} but index config uses ${check.active}`);
+      const display = check.key === "embed" && isRemoteEmbedModel(envValue) ? "<remote URI>" : envValue;
+      notes.push(`${check.role}: ${check.envName} is set to ${display} but index config uses ${check.active}`);
     }
   }
 
@@ -4318,6 +4677,14 @@ function checkModelCache(activeModels: { embed: string; generate: string; rerank
   ] as const;
   const unique = new Map<string, string[]>();
   for (const [role, model] of models) {
+    if (role === "reranking" && isJevModel(model)) {
+      doctorCheck("rerank configuration", true, "configured remote TypeSafe (not probed; no local download)");
+      continue;
+    }
+    if (role === "embedding" && isRemoteEmbedModel(model)) {
+      doctorCheck("embedding configuration", true, "configured remote (not probed; no local download)");
+      continue;
+    }
     unique.set(model, [...(unique.get(model) ?? []), role]);
   }
 
@@ -4354,27 +4721,17 @@ function checkModelCache(activeModels: { embed: string; generate: string; rerank
   }
 }
 
-async function checkEmbeddingVectorSamples(db: Database, model: string, fingerprint: string, sampleSize: number = 3): Promise<DoctorVectorSampleResult> {
+export async function checkEmbeddingVectorSamples(db: Database, model: string, fingerprint: string, sampleSize: number = 3): Promise<DoctorVectorSampleResult> {
   const activeDocs = (db.prepare(`SELECT COUNT(*) AS count FROM documents WHERE active = 1`).get() as { count: number }).count;
   if (activeDocs === 0) {
     return { ok: true, details: "no active documents indexed", empty: true };
   }
 
-  const vecTableExists = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='vectors_vec'`).get();
-  if (!vecTableExists) {
+  if (!hasVectorIndex(db)) {
     return { ok: false, details: "no vector table to test; please run qmd embed again", empty: true };
   }
 
-  const samples = db.prepare(`
-    SELECT cv.hash, cv.seq, c.doc AS body, MIN(d.path) AS path
-    FROM content_vectors cv
-    JOIN documents d ON d.hash = cv.hash AND d.active = 1
-    JOIN content c ON c.hash = cv.hash
-    WHERE cv.model = ? AND cv.embed_fingerprint = ?
-    GROUP BY cv.hash, cv.seq, c.doc
-    ORDER BY random()
-    LIMIT ?
-  `).all(model, fingerprint, sampleSize) as { hash: string; seq: number; body: string; path: string }[];
+  const samples = getEmbeddingVectorSamples(db, model, fingerprint, sampleSize);
 
   if (samples.length === 0) {
     return { ok: false, details: "no current embedded chunks to test; please run qmd embed again", empty: true };
@@ -4387,7 +4744,9 @@ async function checkEmbeddingVectorSamples(db: Database, model: string, fingerpr
     for (const sample of samples) {
       const hashSeq = `${sample.hash}_${sample.seq}`;
       const chunks = await chunkDocumentByTokens(sample.body, undefined, undefined, undefined, sample.path, undefined, session.signal);
-      const chunk = chunks[sample.seq];
+      // Sequence numbers identify stored vectors, but earlier chunks can split
+      // differently after a tokenizer/chunker change. Compare the saved passage.
+      const chunk = chunks.find(chunk => chunk.pos === sample.pos);
       if (!chunk) {
         mismatches.push(`${shortHashSeq(hashSeq)}: chunk no longer exists`);
         continue;
@@ -4400,13 +4759,13 @@ async function checkEmbeddingVectorSamples(db: Database, model: string, fingerpr
         continue;
       }
 
-      const stored = db.prepare(`SELECT embedding FROM vectors_vec WHERE hash_seq = ?`).get(hashSeq) as { embedding: Uint8Array } | undefined;
+      const stored = storedEmbedding(db, sample.hash, sample.seq);
       if (!stored) {
         mismatches.push(`${shortHashSeq(hashSeq)}: stored vector missing`);
         continue;
       }
 
-      const distance = cosineDistance(result.embedding, decodeStoredEmbedding(stored.embedding));
+      const distance = cosineDistance(result.embedding, decodeStoredEmbedding(stored));
       if (distance > threshold) {
         mismatches.push(`${shortHashSeq(hashSeq)}: stored vector distance ${distance.toFixed(6)}`);
       }
@@ -4565,7 +4924,8 @@ async function showDoctor(): Promise<void> {
   const db = storeInstance.db;
   const pkg = readPackageJson();
   const activeModels = resolveModelsForCli();
-  const embedModel = activeModels.embed;
+  const embedModel = resolveEmbedModelForCli();
+  const remoteEmbed = isRemoteEmbedModel(activeModels.embed);
   const fingerprint = getEmbeddingFingerprint(embedModel);
   const nextSteps: string[] = [];
 
@@ -4596,10 +4956,13 @@ async function showDoctor(): Promise<void> {
   checkModelDefaults(activeModels, configModels);
   checkModelCache(activeModels, nextSteps);
 
-  await runDoctorDeviceChecks(nextSteps);
+  if (!remoteEmbed) await runDoctorDeviceChecks(nextSteps);
+  else doctorCheck("device probe", true, "skipped for remote embedding configuration");
 
   try {
-    const adoption = await maybeAdoptLegacyEmbeddingFingerprint(storeInstance, embedModel);
+    const adoption = remoteEmbed
+      ? { checked: false, adopted: 0, reason: "remote embedding identities have no legacy local fingerprint" }
+      : await maybeAdoptLegacyEmbeddingFingerprint(storeInstance, embedModel);
     if (adoption.checked || adoption.adopted > 0) {
       doctorCheck("legacy fingerprint adoption", adoption.adopted > 0, adoption.adopted > 0 ? `adopted ${adoption.adopted} legacy chunks; ${adoption.reason}` : adoption.reason);
     }
@@ -4658,7 +5021,9 @@ async function showDoctor(): Promise<void> {
   }
 
   try {
-    const vectorSample = await checkEmbeddingVectorSamples(db, embedModel, fingerprint);
+    const vectorSample = remoteEmbed
+      ? { ok: true, empty: false, details: "not probed: remote embedding configuration (no HTTP request)" }
+      : await checkEmbeddingVectorSamples(db, embedModel, fingerprint);
     doctorCheck("embedding vector sample", vectorSample.ok, vectorSample.details);
     if (!vectorSample.ok && !vectorSample.empty) {
       nextSteps.push("Run `qmd embed --force` to rebuild existing vectors that no longer reproduce under the current embedding pipeline.");
@@ -4968,10 +5333,11 @@ if (isMain) {
             console.error(`Collection not found: ${name}`);
             process.exit(1);
           }
+          const mayRefreshTrust = !collectSensitiveSnapshot().processors?.length || localConfigIsFullyTrusted();
           updateCollectionSettings(name, { update: cmd });
           // The user just typed this command, so it needs no separate approval;
           // re-record so the digest covers the new hook set (#886).
-          trustCurrentConfig();
+          if (mayRefreshTrust) trustCurrentConfig();
           if (cmd) {
             console.log(`✓ Set update command for '${name}': ${cmd}`);
           } else {
@@ -5024,6 +5390,16 @@ if (isMain) {
             const ctxCount = Object.keys(col.context).length;
             console.log(`  Contexts: ${ctxCount}`);
           }
+          collectionShowMetadata(name);
+          break;
+        }
+
+        case "metadata": {
+          // Positional names are optional; omitted means the default
+          // collections, as an unscoped search does.
+          const rawNames = cli.args.length > 1 ? cli.args.slice(1) : undefined;
+          const collectionNames = resolveCollectionFilter(rawNames, true);
+          collectionMetadata(collectionNames, parseCliMetadataOptions(cli.values));
           break;
         }
 
@@ -5037,6 +5413,13 @@ if (isMain) {
           console.log("  remove <name>             Remove a collection");
           console.log("  rename <old> <new>        Rename a collection");
           console.log("  show <name>               Show collection details");
+          console.log("  metadata [name...]        Discover metadata keys, types, and value counts");
+          console.log("    --match <json>          Report only metadata entries matching this condition");
+          console.log("                            (same AST as --filter; 'field' is the entry's key or value)");
+          console.log("    --filter <json>         Count only documents matching a metadata filter");
+          console.log("    --key-limit <n>         Keys reported (default 50), --key-offset <n> pages, --all-keys removes the window");
+          console.log("    --value-limit <n>       Values per key (default 10), --value-offset <n> pages, --all-values removes the window");
+          console.log("    --sort count|value      Value order (default count), --min-count <n> drops the tail");
           console.log("  update-cmd <name> [cmd]   Set pre-update command (e.g., 'git pull')");
           console.log("  include <name>            Include in default queries");
           console.log("  exclude <name>            Exclude from default queries");
@@ -5046,6 +5429,9 @@ if (isMain) {
           console.log("  qmd collection add ~/notes --name notes --mask 'a.md,journals/*.md'");
           console.log("  qmd collection update-cmd brain 'git pull'");
           console.log("  qmd collection exclude archive");
+          console.log("  qmd collection metadata notes --match '{\"field\":\"key\",\"operator\":\"eq\",\"value\":\"topics\"}'");
+          console.log("  qmd collection metadata notes --match '{\"field\":\"value\",\"operator\":\"eq\",\"value\":\"docs-team\"}'");
+          console.log("  qmd collection metadata notes --match '{\"field\":\"key\",\"operator\":\"eq\",\"value\":\"topics\"}' --filter '{\"field\":\"status\",\"operator\":\"eq\",\"value\":\"published\"}'");
           process.exit(0);
         }
 
@@ -5126,6 +5512,8 @@ if (isMain) {
           activeModels.generate,
           activeModels.rerank,
         ];
+        if (isRemoteEmbedModel(activeModels.embed)) console.log("Embedding: configured remote; no local download (not probed)");
+        if (isJevModel(activeModels.rerank)) console.log("Reranking: configured remote TypeSafe; no local download (not probed)");
         console.log(`${c.bold}Pulling models${c.reset}`);
         const results = await pullModels(models, {
           refresh,
@@ -5245,25 +5633,39 @@ if (isMain) {
 
       // Subcommands take priority over flags
       if (sub === "stop") {
-        if (!existsSync(pidPath)) {
-          console.log("Not running (no PID file).");
-          process.exit(0);
+        // The pidfile's identity state drives the transition: only a live,
+        // identity-matched daemon is signalled, and it keeps its pidfile until
+        // its PID is actually gone.
+        const stopped = await stopMcpDaemon(pidPath);
+        let exitCode = 0;
+        switch (stopped.outcome) {
+          case "not-running":
+            console.log("Not running (no PID file).");
+            break;
+          case "unreadable":
+            console.error(`Cannot read PID file ${pidPath} (${stopped.error}); leaving it untouched.`);
+            exitCode = 1;
+            break;
+          case "cleaned-stale":
+            console.log("Cleaned up stale PID file (server was not running).");
+            break;
+          case "stopped":
+            console.log(`Stopped QMD MCP server (PID ${stopped.pid}).`);
+            break;
+          case "timeout":
+            console.error(`PID ${stopped.pid} is still alive after SIGTERM; keeping PID file (retry 'qmd mcp stop').`);
+            exitCode = 1;
+            break;
+          case "unsignalable":
+            console.error(`Cannot signal PID ${stopped.pid} (${stopped.error}); keeping PID file.`);
+            exitCode = 1;
+            break;
+          case "busy":
+            console.error(`PID file ${pidPath} is being updated by another qmd process (${stopped.error}); retry 'qmd mcp stop'.`);
+            exitCode = 1;
+            break;
         }
-        const pid = parseInt(readFileSync(pidPath, "utf-8").trim());
-        if (!isQmdMcpPid(pid)) {
-          try { unlinkSync(pidPath); } catch { /* ignore */ }
-          console.log("Cleaned up stale PID file (server was not running).");
-          process.exit(0);
-        }
-        try {
-          process.kill(pid, "SIGTERM");
-          unlinkSync(pidPath);
-          console.log(`Stopped QMD MCP server (PID ${pid}).`);
-        } catch {
-          try { unlinkSync(pidPath); } catch { /* ignore */ }
-          console.log("Cleaned up stale PID file (server was not running).");
-        }
-        process.exit(0);
+        process.exit(exitCode);
       }
 
       if (cli.values.http) {
@@ -5284,16 +5686,24 @@ if (isMain) {
         const host = resolveDaemonHost(flagHost);
 
         if (cli.values.daemon) {
-          // Guard: check if already running (identity-checked — recycled PIDs are stale)
-          if (existsSync(pidPath)) {
-            const existingPid = parseInt(readFileSync(pidPath, "utf-8").trim());
-            if (isQmdMcpPid(existingPid)) {
-              console.error(`Already running (PID ${existingPid}). Run 'qmd mcp stop' first.`);
-              process.exit(1);
-            }
-            // Stale or recycled PID file — remove and continue
-            try { unlinkSync(pidPath); } catch { /* ignore */ }
+          // Guard: only a pidfile whose identity is "running" blocks a start —
+          // recycled PIDs and dead processes are stale (#806). An unreadable
+          // pidfile fails safe: it may name a live daemon we cannot inspect.
+          const existing = readMcpDaemonPidState(pidPath);
+          if (existing.status === "running") {
+            console.error(`Already running (PID ${existing.pid}). Run 'qmd mcp stop' first.`);
+            process.exit(1);
           }
+          if (existing.status === "unreadable") {
+            console.error(`Cannot read PID file ${pidPath} (${existing.error}); refusing to start.`);
+            process.exit(1);
+          }
+
+          // ko-qmd: open the index here first. A one-time migration (the vector
+          // partition copy and its VACUUM take minutes on a large index) then
+          // runs in the foreground with its progress on this terminal, instead
+          // of inside the child's listen window below, which would kill it.
+          createStore(getDbPath()).close();
 
           mkdirSync(cacheDir, { recursive: true });
           const logFd = openDaemonLogFile(logPath); // truncate — fresh log per daemon run (0600: carries query text)
@@ -5311,42 +5721,117 @@ if (isMain) {
               // Explicit resolved DB path so the child does not depend on
               // re-parsing --index (and cannot inherit a stale INDEX_PATH).
               INDEX_PATH: getDbPath(),
+              // Tells the child it is a managed daemon: it serves only once
+              // this PID file names it (see the foreground HTTP path below).
+              QMD_MCP_DAEMON_CHILD: "1",
             },
           });
           child.unref();
           closeSync(logFd); // parent's copy; child inherited the fd
 
-          // Report Started only once the child is actually listening —
-          // otherwise a bind failure exits 0 while the child dies unseen.
+          const childPid = child.pid;
+          if (childPid === undefined) {
+            console.error(`Failed to start QMD MCP server. See log: ${logPath}`);
+            process.exit(1);
+          }
+
+          // `spawn` returns before the child execs, so for a few milliseconds
+          // it still reports the parent's command line (or none at all).
+          // Publishing that PID would hand a concurrent start/stop/status a
+          // pidfile that classifies as `not-qmd` while this daemon owns it, and
+          // the live daemon would be treated as stale. Wait for the child's own
+          // cmdline first; a child that died in the meantime is reported as a
+          // failure instead of being published.
+          const readiness = await waitForDaemonChildIdentity(childPid, {
+            hasExited: () => child.exitCode !== null || child.signalCode !== null,
+          });
+          if (readiness.status !== "running") {
+            if (readiness.status === "timeout") {
+              // Hung before exec: it can never become the daemon we promised.
+              try { child.kill("SIGKILL"); } catch { /* ignore */ }
+            }
+            const owner = readMcpDaemonPidState(pidPath);
+            if (owner.status === "running" && owner.pid !== childPid) {
+              console.error(`Already running (PID ${owner.pid}). Run 'qmd mcp stop' first.`);
+            } else if (readiness.status === "timeout") {
+              console.error(`Failed to start QMD MCP server (it did not identify itself within the startup window). See log: ${logPath}`);
+            } else {
+              console.error(`Failed to start QMD MCP server. See log: ${logPath}`);
+            }
+            process.exit(1);
+          }
+
+          // Claim the pidfile inside the cross-process critical section: if
+          // another start won the race while this child was starting, that
+          // daemon owns the file and this child must not be left running
+          // untracked.
+          const claim = claimMcpDaemonPidfile(pidPath, childPid);
+          if (!claim.claimed) {
+            try { child.kill("SIGTERM"); } catch { /* ignore */ }
+            if (claim.reason === "running") {
+              console.error(`Already running (PID ${claim.runningPid}). Run 'qmd mcp stop' first.`);
+            } else {
+              console.error(`Could not claim PID file ${pidPath} (${claim.error}). See log: ${logPath}`);
+            }
+            process.exit(1);
+          }
+
+          // ko-qmd: report Started only once the child is actually listening —
+          // otherwise a bind failure exits 0 while the child dies unseen. The
+          // child serves only after it reads its claim, so this waits after it.
           const listening = await waitForDaemonListening(child, logPath);
           if (!listening.ok) {
+            try { child.kill("SIGTERM"); } catch { /* ignore */ }
+            removeMcpDaemonPidfileIfRecords(pidPath, childPid);
             console.error(listening.message);
             process.exit(1);
           }
 
-          writeFileSync(pidPath, String(child.pid));
-          console.log(`Started on http://${host}:${port}/mcp (PID ${child.pid})`);
+          console.log(`Started on http://${host ?? "localhost"}:${port}/mcp (PID ${childPid})`);
           console.log(`Logs: ${logPath}`);
           process.exit(0);
         }
 
-        // Foreground HTTP mode — remove top-level cursor handlers so the
-        // async cleanup handlers in startMcpHttpServer actually run.
+        // Foreground HTTP mode — remove top-level cursor handlers so this
+        // process's own shutdown sequence runs instead.
         process.removeAllListeners("SIGTERM");
         process.removeAllListeners("SIGINT");
         // Best-effort: if this process owns the daemon pidfile, unlink on exit
-        // (covers SIGTERM/SIGINT via startMcpHttpServer's process.exit).
+        // (covers the SIGTERM/SIGINT path below). The
+        // cheap file check skips unmanaged foreground servers, and the
+        // check-and-unlink runs inside the pidfile critical section with a zero
+        // budget, so it can neither delete a pidfile another daemon republished
+        // nor block on — and deadlock against — the `stop` that is waiting for
+        // this process to die.
         const unlinkOwnPidfile = () => {
-          try {
-            if (!existsSync(pidPath)) return;
-            const written = parseInt(readFileSync(pidPath, "utf-8").trim());
-            if (written === process.pid) unlinkSync(pidPath);
-          } catch { /* ignore */ }
+          if (!pidfileRecordsPid(pidPath, process.pid)) return;
+          removeMcpDaemonPidfileIfRecords(pidPath, process.pid, { budgetMs: MCP_DAEMON_EXIT_SECTION_BUDGET_MS });
         };
         process.on("exit", unlinkOwnPidfile);
-        const { startMcpHttpServer } = await import("../mcp/server.js");
+
+        // A daemon spawned by `qmd mcp --http --daemon` serves only once the
+        // parent has published this PID. The pidfile is the ownership token:
+        // of two concurrent starts exactly one child is named, so only that one
+        // binds the port (the loser exits instead of racing the winner), and a
+        // child whose parent died before publishing never serves untracked.
+        if (process.env.QMD_MCP_DAEMON_CHILD === "1") {
+          const ownership = await waitForDaemonPidfileOwnership(pidPath, process.pid);
+          if (ownership !== "owned") {
+            console.error(
+              ownership === "taken"
+                ? `Another daemon owns ${pidPath}; this one will not start.`
+                : `No PID file was published for this daemon (${pidPath}); not starting untracked.`,
+            );
+            process.exit(1);
+          }
+        }
+
+        // Deliberately lazy: the MCP SDK is a heavy import that the rest of the
+        // CLI must not pay for (see test/cli-lazy-llm-import.test.ts).
+        const { startMcpHttpServer, terminateMcpServer } = await import("../mcp/server.js");
+        let handle: HttpServerHandle;
         try {
-          await startMcpHttpServer(port, { dbPath: getDbPath(), host });
+          handle = await startMcpHttpServer(port, { dbPath: getDbPath(), host });
         } catch (e: unknown) {
           if (typeof e === "object" && e !== null && "code" in e && e.code === "EADDRINUSE") {
             console.error(`Port ${port} already in use. Try a different port with --port.`);
@@ -5354,14 +5839,42 @@ if (isMain) {
           }
           throw e;
         }
+
+        // Termination belongs to this entry point, not to startMcpHttpServer:
+        // an embedded host must not have its process exited by signal handlers
+        // it never asked for. A standalone server has nobody else to do it, and
+        // a deadline that expired with work still running must be visible as a
+        // non-zero exit — the abandoned cleanup cannot finish here.
+        const terminate = async (signal: NodeJS.Signals): Promise<void> => {
+          console.error(`Shutting down (${signal})...`);
+          await terminateMcpServer(handle.stop, {
+            exit: (code) => process.exit(code),
+            log: (message) => console.error(message),
+          });
+        };
+        process.on("SIGTERM", () => { void terminate("SIGTERM"); });
+        process.on("SIGINT", () => { void terminate("SIGINT"); });
       } else {
-        // Default: stdio transport. Remove top-level cursor handlers so the
-        // async cleanup handlers in startMcpServer actually run (same as
-        // foreground HTTP mode above — SIGTERM is stdio's only stop).
+        // Default: stdio transport. This is the process-serving entry, so it
+        // owns termination: EOF timeouts record the exit code and exit non-zero.
+        const { startMcpServer, terminateMcpServer } = await import("../mcp/server.js");
+        // ko-qmd: SIGTERM is stdio's only stop besides EOF (no pidfile or stop
+        // command), so it runs the same drain/close/store.close sequence as EOF
+        // instead of the top-level cursor.show + exit(143).
         process.removeAllListeners("SIGTERM");
         process.removeAllListeners("SIGINT");
-        const { startMcpServer } = await import("../mcp/server.js");
-        await startMcpServer({ dbPath: getDbPath() });
+        const stdio = await startMcpServer({ dbPath: getDbPath(), standalone: true });
+        const terminate = async (signal: NodeJS.Signals): Promise<void> => {
+          console.error(`Shutting down (${signal})...`);
+          await terminateMcpServer(() => stdio.shutdown(), {
+            // The stdio shutdown reports a failed close through process.exitCode
+            // and resolves, so a clean-looking stop keeps that code.
+            exit: (code) => process.exit(code !== 0 ? code : typeof process.exitCode === "number" ? process.exitCode : 0),
+            log: (message) => console.error(message),
+          });
+        };
+        process.on("SIGTERM", () => { void terminate("SIGTERM"); });
+        process.on("SIGINT", () => { void terminate("SIGINT"); });
       }
       break;
     }
@@ -5444,12 +5957,19 @@ if (isMain) {
         if (stats.orphanedContent > 0) {
           console.log(`Would remove ${stats.orphanedContent} orphaned content hashes`);
         }
+        if (stats.vectorLayout) {
+          console.log(stats.vectorsRepacked
+            ? `Would repack the vector table (${describeVectorLayout(stats.vectorLayout)})`
+            : `${c.dim}Vector table is packed (${describeVectorLayout(stats.vectorLayout)})${c.reset}`);
+        }
         console.log("Would compact FTS and vacuum the database");
         closeDb();
         break;
       }
 
-      const stats = runCleanup(db);
+      const stats = runCleanup(db, {
+        onVectorRepack: (layout) => console.log(`Repacking the vector table (${describeVectorLayout(layout)})...`),
+      });
       console.log(`${c.green}✓${c.reset} Cleared ${stats.cacheCount} cached API responses`);
       if (stats.orphanedVectors > 0) {
         console.log(`${c.green}✓${c.reset} Removed ${stats.orphanedVectors} orphaned embedding chunks`);
@@ -5461,6 +5981,11 @@ if (isMain) {
       }
       if (stats.orphanedContent > 0) {
         console.log(`${c.green}✓${c.reset} Removed ${stats.orphanedContent} orphaned content hashes`);
+      }
+      if (stats.vectorLayout) {
+        console.log(stats.vectorsRepacked
+          ? `${c.green}✓${c.reset} Repacked the vector table (${describeVectorLayout(stats.vectorLayout)})`
+          : `${c.dim}Vector table is packed (${describeVectorLayout(stats.vectorLayout)})${c.reset}`);
       }
       console.log(`${c.green}✓${c.reset} FTS compacted, database vacuumed`);
 

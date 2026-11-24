@@ -1,17 +1,18 @@
 /**
- * reindex-stat-guard.test.ts — a file vanishing between read and stat must not
- * abort the whole reindex (T3 #3: unguarded statSync at store.ts:1739/:1747).
+ * reindex-stat-guard.test.ts — a file vanishing mid-pass must not abort the
+ * whole reindex (T3 #3: an unguarded statSync once aborted the collection).
  *
- * The read path already skips unreadable files (#460); the stat pair must do
- * the same: skip + report via skippedFiles, same deactivation semantics
- * (seenPaths is marked before the read, so a skipped file keeps its row).
+ * reindexCollection stats a file before reading it (the mtime+size fast path),
+ * so the window a hook can mutate the tree in is now stat→read. The read guard
+ * (#460) has to skip + report via skippedFiles with the same deactivation
+ * semantics (seenPaths is marked before the stat, so a skipped file keeps its row).
  *
  * Race simulation without timing hacks: the wrapper delegates to the real
- * readFileSync and then performs a REAL unlink, so the ENOENT under test
- * comes from the real statSync on a really-deleted file — exactly the
- * glob→read→stat race (a hook just mutated the tree). The read→stat window
- * contains no macrotask yield (hashContent is sync inside), so no timer can
- * land inside it; interposing on node:fs is the only deterministic seam.
+ * statSync and then performs a REAL unlink, so the ENOENT under test comes
+ * from the real readFileSync on a really-deleted file — exactly the
+ * glob→stat→read race. The stat→read window contains no macrotask yield, so
+ * no timer can land inside it; interposing on node:fs is the only
+ * deterministic seam.
  */
 
 import { describe, test, expect, beforeAll, afterAll, vi } from "vitest";
@@ -25,18 +26,17 @@ import YAML from "yaml";
 import type { CollectionConfig } from "../src/collections.js";
 
 // Absolute real path of the current victim file. Set per-test before calling
-// reindexCollection; the mocked readFileSync unlinks it right after a
-// successful read — i.e. the file is gone by the time reindexCollection calls
-// statSync.
+// reindexCollection; the mocked statSync unlinks it right after a successful
+// stat — i.e. the file is gone by the time reindexCollection reads it.
 if (!isBun) {
   // oxlint-disable-next-line anti-slop/no-module-mocking
   vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
-  const origReadFileSync = actual.readFileSync;
+  const origStatSync = actual.statSync;
   return {
     ...actual,
-    readFileSync: (...args: Parameters<typeof actual.readFileSync>): string => {
-      const result = (origReadFileSync as (...a: unknown[]) => string)(...args);
+    statSync: (...args: Parameters<typeof actual.statSync>) => {
+      const result = (origStatSync as (...a: unknown[]) => ReturnType<typeof actual.statSync>)(...args);
       const p = String(args[0]);
       if (victimRealPath && p === victimRealPath) {
         try {
@@ -92,7 +92,7 @@ afterAll(async () => {
 });
 
 describe.skipIf(isBun)("reindexCollection stat race guard", () => {
-  test("new file deleted between read and stat is skipped+reported, rest completes", async () => {
+  test("new file deleted between stat and read is skipped+reported, rest completes", async () => {
     const store = await createTestStore();
     const collectionName = "stat-guard-new";
     const collectionPath = join(testDir, `col-new-${Date.now()}`);
@@ -121,7 +121,7 @@ describe.skipIf(isBun)("reindexCollection stat race guard", () => {
     }
   });
 
-  test("changed file deleted between read and stat keeps its row, rest completes", async () => {
+  test("changed file deleted between stat and read keeps its row, rest completes", async () => {
     const store = await createTestStore();
     const collectionName = "stat-guard-changed";
     const collectionPath = join(testDir, `col-changed-${Date.now()}`);
@@ -129,7 +129,7 @@ describe.skipIf(isBun)("reindexCollection stat race guard", () => {
     await writeFile(join(collectionPath, "good.md"), "# Good\n\nreadable body\n");
     await writeFile(join(collectionPath, "victim.md"), "# Victim\n\nversion one\n");
 
-    // Seed the index so victim takes the update branch (changed content → statSync).
+    // Seed the index so victim has a row; the rewrite's fresh mtime misses the fast path and forces a read.
     const first = await reindexCollection(store, collectionPath, "**/*.md", collectionName);
     expect(first.indexed).toBe(2);
 
@@ -148,7 +148,7 @@ describe.skipIf(isBun)("reindexCollection stat race guard", () => {
         SELECT path, active FROM documents WHERE collection = ? ORDER BY path
       `).all(collectionName) as { path: string; active: number }[];
       // Same deactivation semantics as the #460 read guard: seenPaths is
-      // marked before the read, so the skipped file's row is NOT deactivated.
+      // marked before the stat, so the skipped file's row is NOT deactivated.
       expect(rows).toEqual([
         { path: "good.md", active: 1 },
         { path: "victim.md", active: 1 },
